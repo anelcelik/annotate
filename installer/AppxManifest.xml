@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX package manifest for Annotate.
+
+  IMPORTANT — Publisher value:
+    • Development / sideloading: keep "CN=Annotate" and use the self-signed cert
+      generated in the GitHub Actions workflow.
+    • Microsoft Store submission: replace Publisher with the exact value shown
+      in your Partner Center dashboard under App identity, then sign with your
+      real code-signing certificate (store it as a GitHub secret).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="Annotate.ScreenAnnotationTool"
+    Publisher="CN=Annotate"
+    Version="1.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Annotate</DisplayName>
+    <PublisherDisplayName>Anel Celik</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.scale-100.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 10 1809 (17763) minimum; tested on Windows 11 22H2 (22621) -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="Annotate"
+      Executable="Annotate.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Annotate"
+        Description="Draw on your screen like a whiteboard. Annotate anything in real time."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.scale-100.png"
+        Square44x44Logo="Assets\Square44x44Logo.scale-100.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.scale-100.png"
+          Square310x310Logo="Assets\Square310x310Logo.scale-100.png"
+          Square71x71Logo="Assets\Square71x71Logo.scale-100.png"
+          ShortName="Annotate" />
+        <uap:SplashScreen Image="Assets\SplashScreen.scale-100.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Required for packaging a classic Win32 / PyInstaller executable -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>
