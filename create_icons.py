@@ -18,6 +18,7 @@ Run:
 """
 
 import sys, math, io
+sys.stdout.reconfigure(encoding='utf-8')
 from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
