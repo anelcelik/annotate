@@ -6,7 +6,7 @@ Fullscreen transparent overlay — draw on your screen like a whiteboard.
 
 Tools: Select, Pen, Line, Arrow, Rectangle, Circle, Ruler,
        Text, Callout, Steps, Highlight, Emoji, Bubble,
-       Blur, Pixelate, Redact
+       Blur, Pixelate, Redact, Laser Pointer
 
 Install:  pip install PyQt6
 Run:      python annotate.py
@@ -34,7 +34,6 @@ from PyQt6.QtGui import (
 )
 
 # ── Platform detection ─────────────────────────────────────────────────────────
-# [WIN-FIX] detect platform once so we can gate behaviour throughout
 IS_WIN = platform.system() == "Windows"
 IS_MAC = platform.system() == "Darwin"
 
@@ -52,7 +51,7 @@ Cursor = Qt.CursorShape
 Key    = Qt.Key
 RHint  = QPainter.RenderHint
 AA     = Qt.AlignmentFlag
-CM     = QPainter.CompositionMode   # [WIN-FIX] used for transparent clearing
+CM     = QPainter.CompositionMode
 
 # ── Palette & tool definitions ─────────────────────────────────────────────────
 COLORS = [
@@ -86,6 +85,7 @@ TOOLS = [
     ("blur",      "⊘",    "Blur  Z"),
     ("pixel",     "PX",   "Pixelate  X"),
     ("redact",    "▪",    "Redact  D"),
+    ("laser",     "⊙",    "Laser  I"),
 ]
 
 KEY_TOOL = {
@@ -94,7 +94,7 @@ KEY_TOOL = {
     Key.Key_U: "ruler",  Key.Key_T: "text",   Key.Key_K: "callout",
     Key.Key_S: "steps",  Key.Key_H: "highlight",
     Key.Key_Z: "blur",   Key.Key_X: "pixel",
-    Key.Key_D: "redact",
+    Key.Key_D: "redact", Key.Key_I: "laser",
 }
 
 DRAG_TOOLS  = {"line","arrow","rect","circle","ruler","highlight","blur","pixel","redact"}
@@ -360,7 +360,6 @@ class EmojiShape(Shape):
         self.pos, self.emoji, self.size = pos, emoji, size
 
     def draw(self, p):
-        # [WIN-FIX] use platform-correct emoji font
         p.setFont(QFont(EMOJI_FONT, self.size))
         p.setPen(QPen(QColor("#000")))
         p.drawText(self.pos, self.emoji)
@@ -395,18 +394,16 @@ class BubbleShape(Shape):
 
 
 class BlurShape(Shape):
-    """Draws the blurred screen content captured at creation time.
-    While dragging (no pixmap yet) a frosted-glass preview is shown."""
+    """Draws the blurred screen content captured at creation time."""
     def __init__(self, p1, p2, blurred: QPixmap | None = None):
         self.p1, self.p2 = p1, p2
-        self.blurred = blurred   # None during drag preview, set on mouse-up
+        self.blurred = blurred
 
     def draw(self, p):
         rect = _norm(self.p1, self.p2)
         if self.blurred and not self.blurred.isNull():
             p.drawPixmap(rect.toRect(), self.blurred)
         else:
-            # drag-time placeholder — frosted glass look
             p.setPen(PS.NoPen); p.setBrush(QBrush(QColor(200, 200, 210, 130)))
             p.drawRect(rect)
             p.setPen(QPen(QColor(255,255,255,55), 1))
@@ -428,7 +425,6 @@ class BlurShape(Shape):
 
 
 class PixelShape(Shape):
-    """Grid placeholder. Real pixelation applied when integrated with screenshot image."""
     def __init__(self, p1, p2):
         self.p1, self.p2 = p1, p2
 
@@ -476,10 +472,10 @@ class Canvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(WAtt.WA_TransparentForMouseEvents, False)
-        # [WIN-FIX] prevent Windows from filling canvas background with palette colour
-        # before our paintEvent runs — without this the canvas is opaque white/grey.
         self.setAttribute(WAtt.WA_NoSystemBackground, True)
         self.setAttribute(WAtt.WA_OpaquePaintEvent, False)
+        # Enable mouse tracking so laser pointer works without clicking
+        self.setMouseTracking(True)
 
         self.tool       = "pen"
         self.pen_color  = "#FF3B3B"
@@ -498,12 +494,19 @@ class Canvas(QWidget):
         self._callout_n  = 1
         self._step_n     = 1
 
+        # Laser pointer — tracks mouse position, never commits to _shapes
+        self._laser_pos: QPointF | None = None
+
     def mousePressEvent(self, e):
         print(f"[PRESS] btn={e.button()} tool={self.tool} pos={e.pos()} overlay_active={self.window().isActiveWindow()}")
         if e.button() != MB.LeftButton: return
         pos = QPointF(e.pos())
         self._start = self._cur = pos
         self._drawing = True
+
+        if self.tool == "laser":
+            self._laser_pos = pos
+            self.update(); return
 
         if self.tool == "select":
             self._selected = None
@@ -523,12 +526,18 @@ class Canvas(QWidget):
             self._drawing = False; return
 
     def mouseMoveEvent(self, e):
-        if not (e.buttons() & MB.LeftButton): return
         pos = QPointF(e.pos())
         if not hasattr(self, '_move_count'): self._move_count = 0
         self._move_count += 1
-        if self._move_count % 20 == 1:   # log every 20th move to avoid spam
+        if self._move_count % 20 == 1:
             print(f"[MOVE]  tool={self.tool} drawing={self._drawing} pos={e.pos()}")
+
+        # Laser tracks freely — no button held needed
+        if self.tool == "laser":
+            self._laser_pos = pos
+            self.update(); return
+
+        if not (e.buttons() & MB.LeftButton): return
         self._cur = pos
 
         if self.tool == "select" and self._selected:
@@ -549,6 +558,9 @@ class Canvas(QWidget):
         self._drawing = False
         pos = QPointF(e.pos()); self._cur = pos
 
+        if self.tool == "laser":
+            return  # laser never commits shapes
+
         if self.tool == "pen" and self._pen_shape:
             if len(self._pen_shape.pts) > 1:
                 self._shapes.append(self._pen_shape)
@@ -557,7 +569,6 @@ class Canvas(QWidget):
 
         if self.tool in DRAG_TOOLS:
             if self.tool == "blur":
-                # Real blur: grab what is behind the overlay, blur it, store it
                 rect = _norm(self._start, pos)
                 if rect.width() > 3 and rect.height() > 3:
                     raw = self._grab_behind(rect)
@@ -620,12 +631,9 @@ class Canvas(QWidget):
         self.update()
 
     def _grab_behind(self, rect: QRectF) -> QPixmap:
-        """Grab the screen pixels behind the overlay for the given rect.
-        We temporarily zero the overlay opacity so grabWindow captures only
-        what is underneath, then restore it instantly."""
         overlay = self.window()
         overlay.setWindowOpacity(0.0)
-        QApplication.processEvents()          # flush so the OS unmaps our window
+        QApplication.processEvents()
         r = rect.toRect()
         pix = QApplication.primaryScreen().grabWindow(
             0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
@@ -635,15 +643,9 @@ class Canvas(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        # Clear to fully transparent first (required for compositing to work).
         p.setCompositionMode(CM.CompositionMode_Clear)
         p.fillRect(self.rect(), Qt.GlobalColor.transparent)
         p.setCompositionMode(CM.CompositionMode_SourceOver)
-        # [WIN-FIX] On Windows, WS_EX_LAYERED windows do NOT deliver mouse
-        # events to pixels whose alpha == 0 — they are treated as click-through
-        # holes.  A fill of alpha=1 (1/255 ≈ 0.4 %) is visually imperceptible
-        # but makes the entire canvas surface hittable so drawing strokes can
-        # start anywhere on the screen, not just on top of existing shapes.
         if IS_WIN:
             p.fillRect(self.rect(), QColor(0, 0, 0, 1))
 
@@ -657,6 +659,24 @@ class Canvas(QWidget):
             p.setPen(QPen(QColor("#0A84FF"), 1, PS.DashLine))
             p.setBrush(BS.NoBrush)
             p.drawRect(self._selected.bounding_rect().adjusted(-3,-3,3,3))
+
+        # ── Laser pointer ──────────────────────────────────────────────────
+        if self.tool == "laser" and self._laser_pos:
+            lx, ly = self._laser_pos.x(), self._laser_pos.y()
+            # Outer glow rings (largest → smallest)
+            for radius, alpha in [(22, 18), (15, 35), (10, 60)]:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QBrush(QColor(255, 30, 30, alpha)))
+                p.drawEllipse(QPointF(lx, ly), radius, radius)
+            # Bright white core
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(QColor(255, 255, 255, 230)))
+            p.drawEllipse(QPointF(lx, ly), 4, 4)
+            # Hot red ring around core
+            p.setPen(QPen(QColor(255, 40, 40, 200), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(lx, ly), 5, 5)
+
         p.end()
 
 
@@ -842,6 +862,7 @@ TOOL_GROUPS = [
         ("rect",      "▭",  "Rectangle"),
         ("circle",    "○",  "Circle"),
         ("ruler",     "📏", "Ruler"),
+        ("laser",     "⊙",  "Laser  I"),        # ← laser pointer
     ]),
     ("🏷 Annotate", [
         ("text",      "T",   "Text"),
@@ -858,16 +879,6 @@ TOOL_GROUPS = [
 
 class Toolbar(QWidget):
     def __init__(self, canvas: Canvas, overlay: QWidget):
-        # Back to child widget of overlay — this is the only correct architecture
-        # on Windows.  A separate top-level window causes an endless focus-steal
-        # loop: QPushButton post-click processing keeps re-activating the toolbar
-        # faster than any QTimer can hand focus back to the overlay.
-        #
-        # The original child-widget design broke because QGraphicsDropShadowEffect
-        # extended the dirty-rect to negative coordinates, causing
-        # UpdateLayeredWindowIndirect to fail and block all canvas repaints.
-        # Fix: remove the shadow on Windows entirely, use a painted border instead,
-        # and start at (40, 40) so there is always ≥8 px margin on each side.
         super().__init__(overlay)
         self.canvas  = canvas
         self.overlay = overlay
@@ -1032,13 +1043,6 @@ class Toolbar(QWidget):
         self.setFixedWidth(200)
         self.setAttribute(WAtt.WA_OpaquePaintEvent, False)
         self.setStyleSheet("QPushButton,QLabel,QSlider,QWidget{background:transparent;}")
-        # On Windows: no drop shadow.  The shadow blur extends ~32 px outside
-        # the toolbar widget rect.  When the toolbar is a child of the overlay
-        # at position (20,20), the dirty-rect sent to UpdateLayeredWindowIndirect
-        # starts at (-12,-12) — Windows rejects negative coords and blocks ALL
-        # canvas repaints, making drawing impossible.  A painted border replaces
-        # the visual affordance at zero cost.  On Linux/macOS the compositor
-        # handles this correctly so the shadow is kept.
         if not IS_WIN:
             shadow = QGraphicsDropShadowEffect(self)
             shadow.setBlurRadius(32); shadow.setOffset(4, 5)
@@ -1053,6 +1057,10 @@ class Toolbar(QWidget):
 
     def _activate(self, tid: str):
         self.canvas.tool = tid
+        # Clear laser dot when switching away from laser tool
+        if tid != "laser":
+            self.canvas._laser_pos = None
+            self.canvas.update()
         for sec in self._sections:
             sec.check_tool(tid)
         sec = self._all_btns.get(tid)
@@ -1088,9 +1096,6 @@ class Toolbar(QWidget):
 
     def _position(self):
         self.adjustSize()
-        # On Windows use 40 px margin — guarantees the toolbar rect (200 wide)
-        # plus any repaint expansion stays well clear of the window edge so
-        # UpdateLayeredWindowIndirect never receives a negative dirty-rect.
         margin = 40 if IS_WIN else 20
         self.move(margin, margin)
 
@@ -1103,7 +1108,6 @@ class Toolbar(QWidget):
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), 14, 14)
         p.drawPath(path)
-        # Windows: paint a subtle 1 px border in place of the drop shadow
         if IS_WIN:
             p.setPen(QPen(QColor(70, 70, 75, 220), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1137,9 +1141,6 @@ class AnnotationOverlay(QWidget):
 
         self.canvas = Canvas(self)
         self.canvas.setGeometry(0, 0, screen.width(), screen.height())
-        # Toolbar is a child widget — same window, zero focus-stealing.
-        # Shadow disabled on Windows in Toolbar._build so dirty-rect stays
-        # positive and UpdateLayeredWindowIndirect never fails.
         self.toolbar = Toolbar(self.canvas, self)
 
         self.show()
@@ -1158,7 +1159,7 @@ class AnnotationOverlay(QWidget):
     @pyqtSlot()
     def toggle(self):
         if self.isVisible():
-            self.hide()   # toolbar is a child — hides automatically with parent
+            self.hide()
         else:
             self.show()
             self.raise_()
@@ -1174,7 +1175,7 @@ class AnnotationOverlay(QWidget):
         k = e.key()
         mods = e.modifiers()
         if k == Key.Key_Escape:
-            self.hide()                         # Esc hides, doesn't quit
+            self.hide()
         elif k == Key.Key_C and not (mods & Qt.KeyboardModifier.ControlModifier):
             self.canvas.clear()
         elif k == Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
@@ -1195,7 +1196,7 @@ def _start_hotkey(overlay: AnnotationOverlay):
         os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
     )
     if on_wayland:
-        print("⚠  Wayland detected — global hotkey (Ctrl+Shift+A) not available.")
+        print("Warning: Wayland detected - global hotkey (Ctrl+Shift+A) not available.")
         print("   Use the tray icon or run with QT_QPA_PLATFORM=xcb for X11 mode.")
         return
 
@@ -1215,15 +1216,14 @@ def _start_hotkey(overlay: AnnotationOverlay):
         listener = kb.GlobalHotKeys({"<ctrl>+<shift>+a": on_activate})
         listener.daemon = True
         listener.start()
-        print("✓  Hotkey active: Ctrl+Shift+A to show/hide")
+        print("Hotkey active: Ctrl+Shift+A to show/hide")
     except Exception as ex:
-        print(f"⚠  Could not register hotkey: {ex}")
+        print(f"Warning: Could not register hotkey: {ex}")
 
 
 # ── System tray ────────────────────────────────────────────────────────────────
 def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
     from PyQt6.QtGui import QPixmap, QIcon, QColor
-    # Simple blue dot icon
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
     from PyQt6.QtGui import QPainter as _P
@@ -1243,10 +1243,10 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
         "QMenu::item{padding:6px 20px;}"
         "QMenu::item:selected{background:#0A84FF;border-radius:4px;}"
     )
-    show_action = menu.addAction("⏸  Show / Hide")
+    show_action = menu.addAction("Show / Hide")
     show_action.triggered.connect(overlay.toggle)
     menu.addSeparator()
-    quit_action = menu.addAction("✕  Exit")
+    quit_action = menu.addAction("Exit")
     quit_action.triggered.connect(QApplication.quit)
 
     tray.setContextMenu(menu)
@@ -1260,9 +1260,6 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
-    # [WIN-FIX] must be set before QApplication() is constructed.
-    # PassThrough avoids rounding DPI scale factors to integers, which would
-    # misalign the canvas geometry vs the physical screen on 125 %/150 % displays.
     if IS_WIN:
         QApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -1270,21 +1267,22 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Screen Annotator")
-    app.setQuitOnLastWindowClosed(False)   # keep running when overlay is hidden
+    app.setQuitOnLastWindowClosed(False)
     overlay = AnnotationOverlay()
-    tray = _setup_tray(overlay)            # tray stays visible when overlay is hidden
+    tray = _setup_tray(overlay)
     _start_hotkey(overlay)
 
     plat = f"Windows {platform.release()}" if IS_WIN else platform.system()
-    print("─" * 55)
-    print(f"  Screen Annotation Tool  —  PyQt6  [{plat}]")
-    print("─" * 55)
+    print("-" * 55)
+    print(f"  Screen Annotation Tool  --  PyQt6  [{plat}]")
+    print("-" * 55)
     print("  Toggle     : Ctrl+Shift+A  (show / hide)")
     print("  Tools      : toolbar buttons or key shortcuts")
+    print("  Laser      : I key  (no marks left on canvas)")
     print("  Undo       : Ctrl+Z  |  Clear: C")
     print("  Hide       : Esc")
-    print("  Exit       : ✕ button in toolbar")
-    print("─" * 55)
+    print("  Exit       : X button in toolbar")
+    print("-" * 55)
     sys.exit(app.exec())
 
 
