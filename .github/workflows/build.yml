@@ -25,6 +25,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt pyinstaller
 
+      - name: Install UPX (binary compressor)
+        run: choco install upx --no-progress -y
+
       # ── Assets ──────────────────────────────────────────────────────────────
       - name: Generate icons
         run: python create_icons.py

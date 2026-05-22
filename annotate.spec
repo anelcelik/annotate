@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Annotate — single-file Windows executable.
+# PyInstaller spec for Screen Annotator Pro — single-file Windows executable.
 # Build: pyinstaller annotate.spec
 
 a = Analysis(
@@ -9,16 +9,63 @@ a = Analysis(
     datas=[('icons/tray.ico', 'icons')],
     hiddenimports=[
         'PyQt6.sip',
-        # pynput platform back-ends (optional — only used on Windows for hotkey)
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # ── Exclude every Python-level Qt6 module we don't use ───────────────────
+    excludes=[
+        # Unused Qt6 sub-modules
+        'PyQt6.QtNetwork',        'PyQt6.QtSql',
+        'PyQt6.QtTest',           'PyQt6.QtXml',
+        'PyQt6.QtBluetooth',      'PyQt6.QtDBus',
+        'PyQt6.QtMultimedia',     'PyQt6.QtMultimediaWidgets',
+        'PyQt6.QtPositioning',    'PyQt6.QtPrintSupport',
+        'PyQt6.QtQml',            'PyQt6.QtQuick',
+        'PyQt6.QtQuickWidgets',   'PyQt6.QtRemoteObjects',
+        'PyQt6.QtSensors',        'PyQt6.QtSerialPort',
+        'PyQt6.QtSvg',            'PyQt6.QtSvgWidgets',
+        'PyQt6.QtWebChannel',     'PyQt6.QtWebSockets',
+        'PyQt6.QtWebEngineCore',  'PyQt6.QtWebEngineWidgets',
+        'PyQt6.Qt3DCore',         'PyQt6.Qt3DRender',
+        'PyQt6.Qt3DAnimation',    'PyQt6.Qt3DExtras',
+        'PyQt6.Qt3DInput',        'PyQt6.Qt3DLogic',
+        # Unused stdlib
+        'tkinter', '_tkinter',
+        'unittest', 'doctest', 'pydoc', 'difflib',
+        'email', 'html', 'http', 'urllib', 'xmlrpc',
+        'xml', 'calendar', 'ftplib', 'smtplib',
+        'curses', 'lib2to3', 'distutils', 'test',
+        'sqlite3', 'asyncio', 'concurrent',
+    ],
     noarchive=False,
 )
+
+# ── Strip unused Qt6 native DLLs that survived the Python-level excludes ─────
+# PyInstaller's hook may still pull in the compiled Qt6 binaries even when
+# the Python bindings are excluded.  Filter them out here directly.
+_QT_DROP = {
+    'Qt6Network',     'Qt6Sql',           'Qt6Test',
+    'Qt6Xml',         'Qt6Bluetooth',     'Qt6DBus',
+    'Qt6Multimedia',  'Qt6MultimediaWidgets',
+    'Qt6Positioning', 'Qt6PrintSupport',
+    'Qt6Qml',         'Qt6Quick',         'Qt6QuickWidgets',
+    'Qt6RemoteObjects','Qt6Sensors',      'Qt6SerialPort',
+    'Qt6Svg',         'Qt6SvgWidgets',
+    'Qt6WebChannel',  'Qt6WebSockets',
+    'Qt6WebEngineCore','Qt6WebEngineWidgets',
+    'Qt63DCore',      'Qt63DRender',      'Qt63DAnimation',
+    'Qt63DExtras',    'Qt63DInput',       'Qt63DLogic',
+    # Unused Qt plugins
+    'qsqlite',        'qsqlodbc',         'qsqlpsql',
+    'qtvirtualkeyboard',
+}
+a.binaries = TOC([
+    b for b in a.binaries
+    if not any(drop in b[0] for drop in _QT_DROP)
+])
 
 pyz = PYZ(a.pure, a.zipped_data)
 
@@ -32,14 +79,18 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
+    upx=True,           # requires UPX on PATH — installed in CI via choco
+    upx_exclude=[
+        # Never compress these — UPX breaks them or slows them down
+        'vcruntime*.dll', 'msvcp*.dll', 'python*.dll',
+        'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+    ],
     runtime_tmpdir=None,
-    console=False,                      # no console window
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icons/annotate.ico'],        # embedded app icon
+    icon=['icons/annotate.ico'],
 )
