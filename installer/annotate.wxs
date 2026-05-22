@@ -49,9 +49,8 @@
       <Publish Dialog="ExitDialog"
                Control="Finish"
                Event="DoAction"
-               Value="LaunchApp">
-        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed
-      </Publish>
+               Value="LaunchApp"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
     </UI>
 
     <!-- Icon shown in Add/Remove Programs -->
@@ -125,8 +124,7 @@
       <Feature Id="DesktopShortcutFeature"
                Title="Desktop shortcut"
                Description="Add a shortcut to the Desktop."
-               Level="1"
-               Absent="allow">
+               Level="1">
         <ComponentRef Id="DesktopShortcutComp" />
       </Feature>
     </Feature>
