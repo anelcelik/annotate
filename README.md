@@ -144,8 +144,8 @@ The GitHub Actions workflow (`.github/workflows/build.yml`) builds everything au
 
 ### Trigger a release manually
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 This runs the full pipeline:

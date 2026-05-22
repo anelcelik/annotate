@@ -2,6 +2,13 @@
 <!--
   WiX 4 installer definition for Screen Annotator Pro.
   Build: wix build installer/annotate.wxs -ext WixToolset.UI.wixext -arch x64 -o dist/ScreenAnnotatorPro-Setup.msi
+
+  Install flow:
+    Welcome → License → Feature selection → Progress → Finish (+ Launch checkbox)
+
+  Features:
+    ProductFeature        — main exe + Start Menu shortcut  (required)
+    DesktopShortcutFeature — Desktop shortcut               (optional, on by default)
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
@@ -9,7 +16,7 @@
   <Package
     Name="Screen Annotator Pro"
     Manufacturer="Anel Celik"
-    Version="1.0.0.0"
+    Version="1.0.2.0"
     UpgradeCode="7E43C21B-856F-4D9A-B1C3-7E5F2A490D12"
     Language="1033"
     InstallerVersion="500"
@@ -20,9 +27,32 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of Screen Annotator Pro is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- Minimal UI: license acceptance → install progress → finish -->
-    <ui:WixUI Id="WixUI_Minimal" />
+    <!-- ── UI: Feature selection → Progress → Finish ────────────────────── -->
+    <ui:WixUI Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
+
+    <!-- "Launch Screen Annotator Pro" checkbox on the Finish page -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
+              Value="Launch Screen Annotator Pro" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+
+    <!-- Custom action: start the app after install when checkbox is ticked -->
+    <CustomAction Id="LaunchApp"
+                  FileRef="MainExe"
+                  ExeCommand=""
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+
+    <!-- Wire the Finish button to the launch action -->
+    <UI>
+      <Publish Dialog="ExitDialog"
+               Control="Finish"
+               Event="DoAction"
+               Value="LaunchApp">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed
+      </Publish>
+    </UI>
 
     <!-- Icon shown in Add/Remove Programs -->
     <Icon Id="AppIcon" SourceFile="dist\ScreenAnnotatorPro.exe" />
@@ -32,19 +62,13 @@
     <!-- ── Install to %ProgramFiles%\Screen Annotator Pro ───────────────── -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Screen Annotator Pro">
+
+        <!-- Main exe + Start Menu shortcut (always installed) -->
         <Component Id="MainExecutable" Guid="A2B3C4D5-E6F7-4801-9ABC-DEF012345678">
           <File Id="MainExe"
                 Source="dist\ScreenAnnotatorPro.exe"
                 Name="ScreenAnnotatorPro.exe"
                 KeyPath="yes" />
-          <!-- Desktop shortcut -->
-          <Shortcut Id="DesktopShortcut"
-                    Name="Screen Annotator Pro"
-                    Description="Draw on your screen like a whiteboard"
-                    Directory="DesktopFolder"
-                    WorkingDirectory="INSTALLFOLDER"
-                    Advertise="no" />
-          <!-- Start Menu shortcut -->
           <Shortcut Id="StartMenuShortcut"
                     Name="Screen Annotator Pro"
                     Description="Draw on your screen like a whiteboard"
@@ -52,10 +76,28 @@
                     WorkingDirectory="INSTALLFOLDER"
                     Advertise="no" />
         </Component>
+
       </Directory>
     </StandardDirectory>
 
-    <StandardDirectory Id="DesktopFolder" />
+    <!-- Desktop shortcut — separate component so it can be toggled in the UI -->
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcutComp" Guid="C4D5E6F7-A8B9-0123-CDEF-012345678901">
+        <Shortcut Id="DesktopShortcut"
+                  Name="Screen Annotator Pro"
+                  Description="Draw on your screen like a whiteboard"
+                  Target="[#MainExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Advertise="no" />
+        <!-- Registry key needed as KeyPath (shortcuts cannot be KeyPath) -->
+        <RegistryValue Root="HKCU"
+                       Key="Software\ScreenAnnotatorPro"
+                       Name="DesktopShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
 
     <!-- Start Menu folder (removed cleanly on uninstall) -->
     <StandardDirectory Id="ProgramMenuFolder">
@@ -72,9 +114,21 @@
       </Directory>
     </StandardDirectory>
 
-    <Feature Id="ProductFeature" Level="1">
+    <!-- ── Feature tree shown in the installer UI ───────────────────────── -->
+    <Feature Id="ProductFeature"
+             Title="Screen Annotator Pro"
+             Description="The main application and Start Menu shortcut."
+             Level="1">
       <ComponentRef Id="MainExecutable" />
       <ComponentRef Id="ProgramMenuEntry" />
+
+      <Feature Id="DesktopShortcutFeature"
+               Title="Desktop shortcut"
+               Description="Add a shortcut to the Desktop."
+               Level="1"
+               Absent="allow">
+        <ComponentRef Id="DesktopShortcutComp" />
+      </Feature>
     </Feature>
 
   </Package>

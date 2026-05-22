@@ -75,7 +75,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "1.0.0"
+VERSION = "1.0.2"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
