@@ -6,7 +6,7 @@ a = Analysis(
     ['annotate.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('icons/tray.ico', 'icons')],
     hiddenimports=[
         'PyQt6.sip',
         # pynput platform back-ends (optional — only used on Windows for hotkey)
@@ -28,7 +28,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Annotate',
+    name='ScreenAnnotatorPro',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

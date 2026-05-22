@@ -40,16 +40,16 @@ jobs:
           wix extension add --global WixToolset.UI.wixext/4.0.5
 
       - name: Build MSI
-        run: wix build installer/annotate.wxs -ext WixToolset.UI.wixext -arch x64 -o dist/Annotate-Setup.msi
+        run: wix build installer/annotate.wxs -ext WixToolset.UI.wixext -arch x64 -o dist/ScreenAnnotatorPro-Setup.msi
 
       # ── MSIX ────────────────────────────────────────────────────────────────
       - name: Stage MSIX content
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path msix_staging/Assets -Force | Out-Null
-          Copy-Item dist\Annotate.exe       msix_staging\
-          Copy-Item installer\AppxManifest.xml msix_staging\
-          Copy-Item icons\*.png             msix_staging\Assets\
+          Copy-Item dist\ScreenAnnotatorPro.exe msix_staging\
+          Copy-Item installer\AppxManifest.xml  msix_staging\
+          Copy-Item icons\*.png                 msix_staging\Assets\
 
       - name: Locate Windows SDK tools
         id: sdk
@@ -68,34 +68,35 @@ jobs:
       - name: Pack MSIX
         shell: pwsh
         run: |
-          & "${{ steps.sdk.outputs.makeappx }}" pack /d msix_staging /p dist\Annotate.msix /nv
+          & "${{ steps.sdk.outputs.makeappx }}" pack /d msix_staging /p dist\ScreenAnnotatorPro.msix /nv
 
       - name: Sign MSIX with a self-signed development certificate
         shell: pwsh
         run: |
-          # Publisher in AppxManifest.xml must match the cert Subject exactly.
-          # For Microsoft Store submission replace this with your Partner Center
-          # Publisher value and a real code-signing certificate stored as a secret.
+          # Subject must match Publisher in AppxManifest.xml exactly.
+          # When submitting to the Microsoft Store, upload the UNSIGNED .msix —
+          # Partner Center re-signs it with the Casultra certificate automatically.
+          # This self-signed cert is only needed for local sideload testing.
           $cert = New-SelfSignedCertificate `
             -Type Custom `
-            -Subject "CN=Annotate" `
+            -Subject "CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C" `
             -KeyUsage DigitalSignature `
-            -FriendlyName "Annotate Dev Cert" `
+            -FriendlyName "Screen Annotator Pro Dev Cert" `
             -CertStoreLocation "Cert:\CurrentUser\My" `
             -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
-          $pwd = ConvertTo-SecureString "AnnotateDevCert!" -Force -AsPlainText
+          $pwd = ConvertTo-SecureString "SAPDevCert!" -Force -AsPlainText
           Export-PfxCertificate -Cert $cert -FilePath dist\dev.pfx -Password $pwd | Out-Null
-          & "${{ steps.sdk.outputs.signtool }}" sign /fd SHA256 /f dist\dev.pfx /p "AnnotateDevCert!" dist\Annotate.msix
-          Write-Host "::notice::MSIX signed with self-signed cert (CN=Annotate)"
+          & "${{ steps.sdk.outputs.signtool }}" sign /fd SHA256 /f dist\dev.pfx /p "SAPDevCert!" dist\ScreenAnnotatorPro.msix
+          Write-Host "::notice::MSIX signed with self-signed cert (CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C)"
 
       # ── Artifacts ───────────────────────────────────────────────────────────
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Annotate-Windows-Installers
+          name: ScreenAnnotatorPro-Windows-Installers
           path: |
-            dist/Annotate-Setup.msi
-            dist/Annotate.msix
+            dist/ScreenAnnotatorPro-Setup.msi
+            dist/ScreenAnnotatorPro.msix
           retention-days: 30
 
       # Publish to GitHub Releases when a tag like v1.2.3 is pushed
@@ -104,6 +105,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/Annotate-Setup.msi
-            dist/Annotate.msix
+            dist/ScreenAnnotatorPro-Setup.msi
+            dist/ScreenAnnotatorPro.msix
           generate_release_notes: true

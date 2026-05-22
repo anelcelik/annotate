@@ -5,7 +5,7 @@ Screen Annotation Tool  (PyQt6)
 Fullscreen transparent overlay — draw on your screen like a whiteboard.
 
 Tools: Select, Pen, Line, Arrow, Rectangle, Circle, Ruler,
-       Text, Callout, Steps, Highlight, Emoji, Bubble,
+       Text, Callout, Steps, Highlight, Eraser,
        Blur, Pixelate, Redact, Laser Pointer
 
 Install:  pip install PyQt6
@@ -20,22 +20,211 @@ Windows notes
 • High-DPI monitors are handled automatically.
 """
 
-import sys, math, random as _rng, threading, platform
+import sys, os, json, math, random as _rng, threading, platform
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
     QGraphicsBlurEffect, QGraphicsScene, QGraphicsPixmapItem,
     QInputDialog, QFrame, QSystemTrayIcon, QMenu, QFileDialog,
+    QDialog, QCheckBox, QKeySequenceEdit,
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSlot
+from PyQt6.QtCore import Qt, QPointF, QRectF, QUrl, pyqtSlot
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
-    QPolygonF, QPainterPath, QFontMetrics, QPixmap,
+    QPolygonF, QPainterPath, QFontMetrics, QPixmap, QCursor, QIcon,
+    QKeySequence, QDesktopServices,
 )
+
+# ── Resource path helper (dev + PyInstaller bundle) ───────────────────────────
+def _resource(rel: str) -> str:
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
+
+
+# ── Custom cursors ─────────────────────────────────────────────────────────────
+_CROSS_CURSOR: QCursor | None = None
+
+def _cross_cursor() -> QCursor:
+    """White crosshair with dark outline — visible on any background."""
+    global _CROSS_CURSOR
+    if _CROSS_CURSOR is not None:
+        return _CROSS_CURSOR
+    sz, half, gap = 33, 16, 5
+    pix = QPixmap(sz, sz)
+    pix.fill(QColor(0, 0, 0, 0))
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    arms = [
+        (0, half, half - gap, half),
+        (half + gap, half, sz, half),
+        (half, 0, half, half - gap),
+        (half, half + gap, half, sz),
+    ]
+    p.setPen(QPen(QColor(0, 0, 0, 160), 3.0,
+                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+    for x1, y1, x2, y2 in arms:
+        p.drawLine(x1, y1, x2, y2)
+    p.setPen(QPen(QColor(255, 255, 255, 240), 1.5,
+                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+    for x1, y1, x2, y2 in arms:
+        p.drawLine(x1, y1, x2, y2)
+    p.end()
+    _CROSS_CURSOR = QCursor(pix, half, half)
+    return _CROSS_CURSOR
+
+
+# ── App identity ───────────────────────────────────────────────────────────────
+VERSION = "1.0.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
 IS_MAC = platform.system() == "Darwin"
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+_DEFAULT_SETTINGS: dict = {
+    "hotkey":        "<ctrl>+<shift>+a",
+    "start_on_boot": False,
+}
+
+def _settings_path() -> Path:
+    if IS_WIN:
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path.home() / ".config"
+    return base / "ScreenAnnotatorPro" / "settings.json"
+
+class SettingsManager:
+    def __init__(self):
+        self._path = _settings_path()
+        self._data = dict(_DEFAULT_SETTINGS)
+        self._load()
+
+    def _load(self):
+        if self._path.exists():
+            try:
+                saved = json.loads(self._path.read_text(encoding="utf-8"))
+                self._data = {**_DEFAULT_SETTINGS, **saved}
+            except Exception:
+                pass
+
+    def save(self):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+
+    def get(self, key):
+        return self._data.get(key, _DEFAULT_SETTINGS.get(key))
+
+    def set(self, key, value):
+        self._data[key] = value
+
+
+# ── Hotkey format helpers ──────────────────────────────────────────────────────
+
+def _pynput_to_ks(s: str) -> str:
+    """'<ctrl>+<shift>+a' → 'Ctrl+Shift+A' for QKeySequence."""
+    out = []
+    for p in s.split("+"):
+        p = p.strip()
+        if p == "<ctrl>":    out.append("Ctrl")
+        elif p == "<shift>": out.append("Shift")
+        elif p == "<alt>":   out.append("Alt")
+        elif p == "<cmd>":   out.append("Meta")
+        else:                out.append(p.upper())
+    return "+".join(out)
+
+def _ks_to_pynput(s: str) -> str:
+    """'Ctrl+Shift+A' → '<ctrl>+<shift>+a' for pynput."""
+    out = []
+    for p in s.split("+"):
+        p = p.strip()
+        low = p.lower()
+        if low == "ctrl":    out.append("<ctrl>")
+        elif low == "shift": out.append("<shift>")
+        elif low == "alt":   out.append("<alt>")
+        elif low == "meta":  out.append("<cmd>")
+        else:                out.append(low)
+    return "+".join(out)
+
+
+# ── Boot-startup helpers (Windows registry) ───────────────────────────────────
+
+def _startup_exe() -> str:
+    return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+
+def _set_startup(enable: bool):
+    if not IS_WIN:
+        return
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE | winreg.KEY_READ,
+        )
+        if enable:
+            winreg.SetValueEx(key, "ScreenAnnotatorPro", 0,
+                              winreg.REG_SZ, f'"{_startup_exe()}" --minimized')
+        else:
+            try:
+                winreg.DeleteValue(key, "ScreenAnnotatorPro")
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"Warning: startup registry error: {e}")
+
+def _is_startup_enabled() -> bool:
+    if not IS_WIN:
+        return False
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Run")
+        winreg.QueryValueEx(key, "ScreenAnnotatorPro")
+        winreg.CloseKey(key)
+        return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+# ── Hotkey manager ─────────────────────────────────────────────────────────────
+
+class HotkeyManager:
+    def __init__(self):
+        self._listener = None
+        self._cb       = None
+        self._hotkey   = ""
+
+    def start(self, pynput_str: str, callback):
+        self._cb     = callback
+        self._hotkey = pynput_str
+        self._restart()
+
+    def update(self, pynput_str: str):
+        self._hotkey = pynput_str
+        self._restart()
+
+    def _restart(self):
+        if self._listener:
+            try: self._listener.stop()
+            except Exception: pass
+            self._listener = None
+        on_wayland = (os.environ.get("WAYLAND_DISPLAY") or
+                      os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
+        if on_wayland:
+            print("Warning: Wayland — global hotkey not available.")
+            return
+        try:
+            from pynput import keyboard as kb
+            self._listener = kb.GlobalHotKeys({self._hotkey: self._cb})
+            self._listener.daemon = True
+            self._listener.start()
+            print(f"Hotkey active: {self._hotkey}")
+        except ImportError:
+            print("Tip: pip install pynput  to enable the global hotkey")
+        except Exception as e:
+            print(f"Warning: hotkey error: {e}")
 
 # ── Qt enum aliases ────────────────────────────────────────────────────────────
 WType  = Qt.WindowType
@@ -59,9 +248,6 @@ COLORS = [
     ("#32D74B", "Green"), ("#0A84FF", "Blue"), ("#BF5AF2", "Purple"),
     ("#FFFFFF", "White"), ("#1C1C1E", "Black"),
 ]
-
-EMOJIS = ["⭐","✅","❌","⚠️","💡","🔥","👆","👇","👉","👈",
-          "🔴","🟡","🟢","🔵","📌","🎯","🔍","💬"]
 
 SWATCHES = [
     "#FF3B3B","#FF6B00","#FFD60A","#34C759",
@@ -95,15 +281,14 @@ KEY_TOOL = {
     Key.Key_S: "steps",  Key.Key_H: "highlight",
     Key.Key_Z: "blur",   Key.Key_X: "pixel",
     Key.Key_D: "redact", Key.Key_I: "laser",
+    Key.Key_E: "eraser",
 }
 
 DRAG_TOOLS  = {"line","arrow","rect","circle","ruler","highlight","blur","pixel","redact"}
 POINT_TOOLS = {"text","callout","steps"}
+PEN_TOOLS   = {"pen", "eraser"}   # freehand stroke tools
 
 # [WIN-FIX] pick the right system emoji font per platform
-EMOJI_FONT = "Segoe UI Emoji" if IS_WIN else ("Apple Color Emoji" if IS_MAC else "Noto Color Emoji")
-
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _norm(p1: QPointF, p2: QPointF) -> QRectF:
     return QRectF(min(p1.x(),p2.x()), min(p1.y(),p2.y()),
@@ -111,6 +296,23 @@ def _norm(p1: QPointF, p2: QPointF) -> QRectF:
 
 def _pen(color: str, width: int) -> QPen:
     return QPen(QColor(color), width, PS.SolidLine, Cap.RoundCap, Join.RoundJoin)
+
+def _with_alpha(hex_color: str, alpha: int) -> str:
+    """Return #AARRGGBB string with alpha baked in (alpha 0-255)."""
+    c = QColor(hex_color)
+    c.setAlpha(alpha)
+    return c.name(QColor.NameFormat.HexArgb)
+
+def _snap_45(p1: QPointF, p2: QPointF) -> QPointF:
+    """Snap p2 to the nearest 45° direction from p1 (Shift-lock)."""
+    dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
+    dist = math.hypot(dx, dy)
+    if dist < 1:
+        return p2
+    angle   = math.atan2(dy, dx)
+    snapped = round(angle / (math.pi / 4)) * (math.pi / 4)
+    return QPointF(p1.x() + dist * math.cos(snapped),
+                   p1.y() + dist * math.sin(snapped))
 
 def _contrast(hex_color: str) -> QColor:
     c = QColor(hex_color)
@@ -355,44 +557,6 @@ class HighlightShape(Shape):
     def bounding_rect(self): return _norm(self.p1, self.p2)
 
 
-class EmojiShape(Shape):
-    def __init__(self, pos, emoji, size):
-        self.pos, self.emoji, self.size = pos, emoji, size
-
-    def draw(self, p):
-        p.setFont(QFont(EMOJI_FONT, self.size))
-        p.setPen(QPen(QColor("#000")))
-        p.drawText(self.pos, self.emoji)
-
-    def move(self, dx, dy): self.pos = QPointF(self.pos.x()+dx, self.pos.y()+dy)
-    def bounding_rect(self): return QRectF(self.pos.x(), self.pos.y()-self.size, self.size*1.2, self.size*1.2)
-
-
-class BubbleShape(Shape):
-    def __init__(self, pos, text, color, font_size):
-        self.pos, self.text, self.color, self.font_size = pos, text, color, font_size
-
-    def draw(self, p):
-        p.setRenderHint(RHint.Antialiasing)
-        font = QFont("Arial", self.font_size)
-        p.setFont(font)
-        fm = QFontMetrics(font)
-        tw, th = fm.horizontalAdvance(self.text), fm.height()
-        pad, tail = 10, 12
-        bx, by = self.pos.x(), self.pos.y() - th - pad*2 - tail
-        bw, bh = tw + pad*2, th + pad*2
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(bx, by, bw, bh), 8, 8)
-        path.addPolygon(QPolygonF([QPointF(bx+16, by+bh), self.pos, QPointF(bx+32, by+bh)]))
-        p.setPen(PS.NoPen); p.setBrush(QBrush(QColor(self.color)))
-        p.drawPath(path)
-        p.setPen(QPen(_contrast(self.color)))
-        p.drawText(QRectF(bx+pad, by+pad, tw, th), AA.AlignLeft, self.text)
-
-    def move(self, dx, dy): self.pos = QPointF(self.pos.x()+dx, self.pos.y()+dy)
-    def bounding_rect(self): return QRectF(self.pos.x()-5, self.pos.y()-80, 200, 80)
-
-
 class BlurShape(Shape):
     """Draws the blurred screen content captured at creation time."""
     def __init__(self, p1, p2, blurred: QPixmap | None = None):
@@ -467,6 +631,37 @@ class RedactShape(Shape):
     def bounding_rect(self): return _norm(self.p1, self.p2)
 
 
+class EraserShape(Shape):
+    """Freehand eraser — clears pixels using CompositionMode_Clear."""
+    def __init__(self, width: int):
+        self.pts:  list[QPointF] = []
+        self.width = width
+
+    def draw(self, p: QPainter):
+        if len(self.pts) < 2:
+            return
+        p.setRenderHint(RHint.Antialiasing)
+        p.setCompositionMode(CM.CompositionMode_Clear)
+        p.setPen(QPen(Qt.GlobalColor.transparent, self.width,
+                      PS.SolidLine, Cap.RoundCap, Join.RoundJoin))
+        for i in range(1, len(self.pts)):
+            p.drawLine(self.pts[i - 1], self.pts[i])
+        p.setCompositionMode(CM.CompositionMode_SourceOver)
+
+    def move(self, dx, dy):
+        self.pts = [QPointF(pt.x() + dx, pt.y() + dy) for pt in self.pts]
+
+    def bounding_rect(self):
+        if not self.pts:
+            return QRectF()
+        xs = [pt.x() for pt in self.pts]
+        ys = [pt.y() for pt in self.pts]
+        m = self.width / 2
+        return QRectF(min(xs) - m, min(ys) - m,
+                      max(xs) - min(xs) + self.width,
+                      max(ys) - min(ys) + self.width)
+
+
 # ── Canvas ─────────────────────────────────────────────────────────────────────
 class Canvas(QWidget):
     def __init__(self, parent=None):
@@ -480,16 +675,19 @@ class Canvas(QWidget):
         self.tool       = "pen"
         self.pen_color  = "#FF3B3B"
         self.pen_width  = 4
+        self.pen_alpha  = 255   # 0-255; baked into colour when shapes are created
         self.font_size  = 20
 
-        self._shapes:    list[Shape] = []
-        self._selected:  Shape | None = None
-        self._drag_last  = QPointF()
+        self._shapes:      list[Shape] = []
+        self._redo_stack:  list[Shape] = []
+        self._selected:    Shape | None = None
+        self._drag_last    = QPointF()
 
-        self._drawing    = False
-        self._start      = QPointF()
-        self._cur        = QPointF()
-        self._pen_shape: PenShape | None = None
+        self._drawing      = False
+        self._start        = QPointF()
+        self._cur          = QPointF()
+        self._pen_shape:   PenShape | None = None
+        self._eraser_shape = None   # filled when tool == "eraser"
 
         self._callout_n  = 1
         self._step_n     = 1
@@ -518,8 +716,12 @@ class Canvas(QWidget):
             self.update(); return
 
         if self.tool == "pen":
-            self._pen_shape = PenShape(self.pen_color, self.pen_width)
+            self._pen_shape = PenShape(_with_alpha(self.pen_color, self.pen_alpha), self.pen_width)
             self._pen_shape.pts.append(pos); return
+
+        if self.tool == "eraser":
+            self._eraser_shape = EraserShape(max(self.pen_width * 4, 20))
+            self._eraser_shape.pts.append(pos); return
 
         if self.tool in POINT_TOOLS:
             self._place_point(pos)
@@ -549,6 +751,10 @@ class Canvas(QWidget):
             self._pen_shape.pts.append(pos)
             self.update(); return
 
+        if self.tool == "eraser" and self._eraser_shape:
+            self._eraser_shape.pts.append(pos)
+            self.update(); return
+
         if self.tool in DRAG_TOOLS:
             self.update()
 
@@ -563,8 +769,14 @@ class Canvas(QWidget):
 
         if self.tool == "pen" and self._pen_shape:
             if len(self._pen_shape.pts) > 1:
-                self._shapes.append(self._pen_shape)
+                self._commit(self._pen_shape)
             self._pen_shape = None
+            self.update(); return
+
+        if self.tool == "eraser" and self._eraser_shape:
+            if len(self._eraser_shape.pts) > 1:
+                self._commit(self._eraser_shape)
+            self._eraser_shape = None
             self.update(); return
 
         if self.tool in DRAG_TOOLS:
@@ -573,35 +785,45 @@ class Canvas(QWidget):
                 if rect.width() > 3 and rect.height() > 3:
                     raw = self._grab_behind(rect)
                     blurred = _blur_pixmap(raw)
-                    self._shapes.append(BlurShape(self._start, pos, blurred))
+                    self._commit(BlurShape(self._start, pos, blurred))
             else:
                 s = self._make_drag(self._start, pos)
-                if s: self._shapes.append(s)
-            self.update()
+                if s: self._commit(s)
 
     def _place_point(self, pos: QPointF):
+        col = _with_alpha(self.pen_color, self.pen_alpha)
         t = self.tool
         if t == "text":
             text, ok = QInputDialog.getText(self, "Add Text", "Text:")
             if ok and text:
-                self._shapes.append(TextShape(pos, text, self.pen_color, self.font_size))
+                self._commit(TextShape(pos, text, col, self.font_size))
         elif t == "callout":
-            self._shapes.append(CalloutShape(pos, self._callout_n, self.pen_color))
+            self._commit(CalloutShape(pos, self._callout_n, col))
             self._callout_n += 1
         elif t == "steps":
-            self._shapes.append(StepShape(pos, self._step_n, self.pen_color))
+            self._commit(StepShape(pos, self._step_n, col))
             self._step_n += 1
-        self.update()
 
     def _make_drag(self, p1: QPointF, p2: QPointF) -> Shape | None:
         if abs(p2.x()-p1.x()) < 3 and abs(p2.y()-p1.y()) < 3: return None
-        t = self.tool
-        if t == "line":      return LineShape(p1, p2, self.pen_color, self.pen_width)
-        if t == "arrow":     return ArrowShape(p1, p2, self.pen_color, self.pen_width)
-        if t == "rect":      return RectShape(p1, p2, self.pen_color, self.pen_width)
-        if t == "circle":    return CircleShape(p1, p2, self.pen_color, self.pen_width)
-        if t == "ruler":     return RulerShape(p1, p2, self.pen_color, self.pen_width)
-        if t == "highlight": return HighlightShape(p1, p2, self.pen_color)
+        col   = _with_alpha(self.pen_color, self.pen_alpha)
+        t     = self.tool
+        shift = bool(QApplication.queryKeyboardModifiers()
+                     & Qt.KeyboardModifier.ShiftModifier)
+        # Shift-lock: snap lines/arrows/ruler to 45°, rect/circle to square
+        if shift:
+            if t in {"line", "arrow", "ruler"}:
+                p2 = _snap_45(p1, p2)
+            elif t in {"rect", "circle"}:
+                size = max(abs(p2.x()-p1.x()), abs(p2.y()-p1.y()))
+                p2   = QPointF(p1.x() + math.copysign(size, p2.x()-p1.x()),
+                                p1.y() + math.copysign(size, p2.y()-p1.y()))
+        if t == "line":      return LineShape(p1, p2, col, self.pen_width)
+        if t == "arrow":     return ArrowShape(p1, p2, col, self.pen_width)
+        if t == "rect":      return RectShape(p1, p2, col, self.pen_width)
+        if t == "circle":    return CircleShape(p1, p2, col, self.pen_width)
+        if t == "ruler":     return RulerShape(p1, p2, col, self.pen_width)
+        if t == "highlight": return HighlightShape(p1, p2, col)
         if t == "blur":      return BlurShape(p1, p2)
         if t == "pixel":     return PixelShape(p1, p2)
         if t == "redact":    return RedactShape(p1, p2)
@@ -612,7 +834,10 @@ class Canvas(QWidget):
         overlay = self.window()
         overlay.setWindowOpacity(0.0)
         QApplication.processEvents()
-        bg = QApplication.primaryScreen().grabWindow(0)
+        sr = QApplication.primaryScreen().virtualGeometry()
+        bg = QApplication.primaryScreen().grabWindow(
+            0, sr.x(), sr.y(), sr.width(), sr.height()
+        )
         overlay.setWindowOpacity(1.0)
         p = QPainter(bg)
         p.setRenderHint(RHint.Antialiasing)
@@ -621,11 +846,25 @@ class Canvas(QWidget):
         p.end()
         return bg
 
+    def _commit(self, shape: Shape):
+        """Append a shape and clear the redo stack."""
+        self._shapes.append(shape)
+        self._redo_stack.clear()
+        self.update()
+
     def undo(self):
-        if self._shapes: self._shapes.pop(); self.update()
+        if self._shapes:
+            self._redo_stack.append(self._shapes.pop())
+            self.update()
+
+    def redo(self):
+        if self._redo_stack:
+            self._shapes.append(self._redo_stack.pop())
+            self.update()
 
     def clear(self):
         self._shapes.clear()
+        self._redo_stack.clear()
         self._callout_n = self._step_n = 1
         self._selected = None
         self.update()
@@ -637,7 +876,7 @@ class Canvas(QWidget):
         r = rect.toRect()
         pix = QApplication.primaryScreen().grabWindow(
             0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
-        )
+        )   # grabWindow with explicit coords works across the virtual desktop
         overlay.setWindowOpacity(1.0)
         return pix
 
@@ -651,7 +890,8 @@ class Canvas(QWidget):
 
         p.setRenderHint(RHint.Antialiasing)
         for shape in self._shapes: shape.draw(p)
-        if self.tool == "pen" and self._pen_shape: self._pen_shape.draw(p)
+        if self.tool == "pen"    and self._pen_shape:    self._pen_shape.draw(p)
+        if self.tool == "eraser" and self._eraser_shape: self._eraser_shape.draw(p)
         if self._drawing and self.tool in DRAG_TOOLS:
             preview = self._make_drag(self._start, self._cur)
             if preview: preview.draw(p)
@@ -852,6 +1092,413 @@ class ToolSection(QWidget):
         return tid in self._btns
 
 
+# ── Help dialog ───────────────────────────────────────────────────────────────
+
+class HelpDialog(QDialog):
+    """Full feature reference — opened from the Settings dialog."""
+
+    _TOOLS = [
+        # (icon, name, shortcut, shift_tip)
+        ("↖",  "Select / Move",   "V",  "Drag to reposition any shape"),
+        ("〜", "Pen",             "P",  "Freehand drawing stroke"),
+        ("—",  "Line",            "L",  "Hold Shift → 45° snap"),
+        ("→",  "Arrow",           "A",  "Hold Shift → 45° snap"),
+        ("▭",  "Rectangle",       "R",  "Hold Shift → perfect square"),
+        ("○",  "Circle",          "O",  "Hold Shift → perfect circle"),
+        ("📏", "Ruler",           "U",  "Hold Shift → 45° snap  ·  shows pixel length"),
+        ("T",  "Text",            "T",  "Click to place  ·  size set by Text size slider"),
+        ("①",  "Callout",        "K",  "Auto-numbered filled circles"),
+        ("1▸2","Steps",           "S",  "Auto-numbered step squares"),
+        ("HL", "Highlight",       "H",  "Semi-transparent colour band"),
+        ("◻",  "Eraser",          "E",  "Freehand erase  ·  width = stroke × 4"),
+        ("⊘",  "Blur",            "Z",  "Gaussian blur over a selected region"),
+        ("PX", "Pixelate",        "X",  "Mosaic / pixel-art redaction"),
+        ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
+        ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
+    ]
+
+    _SHORTCUTS = [
+        ("Ctrl + Z",       "Undo last shape"),
+        ("Ctrl + Y",       "Redo (restore undone shape)"),
+        ("C",              "Clear all shapes"),
+        ("Esc",            "Hide overlay (stays in tray)"),
+        ("Delete",         "Remove selected shape (Select tool)"),
+        ("Ctrl + Shift + A","Toggle overlay (default hotkey — customisable in Settings)"),
+    ]
+
+    _TIPS = [
+        ("Opacity slider",   "Sets transparency for new shapes — existing ones are not affected."),
+        ("Text size slider", "Controls the font size of the Text tool."),
+        ("Shift while drawing", "Locks lines / arrows / ruler to nearest 45°.\n"
+                                "Locks rectangle / circle to perfect square / circle."),
+        ("Eraser width",     "Follows the Stroke slider × 4 so it's always usable at any scale."),
+        ("Screenshot",       "Hides the overlay, grabs the full desktop (all monitors), "
+                             "then shows Copy / Save PNG / Discard."),
+        ("Multi-monitor",    "The overlay covers all connected displays automatically."),
+        ("Start on boot",    "Writes to the Windows registry Run key.  "
+                             "The app starts hidden in the tray (--minimized flag)."),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self._build()
+        self.adjustSize()
+        if parent:
+            self.move(
+                parent.x() + (parent.width()  - self.width())  // 2,
+                parent.y() + (parent.height() - self.height()) // 2,
+            )
+
+    # ── Build ──────────────────────────────────────────────────────────────────
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(10)
+
+        # Title row
+        title_row = QHBoxLayout()
+        title = QLabel("Help & Features")
+        title.setStyleSheet("color:#e5e5e7;font-size:15px;font-weight:700;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(26, 26)
+        close_btn.setCursor(Cursor.PointingHandCursor)
+        close_btn.setStyleSheet(
+            "QPushButton{color:#636366;background:transparent;border:none;font-size:14px;}"
+            "QPushButton:hover{color:#FF453A;}"
+        )
+        close_btn.clicked.connect(self.accept)
+        title_row.addWidget(close_btn)
+        outer.addLayout(title_row)
+        outer.addWidget(self._hsep())
+
+        # Scroll area
+        from PyQt6.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setFixedHeight(460)
+        scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{background:#1c1c1e;width:6px;border-radius:3px;}"
+            "QScrollBar::handle:vertical{background:#3a3a3c;border-radius:3px;min-height:20px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+        )
+
+        content = QWidget()
+        content.setStyleSheet("background:transparent;")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(0, 0, 8, 0)
+        cl.setSpacing(0)
+
+        # ── Tools ──────────────────────────────────────────────────────────────
+        cl.addWidget(self._section("🛠  Tools"))
+        for icon, name, key, tip in self._TOOLS:
+            cl.addWidget(self._tool_row(icon, name, key, tip))
+        cl.addSpacing(10)
+
+        # ── Keyboard shortcuts ─────────────────────────────────────────────────
+        cl.addWidget(self._section("⌨️  Keyboard Shortcuts"))
+        for keys, desc in self._SHORTCUTS:
+            cl.addWidget(self._shortcut_row(keys, desc))
+        cl.addSpacing(10)
+
+        # ── Tips ───────────────────────────────────────────────────────────────
+        cl.addWidget(self._section("💡  Tips"))
+        for heading, body in self._TIPS:
+            cl.addWidget(self._tip_row(heading, body))
+
+        cl.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        outer.addWidget(self._hsep())
+
+        # Close button
+        close2 = QPushButton("Close")
+        close2.setFixedHeight(34)
+        close2.setCursor(Cursor.PointingHandCursor)
+        close2.setStyleSheet(
+            "QPushButton{color:#98989d;background:rgba(255,255,255,0.06);"
+            "border:1px solid rgba(255,255,255,0.12);border-radius:8px;font-size:13px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.10);}"
+        )
+        close2.clicked.connect(self.accept)
+        outer.addWidget(close2)
+
+        self.setFixedWidth(420)
+
+    # ── Row builders ───────────────────────────────────────────────────────────
+    def _section(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            "color:#aeaeb2;font-size:11px;font-weight:700;letter-spacing:0.5px;"
+            "padding:8px 0 4px 0;"
+        )
+        return lbl
+
+    def _tool_row(self, icon: str, name: str, key: str, tip: str) -> QWidget:
+        w  = QWidget()
+        lo = QVBoxLayout(w)
+        lo.setContentsMargins(4, 3, 4, 3)
+        lo.setSpacing(1)
+
+        top = QHBoxLayout()
+        icon_lbl = QLabel(icon)
+        icon_lbl.setFixedWidth(28)
+        icon_lbl.setStyleSheet("color:#0A84FF;font-size:13px;font-weight:600;")
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet("color:#e5e5e7;font-size:12px;")
+        key_lbl  = QLabel(key)
+        key_lbl.setStyleSheet(
+            "color:#636366;font-size:10px;background:rgba(255,255,255,0.07);"
+            "border-radius:4px;padding:1px 5px;"
+        )
+        top.addWidget(icon_lbl)
+        top.addWidget(name_lbl)
+        top.addStretch()
+        top.addWidget(key_lbl)
+        lo.addLayout(top)
+
+        tip_lbl = QLabel(tip)
+        tip_lbl.setStyleSheet("color:#48484a;font-size:10px;padding-left:28px;")
+        lo.addWidget(tip_lbl)
+        return w
+
+    def _shortcut_row(self, keys: str, desc: str) -> QWidget:
+        w  = QWidget()
+        lo = QHBoxLayout(w)
+        lo.setContentsMargins(4, 4, 4, 4)
+        keys_lbl = QLabel(keys)
+        keys_lbl.setFixedWidth(160)
+        keys_lbl.setStyleSheet(
+            "color:#e5e5e7;font-size:11px;background:rgba(255,255,255,0.07);"
+            "border-radius:4px;padding:2px 6px;font-family:monospace;"
+        )
+        desc_lbl = QLabel(desc)
+        desc_lbl.setStyleSheet("color:#636366;font-size:11px;")
+        desc_lbl.setWordWrap(True)
+        lo.addWidget(keys_lbl)
+        lo.addWidget(desc_lbl, 1)
+        return w
+
+    def _tip_row(self, heading: str, body: str) -> QWidget:
+        w  = QWidget()
+        lo = QVBoxLayout(w)
+        lo.setContentsMargins(4, 5, 4, 5)
+        lo.setSpacing(2)
+        h = QLabel(heading)
+        h.setStyleSheet("color:#aeaeb2;font-size:11px;font-weight:600;")
+        b = QLabel(body)
+        b.setStyleSheet("color:#636366;font-size:10px;")
+        b.setWordWrap(True)
+        lo.addWidget(h)
+        lo.addWidget(b)
+        return w
+
+    def _hsep(self) -> QFrame:
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.HLine)
+        f.setFixedHeight(1)
+        f.setStyleSheet("background:rgba(255,255,255,0.06);margin:0;")
+        return f
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(16, 16, 18, 252)))
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 14, 14)
+        p.drawPath(path)
+        if IS_WIN:
+            p.setPen(QPen(QColor(70, 70, 75, 220), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(
+                QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 14, 14
+            )
+        p.end()
+
+
+# ── Settings dialog ───────────────────────────────────────────────────────────
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings: SettingsManager, hotkey_mgr: HotkeyManager,
+                 parent=None):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self._settings   = settings
+        self._hotkey_mgr = hotkey_mgr
+        self._build()
+        self.adjustSize()
+        if parent:
+            self.move(
+                parent.x() + (parent.width()  - self.width())  // 2,
+                parent.y() + (parent.height() - self.height()) // 2,
+            )
+
+    # ── Build UI ───────────────────────────────────────────────────────────────
+    def _build(self):
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(24, 22, 24, 22)
+        lo.setSpacing(10)
+
+        title = QLabel("Settings")
+        title.setStyleSheet("color:#e5e5e7;font-size:16px;font-weight:700;")
+        lo.addWidget(title)
+        lo.addWidget(self._sep())
+
+        # ── Hotkey ─────────────────────────────────────────────────────────────
+        lo.addWidget(self._section_lbl("ACTIVATION SHORTCUT"))
+
+        self._hk_edit = QKeySequenceEdit(
+            QKeySequence(_pynput_to_ks(self._settings.get("hotkey")))
+        )
+        self._hk_edit.setMaximumSequenceLength(1)
+        self._hk_edit.setFixedHeight(36)
+        self._hk_edit.setStyleSheet(
+            "QKeySequenceEdit{"
+            "  background:rgba(255,255,255,0.07);color:#e5e5e7;"
+            "  border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+            "  padding:0 10px;font-size:13px;}"
+            "QKeySequenceEdit:focus{border:1px solid #0A84FF;}"
+        )
+        lo.addWidget(self._hk_edit)
+
+        hint = QLabel("Click the box and press a new key combination.")
+        hint.setStyleSheet("color:#48484a;font-size:10px;")
+        lo.addWidget(hint)
+        lo.addSpacing(6)
+
+        # ── Boot ───────────────────────────────────────────────────────────────
+        self._boot_cb = QCheckBox("Start on boot  (Windows only)")
+        self._boot_cb.setChecked(_is_startup_enabled())
+        self._boot_cb.setEnabled(IS_WIN)
+        self._boot_cb.setStyleSheet(
+            "QCheckBox{color:#aeaeb2;font-size:13px;spacing:8px;}"
+            "QCheckBox::indicator{width:18px;height:18px;border-radius:5px;"
+            "  border:1.5px solid rgba(255,255,255,0.18);"
+            "  background:rgba(255,255,255,0.05);}"
+            "QCheckBox::indicator:checked{background:#0A84FF;"
+            "  border:1.5px solid #0A84FF;}"
+            "QCheckBox:disabled{color:#48484a;}"
+        )
+        lo.addWidget(self._boot_cb)
+
+        lo.addSpacing(6)
+        lo.addWidget(self._sep())
+        lo.addSpacing(4)
+
+        # ── Developer link ─────────────────────────────────────────────────────
+        dev_row = QHBoxLayout()
+        dev_lbl = QLabel("Developer")
+        dev_lbl.setStyleSheet("color:#48484a;font-size:11px;")
+        dev_row.addWidget(dev_lbl)
+        dev_row.addStretch()
+        dev_btn = QPushButton("celikovic.xyz ↗")
+        dev_btn.setCursor(Cursor.PointingHandCursor)
+        dev_btn.setStyleSheet(
+            "QPushButton{color:#0A84FF;background:transparent;border:none;"
+            "font-size:11px;}"
+            "QPushButton:hover{color:#4DA3FF;text-decoration:underline;}"
+        )
+        dev_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://celikovic.xyz"))
+        )
+        dev_row.addWidget(dev_btn)
+        lo.addLayout(dev_row)
+
+        ver_lbl = QLabel(f"Version {VERSION}")
+        ver_lbl.setStyleSheet("color:#3a3a3c;font-size:10px;")
+        ver_lbl.setAlignment(AA.AlignRight)
+        lo.addWidget(ver_lbl)
+        lo.addSpacing(6)
+
+        # ── Buttons ────────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        help_btn = QPushButton("?  Help")
+        help_btn.setFixedHeight(34)
+        help_btn.setCursor(Cursor.PointingHandCursor)
+        help_btn.setStyleSheet(
+            "QPushButton{color:#636366;background:transparent;border:1px solid #3a3a3c;"
+            "border-radius:8px;font-size:13px;}"
+            "QPushButton:hover{color:#aeaeb2;border:1px solid #636366;}"
+        )
+        help_btn.clicked.connect(lambda: HelpDialog(self).exec())
+        btn_row.addWidget(help_btn)
+        btn_row.addStretch()
+
+        for label, slot, primary in [("Cancel", self.reject, False),
+                                     ("Save",   self._save,  True)]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(34)
+            btn.setCursor(Cursor.PointingHandCursor)
+            if primary:
+                btn.setStyleSheet(
+                    "QPushButton{color:#fff;background:#0A84FF;border:none;"
+                    "border-radius:8px;font-size:13px;font-weight:600;}"
+                    "QPushButton:hover{background:#1A94FF;}"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton{color:#98989d;background:rgba(255,255,255,0.06);"
+                    "border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+                    "font-size:13px;}"
+                    "QPushButton:hover{background:rgba(255,255,255,0.10);}"
+                )
+            btn.clicked.connect(slot)
+            btn_row.addWidget(btn)
+        lo.addLayout(btn_row)
+
+    # ── Helpers ────────────────────────────────────────────────────────────────
+    def _sep(self):
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.HLine)
+        f.setFixedHeight(1)
+        f.setStyleSheet("background:rgba(255,255,255,0.06);margin:0;")
+        return f
+
+    def _section_lbl(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            "color:#636366;font-size:10px;font-weight:600;letter-spacing:1px;"
+        )
+        return lbl
+
+    def _save(self):
+        ks = self._hk_edit.keySequence().toString()
+        if ks:
+            new_hotkey = _ks_to_pynput(ks)
+            self._settings.set("hotkey", new_hotkey)
+            self._hotkey_mgr.update(new_hotkey)
+        self._settings.set("start_on_boot", self._boot_cb.isChecked())
+        _set_startup(self._boot_cb.isChecked())
+        self._settings.save()
+        self.accept()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(16, 16, 18, 252)))
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 14, 14)
+        p.drawPath(path)
+        if IS_WIN:
+            p.setPen(QPen(QColor(70, 70, 75, 220), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(
+                QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 14, 14
+            )
+        p.end()
+
+
 # ── Toolbar (vertical floating panel) ─────────────────────────────────────────
 TOOL_GROUPS = [
     ("✏️ Draw", [
@@ -862,7 +1509,8 @@ TOOL_GROUPS = [
         ("rect",      "▭",  "Rectangle"),
         ("circle",    "○",  "Circle"),
         ("ruler",     "📏", "Ruler"),
-        ("laser",     "⊙",  "Laser  I"),        # ← laser pointer
+        ("laser",     "⊙",  "Laser  I"),
+        ("eraser",    "◻",  "Eraser  E"),
     ]),
     ("🏷 Annotate", [
         ("text",      "T",   "Text"),
@@ -878,10 +1526,13 @@ TOOL_GROUPS = [
 ]
 
 class Toolbar(QWidget):
-    def __init__(self, canvas: Canvas, overlay: QWidget):
+    def __init__(self, canvas: Canvas, overlay: QWidget,
+                 settings_mgr: SettingsManager, hotkey_mgr: HotkeyManager):
         super().__init__(overlay)
-        self.canvas  = canvas
-        self.overlay = overlay
+        self.canvas        = canvas
+        self.overlay       = overlay
+        self._settings_mgr = settings_mgr
+        self._hotkey_mgr   = hotkey_mgr
         self._drag_pos         = None
         self._active_color_btn = None
         self._tool_btns: dict[str, QPushButton] = {}
@@ -894,9 +1545,9 @@ class Toolbar(QWidget):
         lo.setSpacing(2)
 
         # ── Drag handle ───────────────────────────────────────────────────────
-        drag_lbl = QLabel("⠿  Annotation Tool")
+        drag_lbl = QLabel("· · ·  Screen Annotator Pro  · · ·")
         drag_lbl.setAlignment(AA.AlignCenter)
-        drag_lbl.setStyleSheet("color:#48484a;font-size:11px;font-weight:600;")
+        drag_lbl.setStyleSheet("color:#3a3a3c;font-size:10px;font-weight:600;letter-spacing:0.5px;")
         drag_lbl.setCursor(Cursor.SizeAllCursor)
         lo.addWidget(drag_lbl)
         lo.addWidget(self._hsep())
@@ -946,6 +1597,31 @@ class Toolbar(QWidget):
 
         lo.addWidget(swatch_w)
 
+        # ── Opacity ───────────────────────────────────────────────────────────
+        op_row = QHBoxLayout()
+        op_lbl = QLabel("Opacity")
+        op_lbl.setStyleSheet("color:#48484a;font-size:9px;font-weight:600;letter-spacing:1px;")
+        self._op_val = QLabel("100%")
+        self._op_val.setStyleSheet("color:#636366;font-size:9px;")
+        self._op_val.setAlignment(AA.AlignRight | AA.AlignVCenter)
+        op_row.addWidget(op_lbl); op_row.addStretch(); op_row.addWidget(self._op_val)
+        lo.addLayout(op_row)
+
+        op_slider = QSlider(Ori.Horizontal)
+        op_slider.setRange(10, 100); op_slider.setValue(100)
+        op_slider.setStyleSheet(
+            "QSlider::groove:horizontal{height:4px;background:#3a3a3c;border-radius:2px;}"
+            "QSlider::handle:horizontal{width:13px;height:13px;background:#e5e5e7;"
+            "border-radius:7px;margin:-5px 0;}"
+            "QSlider::sub-page:horizontal{background:#0A84FF;border-radius:2px;}"
+        )
+        op_slider.valueChanged.connect(lambda v: (
+            setattr(self.canvas, "pen_alpha", int(v * 255 / 100)),
+            self._op_val.setText(f"{v}%"),
+        ))
+        lo.addWidget(op_slider)
+        lo.addSpacing(4)
+
         custom_col = QPushButton("⊕  Custom color…")
         custom_col.setFixedHeight(28)
         custom_col.setCursor(Cursor.PointingHandCursor)
@@ -990,6 +1666,32 @@ class Toolbar(QWidget):
         ))
         lo.addWidget(slider)
 
+        lo.addSpacing(4)
+
+        # ── Text size ─────────────────────────────────────────────────────────
+        ts_row = QHBoxLayout()
+        ts_lbl = QLabel("Text size")
+        ts_lbl.setStyleSheet("color:#48484a;font-size:9px;font-weight:600;letter-spacing:1px;")
+        self._ts_val = QLabel("20")
+        self._ts_val.setStyleSheet("color:#636366;font-size:9px;")
+        self._ts_val.setAlignment(AA.AlignRight | AA.AlignVCenter)
+        ts_row.addWidget(ts_lbl); ts_row.addStretch(); ts_row.addWidget(self._ts_val)
+        lo.addLayout(ts_row)
+
+        ts_slider = QSlider(Ori.Horizontal)
+        ts_slider.setRange(8, 72); ts_slider.setValue(20)
+        ts_slider.setStyleSheet(
+            "QSlider::groove:horizontal{height:4px;background:#3a3a3c;border-radius:2px;}"
+            "QSlider::handle:horizontal{width:13px;height:13px;background:#e5e5e7;"
+            "border-radius:7px;margin:-5px 0;}"
+            "QSlider::sub-page:horizontal{background:#0A84FF;border-radius:2px;}"
+        )
+        ts_slider.valueChanged.connect(lambda v: (
+            setattr(self.canvas, "font_size", v),
+            self._ts_val.setText(str(v)),
+        ))
+        lo.addWidget(ts_slider)
+
         lo.addSpacing(6)
         lo.addWidget(self._hsep())
         lo.addSpacing(4)
@@ -1022,25 +1724,41 @@ class Toolbar(QWidget):
         pause_btn.clicked.connect(self.overlay.toggle)
         lo.addWidget(pause_btn)
 
+        lo.addSpacing(4)
+        lo.addWidget(self._hsep())
+        lo.addSpacing(4)
+
+        settings_btn = QPushButton("  ⚙   Settings")
+        settings_btn.setFixedHeight(30)
+        settings_btn.setCursor(Cursor.PointingHandCursor)
+        settings_btn.setStyleSheet(
+            "QPushButton{color:#636366;background:transparent;border-radius:8px;"
+            "font-size:12px;text-align:left;border:none;}"
+            "QPushButton:hover{color:#aeaeb2;background:rgba(255,255,255,0.05);}"
+        )
+        settings_btn.clicked.connect(self._open_settings)
+        lo.addWidget(settings_btn)
+
         for icon, label, fn, danger in [
             ("↩", "Undo",      self.canvas.undo,  False),
+            ("↪", "Redo",      self.canvas.redo,  False),
             ("🗑", "Clear all", self.canvas.clear, False),
             ("✕", "Exit",      QApplication.quit, True),
         ]:
             color = "#FF453A" if danger else "#aeaeb2"
             hover = "rgba(255,69,58,0.12)" if danger else "rgba(255,255,255,0.06)"
             btn = QPushButton(f"  {icon}  {label}")
-            btn.setFixedHeight(32)
+            btn.setFixedHeight(30)
             btn.setCursor(Cursor.PointingHandCursor)
             btn.setStyleSheet(
                 f"QPushButton{{color:{color};background:transparent;border-radius:8px;"
-                f"font-size:13px;text-align:left;border:none;}}"
+                f"font-size:12px;text-align:left;border:none;}}"
                 f"QPushButton:hover{{background:{hover};}}"
             )
             btn.clicked.connect(fn)
             lo.addWidget(btn)
 
-        self.setFixedWidth(200)
+        self.setFixedWidth(220)
         self.setAttribute(WAtt.WA_OpaquePaintEvent, False)
         self.setStyleSheet("QPushButton,QLabel,QSlider,QWidget{background:transparent;}")
         if not IS_WIN:
@@ -1057,10 +1775,16 @@ class Toolbar(QWidget):
 
     def _activate(self, tid: str):
         self.canvas.tool = tid
-        # Clear laser dot when switching away from laser tool
         if tid != "laser":
             self.canvas._laser_pos = None
             self.canvas.update()
+        # Laser → blank cursor (only the red dot shows); select → arrow; all else → crosshair
+        if tid == "laser":
+            self.canvas.setCursor(Qt.CursorShape.BlankCursor)
+        elif tid == "select":
+            self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            self.canvas.setCursor(_cross_cursor())
         for sec in self._sections:
             sec.check_tool(tid)
         sec = self._all_btns.get(tid)
@@ -1093,6 +1817,10 @@ class Toolbar(QWidget):
             if self._active_swatch: self._ring_swatch(self._active_swatch, False)
             self._active_swatch = None
             self._dot.set_size(self.canvas.pen_width, color)
+
+    def _open_settings(self):
+        dlg = SettingsDialog(self._settings_mgr, self._hotkey_mgr, self.overlay)
+        dlg.exec()
 
     def _position(self):
         self.adjustSize()
@@ -1128,7 +1856,7 @@ class Toolbar(QWidget):
 
 # ── Overlay window ─────────────────────────────────────────────────────────────
 class AnnotationOverlay(QWidget):
-    def __init__(self):
+    def __init__(self, settings_mgr: SettingsManager, hotkey_mgr: HotkeyManager):
         super().__init__(None,
                          WType.WindowStaysOnTopHint |
                          WType.FramelessWindowHint  |
@@ -1136,16 +1864,20 @@ class AnnotationOverlay(QWidget):
         self.setAttribute(WAtt.WA_TranslucentBackground)
         self.setAttribute(WAtt.WA_NoSystemBackground)
 
-        screen = QApplication.primaryScreen().geometry()
+        # virtualGeometry() = bounding rect of ALL connected monitors
+        screen = QApplication.primaryScreen().virtualGeometry()
         self.setGeometry(screen)
 
         self.canvas = Canvas(self)
         self.canvas.setGeometry(0, 0, screen.width(), screen.height())
-        self.toolbar = Toolbar(self.canvas, self)
+        self.toolbar = Toolbar(self.canvas, self, settings_mgr, hotkey_mgr)
+        self.canvas.setCursor(_cross_cursor())   # default tool is pen → crosshair
 
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        # --minimized flag: started on boot — stay hidden until user triggers
+        if "--minimized" not in sys.argv:
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -1180,6 +1912,8 @@ class AnnotationOverlay(QWidget):
             self.canvas.clear()
         elif k == Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
             self.canvas.undo()
+        elif k == Key.Key_Y and mods & Qt.KeyboardModifier.ControlModifier:
+            self.canvas.redo()
         elif k == Key.Key_Delete and self.canvas._selected:
             self.canvas._shapes.remove(self.canvas._selected)
             self.canvas._selected = None
@@ -1188,54 +1922,35 @@ class AnnotationOverlay(QWidget):
             self.toolbar._activate(KEY_TOOL[k])
 
 
-# ── Global hotkey (Ctrl+Shift+A) ───────────────────────────────────────────────
-def _start_hotkey(overlay: AnnotationOverlay):
-    import os
-    on_wayland = (
-        os.environ.get("WAYLAND_DISPLAY") or
-        os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
-    )
-    if on_wayland:
-        print("Warning: Wayland detected - global hotkey (Ctrl+Shift+A) not available.")
-        print("   Use the tray icon or run with QT_QPA_PLATFORM=xcb for X11 mode.")
-        return
-
-    try:
-        from pynput import keyboard as kb
-    except ImportError:
-        print("Tip: pip install pynput  to enable Ctrl+Shift+A toggle hotkey")
-        return
-
+# ── Global hotkey bootstrap ────────────────────────────────────────────────────
+def _start_hotkey(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
+                  hotkey: str):
     from PyQt6.QtCore import QMetaObject, Qt as _Qt
-
     def on_activate():
         QMetaObject.invokeMethod(overlay, "toggle",
                                  _Qt.ConnectionType.QueuedConnection)
-
-    try:
-        listener = kb.GlobalHotKeys({"<ctrl>+<shift>+a": on_activate})
-        listener.daemon = True
-        listener.start()
-        print("Hotkey active: Ctrl+Shift+A to show/hide")
-    except Exception as ex:
-        print(f"Warning: Could not register hotkey: {ex}")
+    hotkey_mgr.start(hotkey, on_activate)
 
 
 # ── System tray ────────────────────────────────────────────────────────────────
 def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
-    from PyQt6.QtGui import QPixmap, QIcon, QColor
-    pix = QPixmap(16, 16)
-    pix.fill(QColor(0, 0, 0, 0))
-    from PyQt6.QtGui import QPainter as _P
-    p = _P(pix)
-    p.setRenderHint(_P.RenderHint.Antialiasing)
-    p.setBrush(QColor("#0A84FF"))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(1, 1, 14, 14)
-    p.end()
+    ico_path = _resource(os.path.join('icons', 'tray.ico'))
+    if os.path.exists(ico_path):
+        tray_icon = QIcon(ico_path)
+    else:
+        # fallback: small blue dot (icons not generated yet)
+        pix = QPixmap(16, 16)
+        pix.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor("#0A84FF"))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(1, 1, 14, 14)
+        p.end()
+        tray_icon = QIcon(pix)
 
-    tray = QSystemTrayIcon(QIcon(pix))
-    tray.setToolTip("Annotation Tool  —  click to show/hide")
+    tray = QSystemTrayIcon(tray_icon)
+    tray.setToolTip("Screen Annotator Pro — click to show/hide")
 
     menu = QMenu()
     menu.setStyleSheet(
@@ -1266,21 +1981,24 @@ def main():
         )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Screen Annotator")
+    app.setApplicationName("Screen Annotator Pro")
     app.setQuitOnLastWindowClosed(False)
-    overlay = AnnotationOverlay()
-    tray = _setup_tray(overlay)
-    _start_hotkey(overlay)
+
+    settings_mgr = SettingsManager()
+    hotkey_mgr   = HotkeyManager()
+    overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
+    tray         = _setup_tray(overlay)
+    _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"))
 
     plat = f"Windows {platform.release()}" if IS_WIN else platform.system()
     print("-" * 55)
-    print(f"  Screen Annotation Tool  --  PyQt6  [{plat}]")
+    print(f"  Screen Annotator Pro  --  PyQt6  [{plat}]")
     print("-" * 55)
-    print("  Toggle     : Ctrl+Shift+A  (show / hide)")
+    print(f"  Toggle     : {settings_mgr.get('hotkey')}  (show / hide)")
     print("  Tools      : toolbar buttons or key shortcuts")
     print("  Laser      : I key  (no marks left on canvas)")
     print("  Undo       : Ctrl+Z  |  Clear: C")
-    print("  Hide       : Esc")
+    print("  Hide       : Esc  |  Settings: toolbar button")
     print("  Exit       : X button in toolbar")
     print("-" * 55)
     sys.exit(app.exec())

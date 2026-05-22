@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  MSIX package manifest for Annotate.
+  MSIX package manifest for Screen Annotator Pro.
 
-  IMPORTANT — Publisher value:
-    • Development / sideloading: keep "CN=Annotate" and use the self-signed cert
-      generated in the GitHub Actions workflow.
-    • Microsoft Store submission: replace Publisher with the exact value shown
-      in your Partner Center dashboard under App identity, then sign with your
-      real code-signing certificate (store it as a GitHub secret).
+  Store identity (Casultra / Partner Center):
+    Package Name : Casultra.ScreenAnnotatorPro
+    Publisher    : CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C
+    Store ID     : 9NS87MQB29C7
+    PFN          : Casultra.ScreenAnnotatorPro_38f0gytd267x6
+
+  For Microsoft Store submission upload the UNSIGNED .msix —
+  Partner Center re-signs it automatically with the Casultra cert.
+  The self-signed cert in the CI workflow is only for local sideload testing.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -16,14 +19,14 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="Annotate.ScreenAnnotationTool"
-    Publisher="CN=Annotate"
+    Name="Casultra.ScreenAnnotatorPro"
+    Publisher="CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C"
     Version="1.0.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Annotate</DisplayName>
-    <PublisherDisplayName>Anel Celik</PublisherDisplayName>
+    <DisplayName>Screen Annotator Pro</DisplayName>
+    <PublisherDisplayName>Casultra</PublisherDisplayName>
     <Logo>Assets\StoreLogo.scale-100.png</Logo>
   </Properties>
 
@@ -41,11 +44,11 @@
 
   <Applications>
     <Application
-      Id="Annotate"
-      Executable="Annotate.exe"
+      Id="ScreenAnnotatorPro"
+      Executable="ScreenAnnotatorPro.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Annotate"
+        DisplayName="Screen Annotator Pro"
         Description="Draw on your screen like a whiteboard. Annotate anything in real time."
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.scale-100.png"
@@ -54,7 +57,7 @@
           Wide310x150Logo="Assets\Wide310x150Logo.scale-100.png"
           Square310x310Logo="Assets\Square310x310Logo.scale-100.png"
           Square71x71Logo="Assets\Square71x71Logo.scale-100.png"
-          ShortName="Annotate" />
+          ShortName="Annotator Pro" />
         <uap:SplashScreen Image="Assets\SplashScreen.scale-100.png" />
       </uap:VisualElements>
     </Application>
