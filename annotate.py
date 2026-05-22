@@ -88,7 +88,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -185,7 +185,7 @@ def _set_startup(enable: bool):
                 pass
         winreg.CloseKey(key)
     except Exception as e:
-        print(f"Warning: startup registry error: {e}")
+        pass  # registry write failed — non-fatal
 
 def _is_startup_enabled() -> bool:
     if not IS_WIN:
@@ -226,18 +226,14 @@ class HotkeyManager:
         on_wayland = (os.environ.get("WAYLAND_DISPLAY") or
                       os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
         if on_wayland:
-            print("Warning: Wayland — global hotkey not available.")
             return
         try:
             from pynput import keyboard as kb
             self._listener = kb.GlobalHotKeys({self._hotkey: self._cb})
             self._listener.daemon = True
             self._listener.start()
-            print(f"Hotkey active: {self._hotkey}")
-        except ImportError:
-            print("Tip: pip install pynput  to enable the global hotkey")
-        except Exception as e:
-            print(f"Warning: hotkey error: {e}")
+        except (ImportError, Exception):
+            pass
 
 # ── Qt enum aliases ────────────────────────────────────────────────────────────
 WType  = Qt.WindowType
@@ -709,7 +705,6 @@ class Canvas(QWidget):
         self._laser_pos: QPointF | None = None
 
     def mousePressEvent(self, e):
-        print(f"[PRESS] btn={e.button()} tool={self.tool} pos={e.pos()} overlay_active={self.window().isActiveWindow()}")
         if e.button() != MB.LeftButton: return
         pos = QPointF(e.pos())
         self._start = self._cur = pos
@@ -742,10 +737,6 @@ class Canvas(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = QPointF(e.pos())
-        if not hasattr(self, '_move_count'): self._move_count = 0
-        self._move_count += 1
-        if self._move_count % 20 == 1:
-            print(f"[MOVE]  tool={self.tool} drawing={self._drawing} pos={e.pos()}")
 
         # Laser tracks freely — no button held needed
         if self.tool == "laser":
@@ -772,7 +763,6 @@ class Canvas(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, e):
-        print(f"[RELEASE] btn={e.button()} tool={self.tool} drawing={self._drawing}")
         if e.button() != MB.LeftButton or not self._drawing: return
         self._drawing = False
         pos = QPointF(e.pos()); self._cur = pos
@@ -1810,7 +1800,6 @@ class Toolbar(QWidget):
             sec.check_tool(tid)
         sec = self._all_btns.get(tid)
         if sec: sec.expand()
-        print(f"[TOOL]  switched to '{tid}'")
 
     def _set_swatch(self, hex_c: str, btn: QPushButton):
         self.canvas.pen_color = hex_c
@@ -1958,9 +1947,6 @@ class AnnotationOverlay(QWidget):
 
     def changeEvent(self, e):
         super().changeEvent(e)
-        from PyQt6.QtCore import QEvent
-        if e.type() == QEvent.Type.ActivationChange:
-            print(f"[OVERLAY] ActivationChange → isActiveWindow={self.isActiveWindow()}")
 
     def keyPressEvent(self, e):
         k = e.key()
@@ -2050,17 +2036,6 @@ def main():
     tray         = _setup_tray(overlay)
     _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"))
 
-    plat = f"Windows {platform.release()}" if IS_WIN else platform.system()
-    print("-" * 55)
-    print(f"  Screen Annotator Pro  --  PyQt6  [{plat}]")
-    print("-" * 55)
-    print(f"  Toggle     : {settings_mgr.get('hotkey')}  (show / hide)")
-    print("  Tools      : toolbar buttons or key shortcuts")
-    print("  Laser      : I key  (no marks left on canvas)")
-    print("  Undo       : Ctrl+Z  |  Clear: C")
-    print("  Hide       : Esc  |  Settings: toolbar button")
-    print("  Exit       : X button in toolbar")
-    print("-" * 55)
     sys.exit(app.exec())
 
 
