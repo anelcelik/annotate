@@ -2,22 +2,54 @@
 # PyInstaller spec for Screen Annotator Pro — single-file Windows executable.
 # Build: pyinstaller annotate.spec
 
+# ── Collect EasyOCR + deep-translator data/binaries/imports ──────────────────
+# collect_all() handles every file the package ships so nothing is missed.
+# Wrapped in try/except so local builds without these packages still work.
+try:
+    from PyInstaller.utils.hooks import collect_all
+    _easyocr_d, _easyocr_b, _easyocr_h  = collect_all('easyocr')
+    _dt_d,      _dt_b,      _dt_h        = collect_all('deep_translator')
+    _torch_d,   _torch_b,   _torch_h     = collect_all('torch')
+    _tv_d,      _tv_b,      _tv_h        = collect_all('torchvision')
+except Exception:
+    _easyocr_d = _easyocr_b = _easyocr_h = []
+    _dt_d      = _dt_b      = _dt_h      = []
+    _torch_d   = _torch_b   = _torch_h   = []
+    _tv_d      = _tv_b      = _tv_h      = []
+
 a = Analysis(
     ['annotate.py'],
     pathex=[],
-    binaries=[],
-    datas=[('icons/tray.ico', 'icons')],
+    binaries=_easyocr_b + _dt_b + _torch_b + _tv_b,
+    datas=[
+        ('icons/tray.ico', 'icons'),
+        ('installer/app.manifest', '.'),
+    ] + _easyocr_d + _dt_d + _torch_d + _tv_d,
     hiddenimports=[
         'PyQt6.sip',
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
-    ],
+        # EasyOCR
+        'easyocr', 'easyocr.detection', 'easyocr.recognition',
+        'easyocr.utils', 'easyocr.config', 'easyocr.model',
+        'easyocr.model.vgg_model', 'easyocr.model.modules',
+        'easyocr.model.ConvNextViT_model',
+        # deep-translator
+        'deep_translator', 'deep_translator.google',
+        'deep_translator.exceptions', 'deep_translator.base',
+        # Torch (CPU-only build)
+        'torch', 'torch.nn', 'torch.nn.functional',
+        'torch.utils', 'torch.utils.data',
+        'torchvision', 'torchvision.transforms',
+        # Numeric / image
+        'numpy', 'scipy', 'scipy.ndimage', 'skimage',
+        'PIL', 'PIL.Image',
+    ] + _easyocr_h + _dt_h + _torch_h + _tv_h,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # ── Exclude every Python-level Qt6 module we don't use ───────────────────
     excludes=[
-        # Unused Qt6 sub-modules
+        # Qt modules we don't use
         'PyQt6.QtNetwork',        'PyQt6.QtSql',
         'PyQt6.QtTest',           'PyQt6.QtXml',
         'PyQt6.QtBluetooth',      'PyQt6.QtDBus',
@@ -32,8 +64,10 @@ a = Analysis(
         'PyQt6.Qt3DCore',         'PyQt6.Qt3DRender',
         'PyQt6.Qt3DAnimation',    'PyQt6.Qt3DExtras',
         'PyQt6.Qt3DInput',        'PyQt6.Qt3DLogic',
-        # Safe stdlib excludes — NOT urllib/http/html/pathlib: pathlib
-        # imports urllib.parse internally and PyInstaller hooks need it too.
+        # Torch CUDA — we install CPU-only, exclude CUDA stubs so they
+        # don't get bundled even if discovered
+        'torch.cuda', 'torch.backends.cudnn',
+        # Safe stdlib excludes
         'tkinter', '_tkinter',
         'unittest', 'doctest', 'pydoc', 'difflib',
         'email', 'xmlrpc', 'ftplib', 'smtplib',
@@ -42,9 +76,7 @@ a = Analysis(
     noarchive=False,
 )
 
-# ── Strip unused Qt6 native DLLs that survived the Python-level excludes ─────
-# PyInstaller's hook may still pull in the compiled Qt6 binaries even when
-# the Python bindings are excluded.  Filter them out here directly.
+# ── Strip unused Qt6 native DLLs ─────────────────────────────────────────────
 _QT_DROP = {
     'Qt6Network',     'Qt6Sql',           'Qt6Test',
     'Qt6Xml',         'Qt6Bluetooth',     'Qt6DBus',
@@ -57,7 +89,6 @@ _QT_DROP = {
     'Qt6WebEngineCore','Qt6WebEngineWidgets',
     'Qt63DCore',      'Qt63DRender',      'Qt63DAnimation',
     'Qt63DExtras',    'Qt63DInput',       'Qt63DLogic',
-    # Unused Qt plugins
     'qsqlite',        'qsqlodbc',         'qsqlpsql',
     'qtvirtualkeyboard',
 }
@@ -78,11 +109,12 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,           # requires UPX on PATH — installed in CI via choco
+    upx=True,
     upx_exclude=[
-        # Never compress these — UPX breaks them or slows them down
         'vcruntime*.dll', 'msvcp*.dll', 'python*.dll',
         'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+        # Never UPX-compress torch/numpy native libs — breaks them
+        'torch_*.dll', '_C.pyd', 'numpy*.pyd',
     ],
     runtime_tmpdir=None,
     console=False,
@@ -92,7 +124,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['icons/annotate.ico'],
-    # Embed our Per-Monitor V2 DPI manifest so Windows never virtualises DPI
-    # for this process.  Without this the MS Store WACK tool rejects the app.
     manifest='installer/app.manifest',
 )

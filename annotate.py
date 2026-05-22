@@ -1546,9 +1546,26 @@ _TRANSLATE_LANGS = {
 
 _ocr_reader = None   # lazy-loaded EasyOCR Reader (cached after first use)
 
+def _ocr_model_dir() -> str:
+    """Store OCR models in the app data folder, not in the user's home dir."""
+    if IS_WIN:
+        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    path = os.path.join(base, "ScreenAnnotatorPro", "ocr_models")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def _ocr_models_present() -> bool:
+    """Return True if the EasyOCR detection + English recognition models exist."""
+    d = _ocr_model_dir()
+    return (os.path.exists(os.path.join(d, "craft_mlt_25k.pth")) and
+            os.path.exists(os.path.join(d, "english_g2.pth")))
+
 
 class OcrThread(QThread):
     """Runs EasyOCR in a background thread so the UI stays responsive."""
+    status   = pyqtSignal(str)   # progress updates for the dialog label
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
@@ -1559,7 +1576,8 @@ class OcrThread(QThread):
     def run(self):
         global _ocr_reader
         try:
-            import io, numpy as np
+            import io
+            import numpy as np
             from PIL import Image
             from PyQt6.QtCore import QByteArray, QBuffer, QIODeviceBase
 
@@ -1573,18 +1591,24 @@ class OcrThread(QThread):
 
             if _ocr_reader is None:
                 import easyocr
-                _ocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+                if not _ocr_models_present():
+                    self.status.emit(
+                        "Downloading OCR model (~150 MB) — first use only…"
+                    )
+                else:
+                    self.status.emit("Loading OCR engine…")
+                _ocr_reader = easyocr.Reader(
+                    ["en"],
+                    gpu=False,
+                    verbose=False,
+                    model_storage_directory=_ocr_model_dir(),
+                )
 
+            self.status.emit("Reading text…")
             results = _ocr_reader.readtext(np.array(img))
             text    = "\n".join(r[1] for r in results).strip()
             self.finished.emit(text or "(no text detected)")
 
-        except ImportError as exc:
-            missing = "easyocr" if "easyocr" in str(exc) else "Pillow / numpy"
-            self.error.emit(
-                f"Missing dependency: {missing}\n\n"
-                "Install with:\n  pip install easyocr"
-            )
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -1732,7 +1756,12 @@ class OcrResultDialog(QDialog):
 
     # ── OCR ────────────────────────────────────────────────────────────────────
     def _start_ocr(self):
+        if not _ocr_models_present():
+            self._status.setText(
+                "First use: downloading OCR model (~150 MB)…  Please wait."
+            )
         self._ocr_thread = OcrThread(self._pixmap)
+        self._ocr_thread.status.connect(self._status.setText)
         self._ocr_thread.finished.connect(self._on_ocr_done)
         self._ocr_thread.error.connect(self._on_ocr_error)
         self._ocr_thread.start()
