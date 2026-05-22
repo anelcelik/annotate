@@ -93,4 +93,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['icons/annotate.ico'],
+    # Embed our Per-Monitor V2 DPI manifest so Windows never virtualises DPI
+    # for this process.  Without this the MS Store WACK tool rejects the app.
+    manifest='installer/app.manifest',
 )

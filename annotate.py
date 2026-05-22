@@ -46,31 +46,44 @@ def _resource(rel: str) -> str:
 _CROSS_CURSOR: QCursor | None = None
 
 def _cross_cursor() -> QCursor:
-    """White crosshair with dark outline — visible on any background."""
+    """White crosshair with dark outline, HiDPI-aware — crisp at any scale."""
     global _CROSS_CURSOR
     if _CROSS_CURSOR is not None:
         return _CROSS_CURSOR
-    sz, half, gap = 33, 16, 5
-    pix = QPixmap(sz, sz)
+
+    app   = QApplication.instance()
+    ratio = app.devicePixelRatio() if app else 1.0
+
+    # Logical size of the cursor in device-independent pixels
+    sz_l, half_l, gap_l = 33, 16, 5
+
+    # Create the pixmap at physical resolution, then declare the logical size
+    # via setDevicePixelRatio so Qt renders it crisply at every DPI.
+    pix = QPixmap(int(sz_l * ratio), int(sz_l * ratio))
+    pix.setDevicePixelRatio(ratio)
     pix.fill(QColor(0, 0, 0, 0))
+
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
     arms = [
-        (0, half, half - gap, half),
-        (half + gap, half, sz, half),
-        (half, 0, half, half - gap),
-        (half, half + gap, half, sz),
+        (0,            half_l, half_l - gap_l, half_l),
+        (half_l + gap_l, half_l, sz_l,         half_l),
+        (half_l, 0,            half_l, half_l - gap_l),
+        (half_l, half_l + gap_l, half_l, sz_l),
     ]
-    p.setPen(QPen(QColor(0, 0, 0, 160), 3.0,
-                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
-    for x1, y1, x2, y2 in arms:
-        p.drawLine(x1, y1, x2, y2)
-    p.setPen(QPen(QColor(255, 255, 255, 240), 1.5,
-                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
-    for x1, y1, x2, y2 in arms:
-        p.drawLine(x1, y1, x2, y2)
+    # Dark shadow stroke then white foreground
+    for color, width in [
+        (QColor(0, 0, 0, 160),   3.0),
+        (QColor(255, 255, 255, 240), 1.5),
+    ]:
+        p.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+        for x1, y1, x2, y2 in arms:
+            p.drawLine(x1, y1, x2, y2)
     p.end()
-    _CROSS_CURSOR = QCursor(pix, half, half)
+
+    # Hotspot in logical pixels (centre of the cursor)
+    _CROSS_CURSOR = QCursor(pix, half_l, half_l)
     return _CROSS_CURSOR
 
 
@@ -839,8 +852,16 @@ class Canvas(QWidget):
             0, sr.x(), sr.y(), sr.width(), sr.height()
         )
         overlay.setWindowOpacity(1.0)
+
         p = QPainter(bg)
         p.setRenderHint(RHint.Antialiasing)
+        # grabWindow returns a pixmap at physical resolution (DPR ≥ 1).
+        # Our shapes are stored in logical pixels (canvas coordinates).
+        # Scaling the painter by DPR maps logical → physical so annotations
+        # align perfectly with the screenshot at 125 %, 150 %, 200 %, 400 % etc.
+        ratio = bg.devicePixelRatio()
+        if ratio != 1.0:
+            p.scale(ratio, ratio)
         for shape in self._shapes:
             shape.draw(p)
         p.end()
@@ -1864,20 +1885,58 @@ class AnnotationOverlay(QWidget):
         self.setAttribute(WAtt.WA_TranslucentBackground)
         self.setAttribute(WAtt.WA_NoSystemBackground)
 
-        # virtualGeometry() = bounding rect of ALL connected monitors
-        screen = QApplication.primaryScreen().virtualGeometry()
-        self.setGeometry(screen)
-
-        self.canvas = Canvas(self)
-        self.canvas.setGeometry(0, 0, screen.width(), screen.height())
+        self.canvas  = Canvas(self)
         self.toolbar = Toolbar(self.canvas, self, settings_mgr, hotkey_mgr)
-        self.canvas.setCursor(_cross_cursor())   # default tool is pen → crosshair
+        self.canvas.setCursor(_cross_cursor())
 
-        # --minimized flag: started on boot — stay hidden until user triggers
+        # Cover all monitors and react to any display configuration change
+        self._fit_to_screens()
+        _app = QApplication.instance()
+        _app.primaryScreenChanged.connect(self._on_screen_change)
+        _app.screenAdded.connect(self._on_screen_change)
+        _app.screenRemoved.connect(self._on_screen_change)
+        for _s in _app.screens():
+            _s.geometryChanged.connect(self._on_screen_change)
+            _s.logicalDotsPerInchChanged.connect(self._on_dpi_change)
+
         if "--minimized" not in sys.argv:
             self.show()
             self.raise_()
             self.activateWindow()
+
+    # ── Display configuration helpers ──────────────────────────────────────────
+    def _fit_to_screens(self):
+        """Resize the overlay to cover every connected monitor."""
+        from PyQt6.QtCore import QRect
+        rect = QRect()
+        for scr in QApplication.screens():
+            rect = rect.united(scr.geometry())
+        if rect.isEmpty():
+            rect = QApplication.primaryScreen().virtualGeometry()
+        self.setGeometry(rect)
+        self.canvas.setGeometry(0, 0, rect.width(), rect.height())
+
+    def _on_screen_change(self, *_):
+        """Monitor added / removed or geometry changed — refit overlay."""
+        # Reconnect DPI signal for any newly added screen
+        for scr in QApplication.screens():
+            try:
+                scr.geometryChanged.disconnect(self._on_screen_change)
+                scr.logicalDotsPerInchChanged.disconnect(self._on_dpi_change)
+            except RuntimeError:
+                pass
+            scr.geometryChanged.connect(self._on_screen_change)
+            scr.logicalDotsPerInchChanged.connect(self._on_dpi_change)
+        self._fit_to_screens()
+
+    def _on_dpi_change(self, *_):
+        """DPI changed at runtime (user changed Windows display scale).
+        Invalidate the cursor so it's rebuilt at the new pixel density."""
+        global _CROSS_CURSOR
+        _CROSS_CURSOR = None
+        self._fit_to_screens()
+        if self.canvas.tool not in {"laser", "select"}:
+            self.canvas.setCursor(_cross_cursor())
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -1975,10 +2034,11 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
-    if IS_WIN:
-        QApplication.setHighDpiScaleFactorRoundingPolicy(
-            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
+    # PassThrough: accept fractional scale factors (125 %, 150 %, etc.) on
+    # every platform — not just Windows.  Must be called before QApplication().
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
 
     app = QApplication(sys.argv)
     app.setApplicationName("Screen Annotator Pro")
