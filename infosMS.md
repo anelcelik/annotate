@@ -34,71 +34,26 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## Product Features
 
-### ✏️ Drawing Tools
-- **Pen** — smooth freehand strokes in any colour and thickness
-- **Line** — straight lines with optional 45° snap (hold Shift)
-- **Arrow** — annotate with direction, snaps to 45° with Shift
-- **Rectangle** — outline any area; hold Shift for a perfect square
-- **Circle / Ellipse** — circle anything; hold Shift for a perfect circle
-- **Ruler** — draw a line and see its exact pixel length on screen
-- **Eraser** — paint over any mark to remove it cleanly
-
-### 🏷️ Annotation Tools
-- **Text** — place labels anywhere; size controlled by the Text size slider
-- **Callout** — auto-numbered filled circles (①, ②, ③…) for step-by-step walkthroughs
-- **Steps** — numbered step squares for tutorials and guides
-- **Highlight** — semi-transparent colour band to emphasise text or UI elements
-
-### 🔒 Privacy & Redaction
-- **Blur** — apply a real Gaussian blur over any region to hide sensitive content
-- **Pixelate** — mosaic-style redaction
-- **Black Box** — solid opaque rectangle for complete coverage
-
-### ⚡ Quick Actions
-- **Laser Pointer** — move a glowing red dot across the screen with no marks left behind; the OS cursor is hidden so only the dot is visible
-- **Screenshot** — capture the full desktop with your annotations composited on top; copy to clipboard or save as PNG
-- **Undo / Redo** — full history with Ctrl+Z and Ctrl+Y
-- **Clear all** — wipe the canvas instantly
-
-### 🎨 Colour & Style
-- 16-colour quick-access swatch palette
-- Custom colour picker for any colour
-- Opacity slider — draw with transparent strokes for softer highlights
-- Stroke size slider (1–30 px)
-- Text size slider (8–72 pt)
-
-### ⚙️ Settings & System Integration
-- **Custom hotkey** — change the global toggle shortcut to anything you like
-- **Start on boot** — app launches silently to the system tray on Windows startup
-- **System tray** — always accessible; click to show/hide the overlay
-- **Multi-monitor** — the overlay automatically covers all connected displays and adjusts if you plug in or unplug a monitor at any time
-- **HiDPI / 4K / 8K** — certified Per-Monitor V2 DPI aware; pixel-perfect at 100%, 125%, 150%, 200%, 400%, and every fractional scale in between
-
-### ⌨️ Keyboard Shortcuts
-Every tool has a keyboard shortcut so you never have to reach for the mouse during a presentation.
-
-| Key | Tool |
-|---|---|
-| V | Select / Move |
-| P | Pen |
-| L | Line |
-| A | Arrow |
-| R | Rectangle |
-| O | Circle |
-| U | Ruler |
-| T | Text |
-| K | Callout |
-| S | Steps |
-| H | Highlight |
-| E | Eraser |
-| Z | Blur |
-| X | Pixelate |
-| D | Black Box |
-| I | Laser Pointer |
-| Ctrl+Z | Undo |
-| Ctrl+Y | Redo |
-| C | Clear all |
-| Esc | Hide overlay |
+- **Pen** — Draw smooth freehand strokes over anything on your screen.
+- **Line & Arrow** — Place straight lines and arrows that snap to 45° with Shift held.
+- **Rectangle & Circle** — Outline any area; hold Shift for a perfect square or circle.
+- **Ruler** — Draw a measured line and see its exact pixel length.
+- **Text** — Drop a label anywhere on screen with adjustable font size.
+- **Callout** — Auto-numbered circles (①②③) for step-by-step walkthroughs.
+- **Steps** — Numbered step squares to guide viewers through a sequence.
+- **Highlight** — Paint a semi-transparent band over any text or UI element.
+- **Eraser** — Freehand-erase any mark without clearing the whole canvas.
+- **Blur** — Apply a real Gaussian blur to hide sensitive content on screen.
+- **Pixelate** — Mosaic-style redaction for a pixel-art privacy effect.
+- **Black Box** — Solid opaque rectangle for complete, permanent coverage.
+- **Laser Pointer** — Move a glowing red dot with the OS cursor hidden — no marks left behind.
+- **Screenshot** — Capture the full desktop with annotations baked in; copy or save as PNG.
+- **Undo & Redo** — Full history so every mistake is recoverable.
+- **Opacity control** — Soften any colour from fully opaque down to 10% transparency.
+- **Custom hotkey** — Change the global toggle shortcut to any key combination you prefer.
+- **Start on boot** — Launches silently to the system tray when Windows starts.
+- **Multi-monitor** — The overlay spans every connected display and adjusts automatically.
+- **HiDPI / 4K / 8K ready** — Pixel-perfect at 100%, 125%, 150%, 200%, 400%, and every scale in between.
 
 ---
 
