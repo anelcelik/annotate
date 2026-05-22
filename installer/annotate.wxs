@@ -73,6 +73,7 @@
                     Description="Draw on your screen like a whiteboard"
                     Directory="ApplicationProgramsFolder"
                     WorkingDirectory="INSTALLFOLDER"
+                    Target="[#MainExe]"
                     Advertise="no" />
         </Component>
 
