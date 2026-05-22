@@ -34,26 +34,7 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## Product Features
 
-- **Pen** — Draw smooth freehand strokes over anything on your screen.
-- **Line & Arrow** — Place straight lines and arrows that snap to 45° with Shift held.
-- **Rectangle & Circle** — Outline any area; hold Shift for a perfect square or circle.
-- **Ruler** — Draw a measured line and see its exact pixel length.
-- **Text** — Drop a label anywhere on screen with adjustable font size.
-- **Callout** — Auto-numbered circles (①②③) for step-by-step walkthroughs.
-- **Steps** — Numbered step squares to guide viewers through a sequence.
-- **Highlight** — Paint a semi-transparent band over any text or UI element.
-- **Eraser** — Freehand-erase any mark without clearing the whole canvas.
-- **Blur** — Apply a real Gaussian blur to hide sensitive content on screen.
-- **Pixelate** — Mosaic-style redaction for a pixel-art privacy effect.
-- **Black Box** — Solid opaque rectangle for complete, permanent coverage.
-- **Laser Pointer** — Move a glowing red dot with the OS cursor hidden — no marks left behind.
-- **Screenshot** — Capture the full desktop with annotations baked in; copy or save as PNG.
-- **Undo & Redo** — Full history so every mistake is recoverable.
-- **Opacity control** — Soften any colour from fully opaque down to 10% transparency.
-- **Custom hotkey** — Change the global toggle shortcut to any key combination you prefer.
-- **Start on boot** — Launches silently to the system tray when Windows starts.
-- **Multi-monitor** — The overlay spans every connected display and adjusts automatically.
-- **HiDPI / 4K / 8K ready** — Pixel-perfect at 100%, 125%, 150%, 200%, 400%, and every scale in between.
+Draw, highlight, blur, annotate, and laser-point anything on your screen in real time — with full undo, multi-monitor support, and 4K / 8K HiDPI scaling built in.
 
 ---
 
