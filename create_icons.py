@@ -382,7 +382,12 @@ def main():
         draw_tray(256).save(str(tray_ico), "ICO")
         print(f"  ✓  tray.ico  (256 px fallback — {e})\n")
 
-    total = sum(len(s) for _, _, _, s in ASSETS) + 1
+    # Store listing tile icon — 300×300 (uploaded separately in Partner Center)
+    store_tile = OUT / "StoreListingIcon_300x300.png"
+    draw_square(300).save(str(store_tile), "PNG")
+    print(f"  ✓  StoreListingIcon_300x300.png  (Store listing / Partner Center upload)\n")
+
+    total = sum(len(s) for _, _, _, s in ASSETS) + 2
     print(f"Done — {total} files → {OUT}/")
 
 
