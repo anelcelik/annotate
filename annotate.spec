@@ -32,13 +32,12 @@ a = Analysis(
         'PyQt6.Qt3DCore',         'PyQt6.Qt3DRender',
         'PyQt6.Qt3DAnimation',    'PyQt6.Qt3DExtras',
         'PyQt6.Qt3DInput',        'PyQt6.Qt3DLogic',
-        # Unused stdlib
+        # Safe stdlib excludes — NOT urllib/http/html/pathlib: pathlib
+        # imports urllib.parse internally and PyInstaller hooks need it too.
         'tkinter', '_tkinter',
         'unittest', 'doctest', 'pydoc', 'difflib',
-        'email', 'html', 'http', 'urllib', 'xmlrpc',
-        'xml', 'calendar', 'ftplib', 'smtplib',
-        'curses', 'lib2to3', 'distutils', 'test',
-        'sqlite3', 'asyncio', 'concurrent',
+        'email', 'xmlrpc', 'ftplib', 'smtplib',
+        'calendar', 'curses', 'lib2to3', 'distutils', 'test',
     ],
     noarchive=False,
 )
