@@ -27,9 +27,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
     QGraphicsBlurEffect, QGraphicsScene, QGraphicsPixmapItem,
     QInputDialog, QFrame, QSystemTrayIcon, QMenu, QFileDialog,
-    QDialog, QCheckBox, QKeySequenceEdit,
+    QDialog, QCheckBox, QKeySequenceEdit, QTextEdit, QComboBox, QScrollArea,
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, QUrl, pyqtSlot
+from PyQt6.QtCore import Qt, QPointF, QRectF, QUrl, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
     QPolygonF, QPainterPath, QFontMetrics, QPixmap, QCursor, QIcon,
@@ -290,7 +290,7 @@ KEY_TOOL = {
     Key.Key_S: "steps",  Key.Key_H: "highlight",
     Key.Key_Z: "blur",   Key.Key_X: "pixel",
     Key.Key_D: "redact", Key.Key_I: "laser",
-    Key.Key_E: "eraser",
+    Key.Key_E: "eraser", Key.Key_J: "ocr",
 }
 
 DRAG_TOOLS  = {"line","arrow","rect","circle","ruler","highlight","blur","pixel","redact"}
@@ -759,7 +759,7 @@ class Canvas(QWidget):
             self._eraser_shape.pts.append(pos)
             self.update(); return
 
-        if self.tool in DRAG_TOOLS:
+        if self.tool in DRAG_TOOLS or self.tool == "ocr":
             self.update()
 
     def mouseReleaseEvent(self, e):
@@ -780,6 +780,14 @@ class Canvas(QWidget):
             if len(self._eraser_shape.pts) > 1:
                 self._commit(self._eraser_shape)
             self._eraser_shape = None
+            self.update(); return
+
+        if self.tool == "ocr":
+            rect = _norm(self._start, pos)
+            if rect.width() > 10 and rect.height() > 10:
+                pixmap = self._grab_behind(rect)
+                dlg = OcrResultDialog(pixmap, self.window())
+                dlg.exec()
             self.update(); return
 
         if self.tool in DRAG_TOOLS:
@@ -903,6 +911,12 @@ class Canvas(QWidget):
         for shape in self._shapes: shape.draw(p)
         if self.tool == "pen"    and self._pen_shape:    self._pen_shape.draw(p)
         if self.tool == "eraser" and self._eraser_shape: self._eraser_shape.draw(p)
+        if self.tool == "ocr" and self._drawing:
+            # Dashed blue selection rectangle while user drags the snip area
+            p.setRenderHint(RHint.Antialiasing)
+            p.setPen(QPen(QColor("#0A84FF"), 2, PS.DashLine))
+            p.setBrush(QBrush(QColor(10, 132, 255, 18)))
+            p.drawRect(_norm(self._start, self._cur))
         if self._drawing and self.tool in DRAG_TOOLS:
             preview = self._make_drag(self._start, self._cur)
             if preview: preview.draw(p)
@@ -1511,6 +1525,276 @@ class SettingsDialog(QDialog):
 
 
 # ── Toolbar (vertical floating panel) ─────────────────────────────────────────
+# ── OCR + Translation ─────────────────────────────────────────────────────────
+
+# Language name → deep-translator / Google Translate language code
+_TRANSLATE_LANGS = {
+    "English": "en", "Bosnian": "bs", "German": "de", "French": "fr",
+    "Spanish": "es", "Italian": "it", "Portuguese": "pt", "Dutch": "nl",
+    "Polish": "pl", "Russian": "ru", "Ukrainian": "uk", "Arabic": "ar",
+    "Chinese (Simplified)": "zh-CN", "Chinese (Traditional)": "zh-TW",
+    "Japanese": "ja", "Korean": "ko", "Turkish": "tr", "Swedish": "sv",
+    "Norwegian": "no", "Danish": "da", "Finnish": "fi", "Czech": "cs",
+    "Romanian": "ro", "Hungarian": "hu", "Greek": "el", "Hebrew": "iw",
+    "Hindi": "hi", "Thai": "th", "Vietnamese": "vi", "Indonesian": "id",
+    "Malay": "ms", "Croatian": "hr", "Slovak": "sk", "Bulgarian": "bg",
+    "Serbian": "sr", "Albanian": "sq", "Lithuanian": "lt", "Latvian": "lv",
+    "Estonian": "et", "Slovenian": "sl", "Catalan": "ca", "Swahili": "sw",
+    "Afrikaans": "af", "Tagalog": "tl", "Georgian": "ka", "Armenian": "hy",
+    "Azerbaijani": "az", "Kazakh": "kk", "Uzbek": "uz", "Mongolian": "mn",
+}
+
+_ocr_reader = None   # lazy-loaded EasyOCR Reader (cached after first use)
+
+
+class OcrThread(QThread):
+    """Runs EasyOCR in a background thread so the UI stays responsive."""
+    finished = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, pixmap: QPixmap):
+        super().__init__()
+        self._pixmap = pixmap
+
+    def run(self):
+        global _ocr_reader
+        try:
+            import io, numpy as np
+            from PIL import Image
+            from PyQt6.QtCore import QByteArray, QBuffer, QIODeviceBase
+
+            # QPixmap → PIL Image
+            ba  = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QIODeviceBase.OpenModeFlag.WriteOnly)
+            self._pixmap.save(buf, "PNG")
+            buf.close()
+            img = Image.open(io.BytesIO(bytes(ba))).convert("RGB")
+
+            if _ocr_reader is None:
+                import easyocr
+                _ocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+
+            results = _ocr_reader.readtext(np.array(img))
+            text    = "\n".join(r[1] for r in results).strip()
+            self.finished.emit(text or "(no text detected)")
+
+        except ImportError as exc:
+            missing = "easyocr" if "easyocr" in str(exc) else "Pillow / numpy"
+            self.error.emit(
+                f"Missing dependency: {missing}\n\n"
+                "Install with:\n  pip install easyocr"
+            )
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class TranslateThread(QThread):
+    """Calls Google Translate via deep-translator in a background thread."""
+    finished = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, text: str, lang_code: str):
+        super().__init__()
+        self._text = text
+        self._lang = lang_code
+
+    def run(self):
+        try:
+            from deep_translator import GoogleTranslator
+            result = GoogleTranslator(source="auto", target=self._lang).translate(self._text)
+            self.finished.emit(result or "(empty result)")
+        except ImportError:
+            self.error.emit(
+                "Missing dependency: deep-translator\n\n"
+                "Install with:\n  pip install deep-translator"
+            )
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class OcrResultDialog(QDialog):
+    """Popup showing OCR text + optional translation with copy buttons."""
+
+    def __init__(self, pixmap: QPixmap, parent=None):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self._pixmap      = pixmap
+        self._ocr_thread  = None
+        self._trans_thread = None
+        self._build()
+        self.adjustSize()
+        if parent:
+            self.move(
+                parent.x() + (parent.width()  - self.width())  // 2,
+                parent.y() + (parent.height() - self.height()) // 2,
+            )
+        self._start_ocr()
+
+    # ── Build UI ───────────────────────────────────────────────────────────────
+    def _build(self):
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(20, 18, 20, 18)
+        lo.setSpacing(10)
+
+        # Title row
+        tr = QHBoxLayout()
+        title = QLabel("🔍  OCR & Translate")
+        title.setStyleSheet("color:#e5e5e7;font-size:14px;font-weight:700;")
+        tr.addWidget(title); tr.addStretch()
+        x_btn = QPushButton("✕")
+        x_btn.setFixedSize(26, 26)
+        x_btn.setCursor(Cursor.PointingHandCursor)
+        x_btn.setStyleSheet(
+            "QPushButton{color:#636366;background:transparent;border:none;font-size:13px;}"
+            "QPushButton:hover{color:#FF453A;}"
+        )
+        x_btn.clicked.connect(self.reject)
+        tr.addWidget(x_btn)
+        lo.addLayout(tr)
+        lo.addWidget(self._sep())
+
+        # Status
+        self._status = QLabel("Reading text…")
+        self._status.setStyleSheet("color:#636366;font-size:10px;")
+        lo.addWidget(self._status)
+
+        # OCR text box
+        self._ocr_box = QTextEdit()
+        self._ocr_box.setReadOnly(True)
+        self._ocr_box.setFixedHeight(110)
+        self._ocr_box.setPlaceholderText("Recognized text will appear here…")
+        self._ocr_box.setStyleSheet(self._box_style())
+        lo.addWidget(self._ocr_box)
+
+        # Copy text button
+        copy_ocr = QPushButton("📋  Copy text")
+        copy_ocr.setFixedHeight(30)
+        copy_ocr.setCursor(Cursor.PointingHandCursor)
+        copy_ocr.setStyleSheet(self._ghost_btn())
+        copy_ocr.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._ocr_box.toPlainText())
+        )
+        lo.addWidget(copy_ocr)
+
+        lo.addWidget(self._sep())
+
+        # Translate row
+        lang_row = QHBoxLayout()
+        lang_lbl = QLabel("Translate to")
+        lang_lbl.setStyleSheet("color:#98989d;font-size:12px;")
+        self._lang_box = QComboBox()
+        self._lang_box.addItems(list(_TRANSLATE_LANGS.keys()))
+        self._lang_box.setCurrentText("English")
+        self._lang_box.setFixedHeight(30)
+        self._lang_box.setStyleSheet(
+            "QComboBox{background:rgba(255,255,255,0.07);color:#e5e5e7;"
+            "border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+            "padding:0 8px;font-size:12px;}"
+            "QComboBox::drop-down{border:none;}"
+            "QComboBox QAbstractItemView{background:#1c1c1e;color:#e5e5e7;"
+            "selection-background-color:#0A84FF;border:1px solid #3a3a3c;}"
+        )
+        go_btn = QPushButton("Translate →")
+        go_btn.setFixedHeight(30)
+        go_btn.setCursor(Cursor.PointingHandCursor)
+        go_btn.setStyleSheet(
+            "QPushButton{color:#fff;background:#0A84FF;border:none;"
+            "border-radius:8px;font-size:12px;font-weight:600;padding:0 12px;}"
+            "QPushButton:hover{background:#1A94FF;}"
+        )
+        go_btn.clicked.connect(self._start_translate)
+        lang_row.addWidget(lang_lbl)
+        lang_row.addWidget(self._lang_box, 1)
+        lang_row.addWidget(go_btn)
+        lo.addLayout(lang_row)
+
+        # Translation text box
+        self._trans_box = QTextEdit()
+        self._trans_box.setReadOnly(True)
+        self._trans_box.setFixedHeight(110)
+        self._trans_box.setPlaceholderText("Translation will appear here…")
+        self._trans_box.setStyleSheet(self._box_style())
+        lo.addWidget(self._trans_box)
+
+        # Copy translation button
+        copy_tr = QPushButton("📋  Copy translation")
+        copy_tr.setFixedHeight(30)
+        copy_tr.setCursor(Cursor.PointingHandCursor)
+        copy_tr.setStyleSheet(self._ghost_btn())
+        copy_tr.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._trans_box.toPlainText())
+        )
+        lo.addWidget(copy_tr)
+
+        self.setFixedWidth(480)
+
+    # ── OCR ────────────────────────────────────────────────────────────────────
+    def _start_ocr(self):
+        self._ocr_thread = OcrThread(self._pixmap)
+        self._ocr_thread.finished.connect(self._on_ocr_done)
+        self._ocr_thread.error.connect(self._on_ocr_error)
+        self._ocr_thread.start()
+
+    def _on_ocr_done(self, text: str):
+        self._ocr_box.setPlainText(text)
+        self._status.setText("✓  Text recognized")
+
+    def _on_ocr_error(self, msg: str):
+        self._ocr_box.setPlainText(msg)
+        self._status.setText("⚠  Could not read text")
+
+    # ── Translation ────────────────────────────────────────────────────────────
+    def _start_translate(self):
+        text = self._ocr_box.toPlainText().strip()
+        if not text:
+            return
+        lang = _TRANSLATE_LANGS.get(self._lang_box.currentText(), "en")
+        self._trans_box.setPlainText("Translating…")
+        self._trans_thread = TranslateThread(text, lang)
+        self._trans_thread.finished.connect(self._trans_box.setPlainText)
+        self._trans_thread.error.connect(self._trans_box.setPlainText)
+        self._trans_thread.start()
+
+    # ── Style helpers ──────────────────────────────────────────────────────────
+    def _box_style(self) -> str:
+        return (
+            "QTextEdit{background:rgba(255,255,255,0.06);color:#e5e5e7;"
+            "border:1px solid rgba(255,255,255,0.10);border-radius:8px;"
+            "padding:6px;font-size:12px;}"
+        )
+
+    def _ghost_btn(self) -> str:
+        return (
+            "QPushButton{color:#98989d;background:rgba(255,255,255,0.06);"
+            "border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+            "font-size:12px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.10);color:#e5e5e7;}"
+        )
+
+    def _sep(self) -> QFrame:
+        f = QFrame(); f.setFrameShape(QFrame.Shape.HLine); f.setFixedHeight(1)
+        f.setStyleSheet("background:rgba(255,255,255,0.06);margin:0;")
+        return f
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(16, 16, 18, 252)))
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 14, 14)
+        p.drawPath(path)
+        if IS_WIN:
+            p.setPen(QPen(QColor(70, 70, 75, 220), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(
+                QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 14, 14
+            )
+        p.end()
+
+
 TOOL_GROUPS = [
     ("✏️ Draw", [
         ("select",    "↖",  "Select / Move"),
@@ -1533,6 +1817,9 @@ TOOL_GROUPS = [
         ("blur",   "⊘",  "Blur"),
         ("pixel",  "PX", "Pixelate"),
         ("redact", "▪",  "Black Box"),
+    ]),
+    ("🔍 OCR", [
+        ("ocr", "🔍", "Snip & Read  J"),
     ]),
 ]
 
@@ -1794,6 +2081,8 @@ class Toolbar(QWidget):
             self.canvas.setCursor(Qt.CursorShape.BlankCursor)
         elif tid == "select":
             self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+        elif tid == "ocr":
+            self.canvas.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.canvas.setCursor(_cross_cursor())
         for sec in self._sections:
