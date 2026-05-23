@@ -45,14 +45,30 @@ jobs:
           dotnet tool install --global wix --version 4.0.5
           wix extension add --global WixToolset.UI.wixext/4.0.5
 
-      - name: Harvest _internal folder into WiX fragment
-        run: >
-          wix harvest dir dist\ScreenAnnotatorPro\_internal
-          -o installer\AppFiles.wxs
-          -cg AppFiles
-          -dr InternalFolder
-          -srd
-          -var var.SourceDir
+      - name: Generate AppFiles.wxs from _internal folder
+        shell: pwsh
+        run: |
+          $sourceDir = Resolve-Path "dist\ScreenAnnotatorPro\_internal"
+          $lines = @(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">',
+            '  <Fragment>',
+            '    <ComponentGroup Id="AppFiles" Directory="InternalFolder">'
+          )
+          Get-ChildItem -Path $sourceDir -Recurse -File | ForEach-Object {
+            $rel    = $_.FullName.Substring($sourceDir.Path.Length + 1)
+            $subdir = Split-Path $rel -Parent
+            $src    = "`$(var.SourceDir)\$rel"
+            $attrs  = if ($subdir) { "Guid=""*"" Subdirectory=""$subdir""" } else { 'Guid="*"' }
+            $lines += "      <Component $attrs>"
+            $lines += "        <File Source=""$src"" />"
+            $lines += "      </Component>"
+          }
+          $lines += '    </ComponentGroup>'
+          $lines += '  </Fragment>'
+          $lines += '</Wix>'
+          $lines -join "`r`n" | Set-Content installer\AppFiles.wxs -Encoding UTF8
+          Write-Host "Generated installer\AppFiles.wxs with $(($lines | Select-String '<Component').Count) components"
 
       - name: Build MSI
         run: >
