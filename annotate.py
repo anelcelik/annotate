@@ -88,7 +88,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "2.2.6"
+VERSION = "2.2.7"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -97,6 +97,7 @@ IS_MAC = platform.system() == "Darwin"
 # ── Settings ───────────────────────────────────────────────────────────────────
 _DEFAULT_SETTINGS: dict = {
     "hotkey":        "<ctrl>+<shift>+a",
+    "ocr_hotkey":   "<ctrl>+t",
     "start_on_boot": False,
 }
 
@@ -205,17 +206,26 @@ def _is_startup_enabled() -> bool:
 
 class HotkeyManager:
     def __init__(self):
-        self._listener = None
-        self._cb       = None
-        self._hotkey   = ""
+        self._listener   = None
+        self._cb         = None
+        self._hotkey     = ""
+        self._ocr_cb     = None
+        self._ocr_hotkey = ""
 
     def start(self, pynput_str: str, callback):
-        self._cb     = callback
-        self._hotkey = pynput_str
+        self._cb = callback; self._hotkey = pynput_str
         self._restart()
 
     def update(self, pynput_str: str):
         self._hotkey = pynput_str
+        self._restart()
+
+    def start_ocr(self, pynput_str: str, callback):
+        self._ocr_cb = callback; self._ocr_hotkey = pynput_str
+        self._restart()
+
+    def update_ocr(self, pynput_str: str):
+        self._ocr_hotkey = pynput_str
         self._restart()
 
     def _restart(self):
@@ -227,9 +237,14 @@ class HotkeyManager:
                       os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
         if on_wayland:
             return
+        mapping = {}
+        if self._hotkey     and self._cb:     mapping[self._hotkey]     = self._cb
+        if self._ocr_hotkey and self._ocr_cb: mapping[self._ocr_hotkey] = self._ocr_cb
+        if not mapping:
+            return
         try:
             from pynput import keyboard as kb
-            self._listener = kb.GlobalHotKeys({self._hotkey: self._cb})
+            self._listener = kb.GlobalHotKeys(mapping)
             self._listener.daemon = True
             self._listener.start()
         except (ImportError, Exception):
@@ -1405,6 +1420,24 @@ class SettingsDialog(QDialog):
         lo.addWidget(hint)
         lo.addSpacing(6)
 
+        # ── OCR shortcut ───────────────────────────────────────────────────────
+        lo.addWidget(self._section_lbl("OCR SHORTCUT  (Snip & Read)"))
+
+        self._ocr_hk_edit = QKeySequenceEdit(
+            QKeySequence(_pynput_to_ks(self._settings.get("ocr_hotkey")))
+        )
+        self._ocr_hk_edit.setMaximumSequenceLength(1)
+        self._ocr_hk_edit.setFixedHeight(36)
+        self._ocr_hk_edit.setStyleSheet(
+            "QKeySequenceEdit{"
+            "  background:rgba(255,255,255,0.07);color:#e5e5e7;"
+            "  border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+            "  padding:0 10px;font-size:13px;}"
+            "QKeySequenceEdit:focus{border:1px solid #0A84FF;}"
+        )
+        lo.addWidget(self._ocr_hk_edit)
+        lo.addSpacing(6)
+
         # ── Boot ───────────────────────────────────────────────────────────────
         self._boot_cb = QCheckBox("Start on boot  (Windows only)")
         self._boot_cb.setChecked(_is_startup_enabled())
@@ -1508,6 +1541,11 @@ class SettingsDialog(QDialog):
             new_hotkey = _ks_to_pynput(ks)
             self._settings.set("hotkey", new_hotkey)
             self._hotkey_mgr.update(new_hotkey)
+        ocr_ks = self._ocr_hk_edit.keySequence().toString()
+        if ocr_ks:
+            new_ocr = _ks_to_pynput(ocr_ks)
+            self._settings.set("ocr_hotkey", new_ocr)
+            self._hotkey_mgr.update_ocr(new_ocr)
         self._settings.set("start_on_boot", self._boot_cb.isChecked())
         _set_startup(self._boot_cb.isChecked())
         self._settings.save()
@@ -1648,13 +1686,25 @@ class OcrResultDialog(QDialog):
 
     def __init__(self, pixmap: QPixmap, parent=None):
         super().__init__(parent,
-                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
-        self.setAttribute(WAtt.WA_TranslucentBackground)
-        self._pixmap      = pixmap
-        self._ocr_thread  = None
+                         WType.Window |
+                         WType.WindowStaysOnTopHint |
+                         WType.WindowCloseButtonHint |
+                         WType.WindowMinimizeButtonHint |
+                         WType.WindowMaximizeButtonHint)
+        self.setWindowTitle("OCR & Translate — Screen Annotator Pro")
+        self.setStyleSheet(
+            "QDialog{background:#101012;}"
+            "QLabel{color:#e5e5e7;}"
+            "QTextEdit{background:#1c1c1e;color:#e5e5e7;"
+            " border:1px solid #3a3a3c;border-radius:8px;padding:6px;font-size:12px;}"
+            "QScrollBar:vertical{background:#1c1c1e;width:6px;}"
+            "QScrollBar::handle:vertical{background:#3a3a3c;border-radius:3px;}"
+        )
+        self._pixmap       = pixmap
+        self._ocr_thread   = None
         self._trans_thread = None
         self._build()
-        self.adjustSize()
+        self.resize(520, 480)
         if parent:
             self.move(
                 parent.x() + (parent.width()  - self.width())  // 2,
@@ -1668,35 +1718,18 @@ class OcrResultDialog(QDialog):
         lo.setContentsMargins(20, 18, 20, 18)
         lo.setSpacing(10)
 
-        # Title row
-        tr = QHBoxLayout()
-        title = QLabel("🔍  OCR & Translate")
-        title.setStyleSheet("color:#e5e5e7;font-size:14px;font-weight:700;")
-        tr.addWidget(title); tr.addStretch()
-        x_btn = QPushButton("✕")
-        x_btn.setFixedSize(26, 26)
-        x_btn.setCursor(Cursor.PointingHandCursor)
-        x_btn.setStyleSheet(
-            "QPushButton{color:#636366;background:transparent;border:none;font-size:13px;}"
-            "QPushButton:hover{color:#FF453A;}"
-        )
-        x_btn.clicked.connect(self.reject)
-        tr.addWidget(x_btn)
-        lo.addLayout(tr)
-        lo.addWidget(self._sep())
-
         # Status
         self._status = QLabel("Reading text…")
         self._status.setStyleSheet("color:#636366;font-size:10px;")
         lo.addWidget(self._status)
 
-        # OCR text box
+        # OCR text box — grows with window
         self._ocr_box = QTextEdit()
         self._ocr_box.setReadOnly(True)
-        self._ocr_box.setFixedHeight(110)
+        self._ocr_box.setMinimumHeight(80)
         self._ocr_box.setPlaceholderText("Recognized text will appear here…")
         self._ocr_box.setStyleSheet(self._box_style())
-        lo.addWidget(self._ocr_box)
+        lo.addWidget(self._ocr_box, 1)
 
         # Copy text button
         copy_ocr = QPushButton("📋  Copy text")
@@ -1740,13 +1773,13 @@ class OcrResultDialog(QDialog):
         lang_row.addWidget(go_btn)
         lo.addLayout(lang_row)
 
-        # Translation text box
+        # Translation text box — grows with window
         self._trans_box = QTextEdit()
         self._trans_box.setReadOnly(True)
-        self._trans_box.setFixedHeight(110)
+        self._trans_box.setMinimumHeight(80)
         self._trans_box.setPlaceholderText("Translation will appear here…")
         self._trans_box.setStyleSheet(self._box_style())
-        lo.addWidget(self._trans_box)
+        lo.addWidget(self._trans_box, 1)
 
         # Copy translation button
         copy_tr = QPushButton("📋  Copy translation")
@@ -1757,8 +1790,6 @@ class OcrResultDialog(QDialog):
             lambda: self._copy_and_flash(copy_tr, self._trans_box.toPlainText())
         )
         lo.addWidget(copy_tr)
-
-        self.setFixedWidth(480)
 
     def _copy_and_flash(self, btn: QPushButton, text: str):
         QApplication.clipboard().setText(text)
@@ -1820,22 +1851,6 @@ class OcrResultDialog(QDialog):
         f.setStyleSheet("background:rgba(255,255,255,0.06);margin:0;")
         return f
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor(16, 16, 18, 252)))
-        path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), 14, 14)
-        p.drawPath(path)
-        if IS_WIN:
-            p.setPen(QPen(QColor(70, 70, 75, 220), 1))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(
-                QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 14, 14
-            )
-        p.end()
-
 
 TOOL_GROUPS = [
     ("✏️ Draw", [
@@ -1861,7 +1876,7 @@ TOOL_GROUPS = [
         ("redact", "▪",  "Black Box"),
     ]),
     ("🔍 OCR", [
-        ("ocr", "🔍", "Snip & Read  J"),
+        ("ocr", "🔍", "Snip & Read"),
     ]),
 ]
 
@@ -2296,6 +2311,12 @@ class AnnotationOverlay(QWidget):
         p.end()
 
     @pyqtSlot()
+    def activate_ocr(self):
+        if not self.isVisible():
+            self.show(); self.raise_()
+        self.toolbar._activate("ocr")
+
+    @pyqtSlot()
     def toggle(self):
         if self.isVisible():
             self.hide()
@@ -2394,6 +2415,12 @@ def main():
     overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
     tray         = _setup_tray(overlay)
     _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"))
+
+    from PyQt6.QtCore import QMetaObject, Qt as _Qt
+    def _on_ocr():
+        QMetaObject.invokeMethod(overlay, "activate_ocr",
+                                 _Qt.ConnectionType.QueuedConnection)
+    hotkey_mgr.start_ocr(settings_mgr.get("ocr_hotkey"), _on_ocr)
 
     sys.exit(app.exec())
 
