@@ -71,7 +71,7 @@ a = Analysis(
         'tkinter', '_tkinter',
         'unittest', 'doctest', 'pydoc', 'difflib',
         'xmlrpc', 'ftplib', 'smtplib',
-        'calendar', 'curses', 'lib2to3', 'test',
+        'curses', 'lib2to3', 'test',
     ],
     noarchive=False,
 )

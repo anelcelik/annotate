@@ -1,14 +1,17 @@
 # Screen Annotator Pro
 
-A fullscreen transparent overlay that lets you draw, highlight, and annotate anything on your screen in real time — without interrupting what's behind it.
+A fullscreen transparent overlay that lets you draw, highlight, annotate, redact, and OCR anything on your screen in real time — without interrupting what's behind it.
 
 Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
+
+**Current version: 2.2.2**
 
 ---
 
 ## Features
 
 ### Drawing Tools
+
 | Tool | Key | Description |
 |---|---|---|
 | Select / Move | `V` | Click and drag any existing shape |
@@ -21,6 +24,7 @@ Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
 | Eraser | `E` | Freehand erase (width = stroke × 4) |
 
 ### Annotation Tools
+
 | Tool | Key | Description |
 |---|---|---|
 | Text | `T` | Place a text label (size controlled by the Text size slider) |
@@ -29,6 +33,7 @@ Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
 | Highlight | `H` | Semi-transparent colour band |
 
 ### Redact Tools
+
 | Tool | Key | Description |
 |---|---|---|
 | Blur | `Z` | Gaussian blur over a selected region |
@@ -36,9 +41,27 @@ Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
 | Black Box | `D` | Solid opaque black redaction |
 
 ### Other Tools
+
 | Tool | Key | Description |
 |---|---|---|
 | Laser Pointer | `I` | Real-time glowing dot — no marks left, OS cursor hidden |
+| OCR & Translate | `J` | Drag a region to extract text and translate it |
+
+---
+
+## OCR & Translation
+
+Press `J` (or select the OCR tool from the toolbar) and drag a rectangle over any text on screen. A popup shows:
+
+- **Recognized text** — extracted via [EasyOCR](https://github.com/JaidedAI/EasyOCR) (runs fully offline)
+- **Translate to** — pick any of 50+ languages and hit **Go** to translate via Google Translate
+- **📋 Copy** buttons for both the OCR result and the translation
+
+> **First use:** The EasyOCR model (~150 MB) is downloaded automatically and cached in `%APPDATA%\ScreenAnnotatorPro\ocr_models` (Windows) or `~/.config/ScreenAnnotatorPro/ocr_models` (Linux/macOS). Subsequent uses load instantly.
+
+### Supported translation languages (50+)
+
+English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Russian, Ukrainian, Arabic, Chinese (Simplified), Chinese (Traditional), Japanese, Korean, Turkish, Swedish, Norwegian, Danish, Finnish, Czech, Romanian, Hungarian, Greek, Hebrew, Hindi, Thai, Vietnamese, Indonesian, Malay, Croatian, Slovak, Bulgarian, Serbian, Albanian, Lithuanian, Latvian, Estonian, Slovenian, Catalan, Swahili, Afrikaans, Tagalog, Georgian, Armenian, Azerbaijani, Kazakh, Uzbek, Mongolian.
 
 ---
 
@@ -46,13 +69,13 @@ Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
 
 | Shortcut | Action |
 |---|---|
+| `Ctrl + Shift + A` | Toggle overlay on / off (customisable in Settings) |
 | `Ctrl + Z` | Undo last shape |
 | `Ctrl + Y` | Redo (restore undone shape) |
 | `C` | Clear all shapes |
 | `Esc` | Hide overlay (app stays in tray) |
 | `Delete` | Remove selected shape (Select tool) |
-| `Ctrl + Shift + A` | Toggle overlay — customisable in Settings |
-| **Hold Shift** | 45° snap for lines / perfect square for rect |
+| **Hold Shift** | 45° snap for lines / perfect square / perfect circle |
 
 ---
 
@@ -123,7 +146,9 @@ pip install -r requirements.txt
 |---|---|
 | `PyQt6 >= 6.4` | UI framework and transparent overlay |
 | `Pillow >= 9.0` | Multi-size ICO generation |
-| `pynput >= 1.7` | Global hotkey (optional — app still works without it) |
+| `pynput >= 1.7` | Global hotkey listener |
+| `easyocr >= 1.7` | Offline OCR engine (model downloaded on first use) |
+| `deep-translator >= 1.11` | Google Translate integration |
 
 ### Run
 ```bash
@@ -142,18 +167,19 @@ Outputs 35 Microsoft Store–compliant PNG assets + `annotate.ico` + `tray.ico` 
 
 The GitHub Actions workflow (`.github/workflows/build.yml`) builds everything automatically on every push to `main` and on version tags.
 
-### Trigger a release manually
+### Trigger a release
 ```bash
-git tag v1.0.2
-git push origin v1.0.2
+git tag v2.2.2
+git push origin v2.2.2
 ```
 
 This runs the full pipeline:
 1. Generates all icons (`create_icons.py`)
-2. Builds `ScreenAnnotatorPro.exe` via PyInstaller (single file, icon embedded)
-3. Builds `ScreenAnnotatorPro-Setup.msi` via WiX 4 (license UI, Start Menu + Desktop shortcuts)
-4. Packs `ScreenAnnotatorPro.msix` via `makeappx`, signs with a dev cert
-5. Creates a GitHub Release with both files attached
+2. Builds `ScreenAnnotatorPro.exe` via PyInstaller (onedir, icon embedded)
+3. Harvests `_internal/` via PowerShell into `installer/AppFiles.wxs`
+4. Builds `ScreenAnnotatorPro-Setup.msi` via WiX 4 (license UI, Start Menu + Desktop shortcuts)
+5. Packs `ScreenAnnotatorPro.msix` via `makeappx`, signs with a dev cert
+6. Creates a GitHub Release with both files attached
 
 ### Local build (Windows)
 ```powershell
@@ -161,10 +187,16 @@ pip install pyinstaller
 python create_icons.py
 pyinstaller annotate.spec
 
+# Harvest _internal folder into WiX component group
+powershell -File installer/harvest.ps1
+
 # MSI (requires WiX 4)
 dotnet tool install --global wix --version 4.0.5
 wix extension add --global WixToolset.UI.wixext/4.0.5
-wix build installer/annotate.wxs -ext WixToolset.UI.wixext -arch x64 -o dist/ScreenAnnotatorPro-Setup.msi
+wix build installer/annotate.wxs installer/AppFiles.wxs `
+    -ext WixToolset.UI.wixext -arch x64 `
+    -o dist/ScreenAnnotatorPro-Setup.msi `
+    -d SourceDir=dist\ScreenAnnotatorPro\_internal
 ```
 
 ---
@@ -187,9 +219,9 @@ Upload the **unsigned** `ScreenAnnotatorPro.msix` to Partner Center — Microsof
 ## Project Structure
 
 ```
-annotate.py              Main application (overlay, tools, settings, UI)
+annotate.py              Main application (overlay, tools, OCR, settings, UI)
 create_icons.py          Generates all Microsoft Store icon assets
-annotate.spec            PyInstaller build spec (single-file exe)
+annotate.spec            PyInstaller build spec (onedir)
 requirements.txt         Python dependencies
 annotate.desktop         Linux desktop entry
 installer/
@@ -203,13 +235,17 @@ installer/
 
 ---
 
-## Windows Notes
+## Platform Notes
 
+### Windows
 - Requires Windows 10/11 with **Desktop Window Manager (DWM)** enabled for transparent compositing
 - High-DPI monitors are handled automatically (`PassThrough` scale rounding)
-- On Windows, the toolbar shadow is replaced with a painted border to avoid a WS_EX_LAYERED dirty-rect bug
 - Global hotkey requires `pynput` (`pip install pynput`)
+- The toolbar shadow is replaced with a painted border to avoid a `WS_EX_LAYERED` dirty-rect bug
+
+### Linux / macOS
 - On Wayland (Linux), the global hotkey is unavailable — use the tray icon instead
+- OCR and all drawing tools work cross-platform
 
 ---
 
