@@ -88,7 +88,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "2.2.5"
+VERSION = "2.2.6"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -943,6 +943,12 @@ class Canvas(QWidget):
             p.drawEllipse(QPointF(lx, ly), 5, 5)
 
         p.end()
+
+
+# ── Slider that doesn't steal scroll-wheel from parent scroll area ────────────
+class _Slider(QSlider):
+    def wheelEvent(self, e):
+        e.ignore()
 
 
 # ── Dot preview ───────────────────────────────────────────────────────────────
@@ -1963,7 +1969,7 @@ class Toolbar(QWidget):
         op_row.addWidget(op_lbl); op_row.addStretch(); op_row.addWidget(self._op_val)
         lo.addLayout(op_row)
 
-        op_slider = QSlider(Ori.Horizontal)
+        op_slider = _Slider(Ori.Horizontal)
         op_slider.setRange(10, 100); op_slider.setValue(100)
         op_slider.setStyleSheet(
             "QSlider::groove:horizontal{height:4px;background:#3a3a3c;border-radius:2px;}"
@@ -2007,7 +2013,7 @@ class Toolbar(QWidget):
         self._dot = DotPreview()
         lo.addWidget(self._dot)
 
-        slider = QSlider(Ori.Horizontal)
+        slider = _Slider(Ori.Horizontal)
         slider.setRange(1, 30); slider.setValue(4)
         slider.setStyleSheet(
             "QSlider::groove:horizontal{height:4px;background:#3a3a3c;border-radius:2px;}"
@@ -2034,7 +2040,7 @@ class Toolbar(QWidget):
         ts_row.addWidget(ts_lbl); ts_row.addStretch(); ts_row.addWidget(self._ts_val)
         lo.addLayout(ts_row)
 
-        ts_slider = QSlider(Ori.Horizontal)
+        ts_slider = _Slider(Ori.Horizontal)
         ts_slider.setRange(8, 72); ts_slider.setValue(20)
         ts_slider.setStyleSheet(
             "QSlider::groove:horizontal{height:4px;background:#3a3a3c;border-radius:2px;}"
