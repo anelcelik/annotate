@@ -1,10 +1,18 @@
 # Screen Annotator Pro
 
-A fullscreen transparent overlay that lets you draw, highlight, annotate, redact, and OCR anything on your screen in real time — without interrupting what's behind it.
+> Draw, highlight, annotate, redact, and OCR anything on your screen — live, in real time, without interrupting what's behind it.
 
-Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
+A fullscreen transparent overlay built with **Python + PyQt6**. The overlay sits on top of all windows; you draw on it like a whiteboard, then hide it or clear it when you're done. Everything runs locally — no cloud, no account.
 
-**Current version: 2.2.2**
+Available on the **Microsoft Store** · **Current version: 2.2.7**
+
+---
+
+## How it works
+
+Screen Annotator Pro creates a transparent, click-through window that covers your entire screen (or all monitors). When you activate it, the overlay intercepts mouse input so you can draw shapes, write text, and apply redactions directly on top of whatever application is underneath. When you hide or pause the overlay, the underlying apps regain full mouse control instantly — no restart, no alt-tab, no disruption.
+
+The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shift+A` by default) so you can flip it on and off in under a second during a presentation, meeting, or tutorial recording.
 
 ---
 
@@ -22,6 +30,7 @@ Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
 | Circle | `O` | Outline ellipse · **Shift** → perfect circle |
 | Ruler | `U` | Line with pixel measurement label · **Shift** → 45° snap |
 | Eraser | `E` | Freehand erase (width = stroke × 4) |
+| Laser Pointer | `I` | Real-time glowing dot — no marks left, OS cursor hidden |
 
 ### Annotation Tools
 
@@ -40,26 +49,25 @@ Built with Python and PyQt6. Available on the **Microsoft Store** (Casultra).
 | Pixelate | `X` | Mosaic / pixel-art redaction |
 | Black Box | `D` | Solid opaque black redaction |
 
-### Other Tools
+### OCR & Translate
 
 | Tool | Key | Description |
 |---|---|---|
-| Laser Pointer | `I` | Real-time glowing dot — no marks left, OS cursor hidden |
-| OCR & Translate | `J` | Drag a region to extract text and translate it |
+| Snip & Read | `J` | Drag a region → extract text + translate |
 
 ---
 
 ## OCR & Translation
 
-Press `J` (or select the OCR tool from the toolbar) and drag a rectangle over any text on screen. A popup shows:
+Press `J` (or `Ctrl+T` by default, configurable in Settings) to activate Snip & Read, then drag a rectangle over any text on screen. A resizable popup appears with:
 
-- **Recognized text** — extracted via [EasyOCR](https://github.com/JaidedAI/EasyOCR) (runs fully offline)
-- **Translate to** — pick any of 50+ languages and hit **Go** to translate via Google Translate
-- **📋 Copy** buttons for both the OCR result and the translation
+- **Recognized text** — extracted via [EasyOCR](https://github.com/JaidedAI/EasyOCR), runs fully offline with no API key
+- **Translate to** — pick any of 50+ languages and press **Go** to translate via Google Translate
+- **Copy** buttons for both the OCR result and the translation
 
-> **First use:** The EasyOCR model (~150 MB) is downloaded automatically and cached in `%APPDATA%\ScreenAnnotatorPro\ocr_models` (Windows) or `~/.config/ScreenAnnotatorPro/ocr_models` (Linux/macOS). Subsequent uses load instantly.
+> **First use:** The EasyOCR model (~150 MB) is downloaded once and cached in `%APPDATA%\ScreenAnnotatorPro\ocr_models` (Windows) or `~/.config/ScreenAnnotatorPro/ocr_models` (Linux/macOS). All subsequent uses load instantly from disk.
 
-### Supported translation languages (50+)
+### Supported translation languages
 
 English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Russian, Ukrainian, Arabic, Chinese (Simplified), Chinese (Traditional), Japanese, Korean, Turkish, Swedish, Norwegian, Danish, Finnish, Czech, Romanian, Hungarian, Greek, Hebrew, Hindi, Thai, Vietnamese, Indonesian, Malay, Croatian, Slovak, Bulgarian, Serbian, Albanian, Lithuanian, Latvian, Estonian, Slovenian, Catalan, Swahili, Afrikaans, Tagalog, Georgian, Armenian, Azerbaijani, Kazakh, Uzbek, Mongolian.
 
@@ -70,6 +78,7 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 | Shortcut | Action |
 |---|---|
 | `Ctrl + Shift + A` | Toggle overlay on / off (customisable in Settings) |
+| `Ctrl + T` | Activate Snip & Read / OCR (customisable in Settings) |
 | `Ctrl + Z` | Undo last shape |
 | `Ctrl + Y` | Redo (restore undone shape) |
 | `C` | Clear all shapes |
@@ -85,24 +94,25 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 - **Opacity slider** (10–100 %) — softens any colour for new shapes
 - **Stroke size slider** (1–30 px)
 - **Text size slider** (8–72 pt)
-- **📷 Screenshot** — hides overlay, grabs all monitors, shows Copy / Save PNG / Discard
-- **⏸ Pause** — hides overlay; resume from tray or hotkey
-- **↩ Undo / ↪ Redo**
-- **🗑 Clear all**
-- **⚙ Settings** — hotkey, start on boot, Help & Features reference
+- **Screenshot** — hides overlay, captures all monitors, shows Copy / Save PNG / Discard
+- **Pause** — hides overlay; resume from tray or hotkey
+- **Undo / Redo**
+- **Clear all**
+- **Settings** — hotkey, OCR hotkey, start on boot, help reference
+
+The toolbar is scrollable — if your screen is short or you've expanded a section, scroll inside the toolbar panel.
 
 ---
 
 ## Settings
 
-Open via the **⚙ Settings** button in the toolbar.
+Open via the **Settings** button in the toolbar.
 
 | Setting | Description |
 |---|---|
-| Activation Shortcut | Change the global hotkey (default `Ctrl + Shift + A`) |
+| Activation Shortcut | Global hotkey to show/hide the overlay (default `Ctrl+Shift+A`) |
+| OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+T`) |
 | Start on boot | Adds to Windows startup registry; app launches hidden in the tray |
-| celikovic.xyz | Developer website |
-| ? Help | Opens the full feature reference and keyboard shortcut guide |
 
 Settings are saved to:
 - **Windows:** `%APPDATA%\ScreenAnnotatorPro\settings.json`
@@ -113,21 +123,22 @@ Settings are saved to:
 ## Installation
 
 ### Microsoft Store (recommended)
-Search **"Screen Annotator Pro"** in the Microsoft Store, or use Store ID **`9NS87MQB29C7`**.
+Search **"Screen Annotator Pro"** in the Microsoft Store, or use Store ID **`9NS87MQB29C7`**.  
+The Store version is signed by Microsoft and updates automatically.
 
-### Manual — MSI installer
+### MSI installer
 Download `ScreenAnnotatorPro-Setup.msi` from the [latest release](https://github.com/anelcelik/annotate/releases/latest) and run it.  
 Installs to `%ProgramFiles%\Screen Annotator Pro` with Start Menu and Desktop shortcuts.
 
-### Manual — MSIX sideload
+### MSIX sideload
 Download `ScreenAnnotatorPro.msix` from the [latest release](https://github.com/anelcelik/annotate/releases/latest).  
 Right-click → **Install**, or run:
 ```powershell
 Add-AppxPackage ScreenAnnotatorPro.msix
 ```
-> **Note:** The sideload MSIX is signed with a self-signed development certificate.
-> You must first trust it by installing the `.pfx` (or enable Developer Mode in Windows Settings).
-> The Microsoft Store version is signed by Microsoft automatically — no manual trust step needed.
+> The sideload MSIX is signed with a self-signed development certificate.  
+> You must trust it first by installing the `.pfx`, or enable Developer Mode in Windows Settings.  
+> The Microsoft Store version is signed by Microsoft — no manual trust step needed.
 
 ---
 
@@ -165,20 +176,20 @@ Outputs 35 Microsoft Store–compliant PNG assets + `annotate.ico` + `tray.ico` 
 
 ## Building the Installer
 
-The GitHub Actions workflow (`.github/workflows/build.yml`) builds everything automatically on every push to `main` and on version tags.
+The GitHub Actions workflow (`.github/workflows/build.yml`) builds and releases everything automatically on version tags.
 
 ### Trigger a release
 ```bash
-git tag v2.2.2
-git push origin v2.2.2
+git tag v2.2.7
+git push origin v2.2.7
 ```
 
-This runs the full pipeline:
+Full pipeline:
 1. Generates all icons (`create_icons.py`)
-2. Builds `ScreenAnnotatorPro.exe` via PyInstaller (onedir, icon embedded)
+2. Builds `ScreenAnnotatorPro.exe` via PyInstaller (onedir)
 3. Harvests `_internal/` via PowerShell into `installer/AppFiles.wxs`
-4. Builds `ScreenAnnotatorPro-Setup.msi` via WiX 4 (license UI, Start Menu + Desktop shortcuts)
-5. Packs `ScreenAnnotatorPro.msix` via `makeappx`, signs with a dev cert
+4. Builds `ScreenAnnotatorPro-Setup.msi` via WiX 4
+5. Packs `ScreenAnnotatorPro.msix` via `makeappx`, signs with dev cert
 6. Creates a GitHub Release with both files attached
 
 ### Local build (Windows)
@@ -201,18 +212,49 @@ wix build installer/annotate.wxs installer/AppFiles.wxs `
 
 ---
 
-## Microsoft Store Submission
+## Reporting Issues
 
-The MSIX package identity matches the Casultra Partner Center account:
+Found a bug or want to request a feature? [Open an issue](https://github.com/anelcelik/annotate/issues/new/choose).
 
-| Field | Value |
-|---|---|
-| Package Name | `Casultra.ScreenAnnotatorPro` |
-| Publisher | `CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C` |
-| Store ID | `9NS87MQB29C7` |
-| PFN | `Casultra.ScreenAnnotatorPro_38f0gytd267x6` |
+### Bug reports — please include
 
-Upload the **unsigned** `ScreenAnnotatorPro.msix` to Partner Center — Microsoft re-signs it automatically.
+1. **What happened** — describe the problem and what you expected instead
+2. **Steps to reproduce** — the exact sequence of actions that triggers it
+3. **Version** — shown in the tray tooltip or Settings → Help (`v2.2.7`)
+4. **OS and display setup** — e.g. Windows 11, single 4K monitor; or Ubuntu 24.04 Wayland, dual monitors
+5. **Error message or crash log** (if any) — on Windows, check `%APPDATA%\ScreenAnnotatorPro\` for any log files; on Linux run `python annotate.py` from terminal to see console output
+6. **Screenshot or screen recording** (if visual) — helps a lot for rendering or layout bugs
+
+### Feature requests
+
+Open an issue with a clear description of the use case. What are you trying to do, and how does the current app fall short?
+
+### What's in scope
+
+- Drawing, annotation, and redaction tools
+- OCR accuracy and language support
+- Hotkey reliability and configurability
+- Installer / packaging / update issues
+- Performance on specific hardware or OS configurations
+- Accessibility improvements
+
+### Known limitations
+
+- **Wayland (Linux):** Global hotkeys are not available — use the tray icon to toggle the overlay
+- **macOS:** Not officially supported; the app runs from source but no packaged build is provided
+- **Multiple monitors:** Overlay covers all monitors; per-monitor mode is not currently supported
+- **OCR first-run:** The ~150 MB EasyOCR model downloads on first use; this requires an internet connection once
+
+---
+
+## Contributing
+
+Pull requests are welcome. For significant changes, open an issue first to discuss the approach.
+
+When submitting a PR:
+- Keep changes focused — one feature or fix per PR
+- Test on Windows (the primary platform) if your change touches the overlay, hotkeys, or installer
+- The app runs cross-platform from source — avoid Windows-only APIs in the core drawing logic
 
 ---
 
@@ -227,6 +269,7 @@ annotate.desktop         Linux desktop entry
 installer/
   annotate.wxs           WiX 4 MSI definition
   AppxManifest.xml       MSIX package manifest
+  harvest.ps1            PowerShell script to harvest _internal/ for WiX
   License.rtf            MIT license shown in the MSI installer UI
 .github/
   workflows/
@@ -240,12 +283,15 @@ installer/
 ### Windows
 - Requires Windows 10/11 with **Desktop Window Manager (DWM)** enabled for transparent compositing
 - High-DPI monitors are handled automatically (`PassThrough` scale rounding)
-- Global hotkey requires `pynput` (`pip install pynput`)
-- The toolbar shadow is replaced with a painted border to avoid a `WS_EX_LAYERED` dirty-rect bug
+- Global hotkeys use `pynput` — install via `pip install pynput`
 
-### Linux / macOS
-- On Wayland (Linux), the global hotkey is unavailable — use the tray icon instead
-- OCR and all drawing tools work cross-platform
+### Linux
+- Tested on X11; Wayland disables global hotkeys (use the tray icon instead)
+- OCR and all drawing tools work
+
+### macOS
+- Runs from source; no packaged build
+- Global hotkey may require Accessibility permissions in System Settings
 
 ---
 
@@ -259,4 +305,5 @@ Copyright © 2025 Anel Celik / Casultra
 
 ## Developer
 
-**Casultra** · [celikovic.xyz](https://celikovic.xyz)
+**Casultra** · [celikovic.xyz](https://celikovic.xyz)  
+Microsoft Store · Store ID: `9NS87MQB29C7`
