@@ -4,7 +4,7 @@
 
 A fullscreen transparent overlay built with **Python + PyQt6**. The overlay sits on top of all windows; you draw on it like a whiteboard, then hide it or clear it when you're done. Everything runs locally — no cloud, no account.
 
-Available on the **Microsoft Store** · **Current version: 2.2.8**
+Available on the **Microsoft Store** · **Current version: 3.0**
 
 ---
 
