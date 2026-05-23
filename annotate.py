@@ -88,7 +88,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "2.2.7"
+VERSION = "2.2.8"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -800,10 +800,21 @@ class Canvas(QWidget):
         if self.tool == "ocr":
             rect = _norm(self._start, pos)
             if rect.width() > 10 and rect.height() > 10:
-                pixmap = self._grab_behind(rect)
-                dlg = OcrResultDialog(pixmap, self.window())
+                overlay = self.window()
+                overlay.hide()                # get overlay out of the way before grab
+                QApplication.processEvents()  # flush so overlay is fully hidden
+                r = rect.toRect()
+                pixmap = QApplication.primaryScreen().grabWindow(
+                    0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
+                )
+                dlg = OcrResultDialog(pixmap)
                 dlg.exec()
-            self.update(); return
+                overlay.show()
+                overlay.raise_()
+                overlay.activateWindow()
+            else:
+                self.update()
+            return
 
         if self.tool in DRAG_TOOLS:
             if self.tool == "blur":
@@ -1705,11 +1716,11 @@ class OcrResultDialog(QDialog):
         self._trans_thread = None
         self._build()
         self.resize(520, 480)
-        if parent:
-            self.move(
-                parent.x() + (parent.width()  - self.width())  // 2,
-                parent.y() + (parent.height() - self.height()) // 2,
-            )
+        geo = QApplication.primaryScreen().availableGeometry()
+        self.move(
+            geo.center().x() - self.width()  // 2,
+            geo.center().y() - self.height() // 2,
+        )
         self._start_ocr()
 
     # ── Build UI ───────────────────────────────────────────────────────────────
