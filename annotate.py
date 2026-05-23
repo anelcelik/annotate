@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QFrame, QSystemTrayIcon, QMenu, QFileDialog,
     QDialog, QCheckBox, QKeySequenceEdit, QTextEdit, QComboBox, QScrollArea,
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, QUrl, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QPointF, QRectF, QUrl, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
     QPolygonF, QPainterPath, QFontMetrics, QPixmap, QCursor, QIcon,
@@ -1698,7 +1698,7 @@ class OcrResultDialog(QDialog):
         copy_ocr.setCursor(Cursor.PointingHandCursor)
         copy_ocr.setStyleSheet(self._ghost_btn())
         copy_ocr.clicked.connect(
-            lambda: QApplication.clipboard().setText(self._ocr_box.toPlainText())
+            lambda: self._copy_and_flash(copy_ocr, self._ocr_box.toPlainText())
         )
         lo.addWidget(copy_ocr)
 
@@ -1748,11 +1748,18 @@ class OcrResultDialog(QDialog):
         copy_tr.setCursor(Cursor.PointingHandCursor)
         copy_tr.setStyleSheet(self._ghost_btn())
         copy_tr.clicked.connect(
-            lambda: QApplication.clipboard().setText(self._trans_box.toPlainText())
+            lambda: self._copy_and_flash(copy_tr, self._trans_box.toPlainText())
         )
         lo.addWidget(copy_tr)
 
         self.setFixedWidth(480)
+
+    def _copy_and_flash(self, btn: QPushButton, text: str):
+        QApplication.clipboard().setText(text)
+        original = btn.text()
+        btn.setText("✅  Copied!")
+        btn.setEnabled(False)
+        QTimer.singleShot(1500, lambda: (btn.setText(original), btn.setEnabled(True)))
 
     # ── OCR ────────────────────────────────────────────────────────────────────
     def _start_ocr(self):
