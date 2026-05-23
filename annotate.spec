@@ -69,7 +69,7 @@ a = Analysis(
         'torch.cuda', 'torch.backends.cudnn',
         # Safe stdlib excludes
         'tkinter', '_tkinter',
-        'unittest', 'doctest', 'pydoc', 'difflib',
+        'unittest', 'doctest', 'pydoc',
         'xmlrpc', 'ftplib', 'smtplib',
         'curses', 'lib2to3', 'test',
     ],
