@@ -4,7 +4,7 @@
 
 A fullscreen transparent overlay built with **Python + PyQt6**. The overlay sits on top of all windows; you draw on it like a whiteboard, then hide it or clear it when you're done. Everything runs locally — no cloud, no account.
 
-Available on the **Microsoft Store** · **Current version: 2.2.7**
+Available on the **Microsoft Store** · **Current version: 2.2.8**
 
 ---
 
@@ -122,99 +122,17 @@ Settings are saved to:
 
 ## Installation
 
-### Microsoft Store (recommended)
+### Microsoft Store
 Search **"Screen Annotator Pro"** in the Microsoft Store, or use Store ID **`9NS87MQB29C7`**.  
 The Store version is signed by Microsoft and updates automatically.
 
-### MSI installer
-Download `ScreenAnnotatorPro-Setup.msi` from the [latest release](https://github.com/anelcelik/annotate/releases/latest) and run it.  
-Installs to `%ProgramFiles%\Screen Annotator Pro` with Start Menu and Desktop shortcuts.
 
-### MSIX sideload
-Download `ScreenAnnotatorPro.msix` from the [latest release](https://github.com/anelcelik/annotate/releases/latest).  
-Right-click → **Install**, or run:
-```powershell
-Add-AppxPackage ScreenAnnotatorPro.msix
-```
-> The sideload MSIX is signed with a self-signed development certificate.  
-> You must trust it first by installing the `.pfx`, or enable Developer Mode in Windows Settings.  
-> The Microsoft Store version is signed by Microsoft — no manual trust step needed.
+
 
 ---
 
-## Running from Source
+#
 
-### Requirements
-- Python 3.11+
-- Windows 10/11, Linux, or macOS
-
-### Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-| Package | Purpose |
-|---|---|
-| `PyQt6 >= 6.4` | UI framework and transparent overlay |
-| `Pillow >= 9.0` | Multi-size ICO generation |
-| `pynput >= 1.7` | Global hotkey listener |
-| `easyocr >= 1.7` | Offline OCR engine (model downloaded on first use) |
-| `deep-translator >= 1.11` | Google Translate integration |
-
-### Run
-```bash
-python annotate.py
-```
-
-### Generate icons
-```bash
-python create_icons.py
-```
-Outputs 35 Microsoft Store–compliant PNG assets + `annotate.ico` + `tray.ico` into `icons/`.
-
----
-
-## Building the Installer
-
-The GitHub Actions workflow (`.github/workflows/build.yml`) builds and releases everything automatically on version tags.
-
-### Trigger a release
-```bash
-git tag v2.2.7
-git push origin v2.2.7
-```
-
-Full pipeline:
-1. Generates all icons (`create_icons.py`)
-2. Builds `ScreenAnnotatorPro.exe` via PyInstaller (onedir)
-3. Harvests `_internal/` via PowerShell into `installer/AppFiles.wxs`
-4. Builds `ScreenAnnotatorPro-Setup.msi` via WiX 4
-5. Packs `ScreenAnnotatorPro.msix` via `makeappx`, signs with dev cert
-6. Creates a GitHub Release with both files attached
-
-### Local build (Windows)
-```powershell
-pip install pyinstaller
-python create_icons.py
-pyinstaller annotate.spec
-
-# Harvest _internal folder into WiX component group
-powershell -File installer/harvest.ps1
-
-# MSI (requires WiX 4)
-dotnet tool install --global wix --version 4.0.5
-wix extension add --global WixToolset.UI.wixext/4.0.5
-wix build installer/annotate.wxs installer/AppFiles.wxs `
-    -ext WixToolset.UI.wixext -arch x64 `
-    -o dist/ScreenAnnotatorPro-Setup.msi `
-    -d SourceDir=dist\ScreenAnnotatorPro\_internal
-```
-
----
-
-## Reporting Issues
-
-Found a bug or want to request a feature? [Open an issue](https://github.com/anelcelik/annotate/issues/new/choose).
 
 ### Bug reports — please include
 
@@ -247,53 +165,9 @@ Open an issue with a clear description of the use case. What are you trying to d
 
 ---
 
-## Contributing
 
-Pull requests are welcome. For significant changes, open an issue first to discuss the approach.
 
-When submitting a PR:
-- Keep changes focused — one feature or fix per PR
-- Test on Windows (the primary platform) if your change touches the overlay, hotkeys, or installer
-- The app runs cross-platform from source — avoid Windows-only APIs in the core drawing logic
 
----
-
-## Project Structure
-
-```
-annotate.py              Main application (overlay, tools, OCR, settings, UI)
-create_icons.py          Generates all Microsoft Store icon assets
-annotate.spec            PyInstaller build spec (onedir)
-requirements.txt         Python dependencies
-annotate.desktop         Linux desktop entry
-installer/
-  annotate.wxs           WiX 4 MSI definition
-  AppxManifest.xml       MSIX package manifest
-  harvest.ps1            PowerShell script to harvest _internal/ for WiX
-  License.rtf            MIT license shown in the MSI installer UI
-.github/
-  workflows/
-    build.yml            CI/CD: icons → exe → MSI → MSIX → GitHub Release
-```
-
----
-
-## Platform Notes
-
-### Windows
-- Requires Windows 10/11 with **Desktop Window Manager (DWM)** enabled for transparent compositing
-- High-DPI monitors are handled automatically (`PassThrough` scale rounding)
-- Global hotkeys use `pynput` — install via `pip install pynput`
-
-### Linux
-- Tested on X11; Wayland disables global hotkeys (use the tray icon instead)
-- OCR and all drawing tools work
-
-### macOS
-- Runs from source; no packaged build
-- Global hotkey may require Accessibility permissions in System Settings
-
----
 
 ## License
 
