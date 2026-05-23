@@ -88,7 +88,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "2.2.4"
+VERSION = "2.2.5"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -1874,18 +1874,40 @@ class Toolbar(QWidget):
         self._position()
 
     def _build(self):
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(12, 14, 12, 14)
-        lo.setSpacing(2)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 14, 12, 14)
+        outer.setSpacing(2)
 
-        # ── Drag handle ───────────────────────────────────────────────────────
+        # ── Drag handle — always visible, outside the scroll area ────────────
         drag_lbl = QLabel("· · ·  Screen Annotator Pro  · · ·")
         drag_lbl.setAlignment(AA.AlignCenter)
         drag_lbl.setStyleSheet("color:#3a3a3c;font-size:10px;font-weight:600;letter-spacing:0.5px;")
         drag_lbl.setCursor(Cursor.SizeAllCursor)
-        lo.addWidget(drag_lbl)
-        lo.addWidget(self._hsep())
-        lo.addSpacing(4)
+        outer.addWidget(drag_lbl)
+        outer.addWidget(self._hsep())
+        outer.addSpacing(4)
+
+        # ── Scrollable content ────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{background:transparent;width:4px;margin:0;}"
+            "QScrollBar::handle:vertical{background:rgba(255,255,255,0.18);"
+            "border-radius:2px;min-height:20px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:none;}"
+        )
+        self._scroll.viewport().setStyleSheet("background:transparent;")
+
+        content = QWidget()
+        content.setStyleSheet("background:transparent;")
+        lo = QVBoxLayout(content)
+        lo.setContentsMargins(0, 0, 4, 0)
+        lo.setSpacing(2)
 
         # ── Collapsible tool sections ─────────────────────────────────────────
         self._sections: list[ToolSection] = []
@@ -2092,6 +2114,10 @@ class Toolbar(QWidget):
             btn.clicked.connect(fn)
             lo.addWidget(btn)
 
+        lo.addStretch()
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll)
+
         self.setFixedWidth(220)
         self.setAttribute(WAtt.WA_OpaquePaintEvent, False)
         self.setStyleSheet("QPushButton,QLabel,QSlider,QWidget{background:transparent;}")
@@ -2158,6 +2184,8 @@ class Toolbar(QWidget):
         dlg.exec()
 
     def _position(self):
+        screen_h = QApplication.primaryScreen().availableGeometry().height()
+        self._scroll.setMaximumHeight(screen_h - 120)
         self.adjustSize()
         margin = 40 if IS_WIN else 20
         self.move(margin, margin)
