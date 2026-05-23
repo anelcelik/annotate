@@ -99,24 +99,23 @@ a.binaries = TOC([
 
 pyz = PYZ(a.pure, a.zipped_data)
 
+_UPX_EXCLUDE = [
+    'vcruntime*.dll', 'msvcp*.dll', 'python*.dll',
+    'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+    'torch_*.dll', '_C.pyd', 'numpy*.pyd',
+]
+
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='ScreenAnnotatorPro',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[
-        'vcruntime*.dll', 'msvcp*.dll', 'python*.dll',
-        'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
-        # Never UPX-compress torch/numpy native libs — breaks them
-        'torch_*.dll', '_C.pyd', 'numpy*.pyd',
-    ],
-    runtime_tmpdir=None,
+    upx_exclude=_UPX_EXCLUDE,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -125,4 +124,14 @@ exe = EXE(
     entitlements_file=None,
     icon=['icons/annotate.ico'],
     manifest='installer/app.manifest',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=_UPX_EXCLUDE,
+    name='ScreenAnnotatorPro',
 )

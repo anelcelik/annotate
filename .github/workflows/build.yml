@@ -40,20 +40,34 @@ jobs:
         run: pyinstaller annotate.spec
 
       # ── MSI (WiX 4) ─────────────────────────────────────────────────────────
-      - name: Install WiX 4 + UI extension
+      - name: Install WiX 4 + extensions
         run: |
           dotnet tool install --global wix --version 4.0.5
           wix extension add --global WixToolset.UI.wixext/4.0.5
 
+      - name: Harvest _internal folder into WiX fragment
+        run: >
+          wix harvest dir dist\ScreenAnnotatorPro\_internal
+          -o installer\AppFiles.wxs
+          -cg AppFiles
+          -dr InternalFolder
+          -srd
+          -var var.SourceDir
+
       - name: Build MSI
-        run: wix build installer/annotate.wxs -ext WixToolset.UI.wixext -arch x64 -o dist/ScreenAnnotatorPro-Setup.msi
+        run: >
+          wix build installer\annotate.wxs installer\AppFiles.wxs
+          -ext WixToolset.UI.wixext
+          -arch x64
+          -o dist\ScreenAnnotatorPro-Setup.msi
+          -d SourceDir=dist\ScreenAnnotatorPro\_internal
 
       # ── MSIX ────────────────────────────────────────────────────────────────
       - name: Stage MSIX content
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path msix_staging/Assets -Force | Out-Null
-          Copy-Item dist\ScreenAnnotatorPro.exe msix_staging\
+          Copy-Item dist\ScreenAnnotatorPro\ScreenAnnotatorPro.exe msix_staging\
           Copy-Item installer\AppxManifest.xml  msix_staging\
           Copy-Item icons\*.png                 msix_staging\Assets\
 

@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   WiX 4 installer definition for Screen Annotator Pro.
-  Build: wix build installer/annotate.wxs -ext WixToolset.UI.wixext -arch x64 -o dist/ScreenAnnotatorPro-Setup.msi
+
+  Build (CI does this automatically):
+    wix harvest dir dist\ScreenAnnotatorPro\_internal -o installer\AppFiles.wxs ^
+        -cg AppFiles -dr InternalFolder -srd -var var.SourceDir
+    wix build installer\annotate.wxs installer\AppFiles.wxs ^
+        -ext WixToolset.UI.wixext -arch x64 ^
+        -o dist\ScreenAnnotatorPro-Setup.msi ^
+        -d SourceDir=dist\ScreenAnnotatorPro\_internal
 
   Install flow:
     Welcome → License → Feature selection → Progress → Finish (+ Launch checkbox)
-
-  Features:
-    ProductFeature        — main exe + Start Menu shortcut  (required)
-    DesktopShortcutFeature — Desktop shortcut               (optional, on by default)
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
@@ -16,7 +19,7 @@
   <Package
     Name="Screen Annotator Pro"
     Manufacturer="Anel Celik"
-    Version="1.1.0.0"
+    Version="2.1.0.0"
     UpgradeCode="7E43C21B-856F-4D9A-B1C3-7E5F2A490D12"
     Language="1033"
     InstallerVersion="500"
@@ -54,7 +57,7 @@
     </UI>
 
     <!-- Icon shown in Add/Remove Programs -->
-    <Icon Id="AppIcon" SourceFile="dist\ScreenAnnotatorPro.exe" />
+    <Icon Id="AppIcon" SourceFile="dist\ScreenAnnotatorPro\ScreenAnnotatorPro.exe" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPHELPLINK"    Value="https://github.com/anelcelik/annotate" />
 
@@ -62,10 +65,13 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Screen Annotator Pro">
 
-        <!-- Main exe + Start Menu shortcut (always installed) -->
+        <!-- _internal subfolder — populated by harvested AppFiles component group -->
+        <Directory Id="InternalFolder" Name="_internal" />
+
+        <!-- Main launcher exe + Start Menu shortcut (always installed) -->
         <Component Id="MainExecutable" Guid="A2B3C4D5-E6F7-4801-9ABC-DEF012345678">
           <File Id="MainExe"
-                Source="dist\ScreenAnnotatorPro.exe"
+                Source="dist\ScreenAnnotatorPro\ScreenAnnotatorPro.exe"
                 Name="ScreenAnnotatorPro.exe"
                 KeyPath="yes" />
           <Shortcut Id="StartMenuShortcut"
@@ -89,7 +95,6 @@
                   Target="[#MainExe]"
                   WorkingDirectory="INSTALLFOLDER"
                   Advertise="no" />
-        <!-- Registry key needed as KeyPath (shortcuts cannot be KeyPath) -->
         <RegistryValue Root="HKCU"
                        Key="Software\ScreenAnnotatorPro"
                        Name="DesktopShortcut"
@@ -121,6 +126,8 @@
              Level="1">
       <ComponentRef Id="MainExecutable" />
       <ComponentRef Id="ProgramMenuEntry" />
+      <!-- All runtime files harvested from dist\ScreenAnnotatorPro\_internal -->
+      <ComponentGroupRef Id="AppFiles" />
 
       <Feature Id="DesktopShortcutFeature"
                Title="Desktop shortcut"
