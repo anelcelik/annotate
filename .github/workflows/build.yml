@@ -84,6 +84,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path msix_staging/Assets -Force | Out-Null
           Copy-Item dist\ScreenAnnotatorPro\ScreenAnnotatorPro.exe msix_staging\
+          # PyInstaller 6+ puts all DLLs/modules in _internal — must be included
+          Copy-Item dist\ScreenAnnotatorPro\_internal msix_staging\_internal -Recurse
           Copy-Item installer\AppxManifest.xml  msix_staging\
           Copy-Item icons\*.png                 msix_staging\Assets\
 
