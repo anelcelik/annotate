@@ -36,6 +36,13 @@
       Name="Windows.Desktop"
       MinVersion="10.0.17763.0"
       MaxVersionTested="10.0.22621.0" />
+    <!-- Required by Python 3.12 / PyInstaller native DLLs (vcruntime140*.dll).
+         Windows will install this framework package automatically from the Store
+         before launching the app, fixing the "internalpython312.dll not found" error. -->
+    <PackageDependency
+      Name="Microsoft.VCLibs.140.00"
+      MinVersion="14.0.30704.0"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
   </Dependencies>
 
   <Resources>
