@@ -950,3 +950,208 @@ def format_elapsed(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 3600:d}:{(s % 3600) // 60:02d}:{s % 60:02d}" if s >= 3600 \
         else f"{s // 60:02d}:{s % 60:02d}"
+
+
+# ── Exporting a finished recording ────────────────────────────────────────────
+#
+# Recording always produces an MP4: H.264 encodes in real time, which is the
+# one hard requirement while frames are arriving. Everything else is a
+# conversion afterwards.
+#
+# GIF in particular *cannot* be done live. A good GIF needs a colour palette
+# chosen from the whole clip — palettegen has to see the footage before
+# paletteuse can quantise it — so it is inherently a second pass. Encoding one
+# live means a fixed 256-colour palette and a file several times larger for
+# visibly worse output.
+
+EXPORT_FORMATS = {
+    "gif":  ("GIF",  ".gif",
+             "Loops by itself in chat, issues and docs. No sound, and large "
+             "past a few seconds."),
+    "webm": ("WebM", ".webm",
+             "VP9 — noticeably smaller than MP4 for the web. Keeps sound."),
+    "mp4":  ("MP4",  ".mp4",
+             "H.264. Re-encode to shrink a recording or scale it down."),
+}
+
+GIF_WIDTHS = [0, 1280, 960, 720, 480]        # 0 = leave it alone
+GIF_RATES = [10, 12, 15, 24]
+
+
+def convert_command(ffmpeg: str, src: str, dst: str, kind: str,
+                    fps: int = 12, width: int = 0,
+                    progress: bool = True) -> list[str]:
+    """The ffmpeg command line for one export. Split out so it can be read
+    (and tested) without running anything."""
+    if kind not in EXPORT_FORMATS:
+        raise RecorderError(f"unknown export format: {kind}")
+
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if progress:
+        cmd += ["-progress", "pipe:1", "-nostats"]
+    cmd += ["-i", src]
+
+    # -2 rather than -1: H.264 and VP9 both want even dimensions, and it costs
+    # a GIF nothing.
+    scale = f"scale={width}:-2:flags=lanczos" if width else ""
+
+    if kind == "gif":
+        chain = [f"fps={fps}"]
+        if scale:
+            chain.append(scale)
+        chain.append(
+            "split[s0][s1];[s0]palettegen=stats_mode=diff[p];"
+            "[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle")
+        cmd += ["-filter_complex", ",".join(chain), "-loop", "0", "-an"]
+    elif kind == "webm":
+        if scale:
+            cmd += ["-vf", scale]
+        cmd += ["-c:v", "libvpx-vp9", "-crf", "34", "-b:v", "0",
+                "-row-mt", "1", "-deadline", "good", "-cpu-used", "4",
+                "-c:a", "libopus", "-b:a", "128k"]
+    else:                                     # mp4
+        if scale:
+            cmd += ["-vf", scale]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                "-c:a", "aac", "-b:a", "160k"]
+
+    cmd.append(dst)
+    return cmd
+
+
+def export_path(src: str, kind: str) -> str:
+    """Sibling of the recording, with the new extension — and never clobbering
+    something already there."""
+    ext = EXPORT_FORMATS[kind][1]
+    base = os.path.splitext(src)[0]
+    candidate = base + ext
+    n = 2
+    while os.path.exists(candidate):
+        candidate = f"{base}-{n}{ext}"
+        n += 1
+    return candidate
+
+
+def probe_duration(path: str) -> float:
+    """Seconds of media in `path`, 0.0 if it cannot be told.
+
+    Parsed out of ffmpeg's own banner rather than ffprobe: the single-file
+    Windows build bundles ffmpeg only, so ffprobe is not there to call.
+    """
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg or not os.path.exists(path):
+        return 0.0
+    try:
+        out = subprocess.run([ffmpeg, "-hide_banner", "-i", path],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0.0
+    for line in (out.stderr or "").splitlines():
+        line = line.strip()
+        if line.startswith("Duration:"):
+            stamp = line.split("Duration:", 1)[1].split(",", 1)[0].strip()
+            try:
+                h, m, sec = stamp.split(":")
+                return int(h) * 3600 + int(m) * 60 + float(sec)
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+class MediaConverter(QObject):
+    """Runs one ffmpeg conversion off the GUI thread, reporting progress."""
+
+    progress = pyqtSignal(float)     # 0.0 – 1.0, or -1 when it cannot be known
+    done     = pyqtSignal(str)       # output path
+    failed   = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._proc: subprocess.Popen | None = None
+        self._thread: threading.Thread | None = None
+        self._cancelled = False
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, src: str, dst: str, kind: str, *, fps: int = 12,
+              width: int = 0, duration: float = 0.0) -> bool:
+        if self.running:
+            return False
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            self.failed.emit(FFMPEG_HELP)
+            return False
+        if not os.path.exists(src):
+            self.failed.emit("The recording is no longer on disk.")
+            return False
+
+        self._cancelled = False
+        cmd = convert_command(ffmpeg, src, dst, kind, fps=fps, width=width)
+        self._thread = threading.Thread(
+            target=self._run, args=(cmd, dst, duration), daemon=True,
+            name="video-convert")
+        self._thread.start()
+        return True
+
+    def cancel(self):
+        self._cancelled = True
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    def _run(self, cmd: list[str], dst: str, duration: float):
+        def emit(signal, arg):
+            try:
+                signal.emit(arg)
+            except RuntimeError:            # dialog closed underneath us
+                pass
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=_NO_WINDOW)
+        except OSError as e:
+            emit(self.failed, f"could not start ffmpeg: {e}")
+            return
+
+        errors: list[str] = []
+        drain = threading.Thread(
+            target=lambda: errors.extend(
+                l.decode("utf-8", "replace").rstrip()
+                for l in self._proc.stderr if l.strip()),
+            daemon=True)
+        drain.start()
+
+        for raw in self._proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if line.startswith("out_time_us=") and duration > 0:
+                try:
+                    done = int(line.split("=", 1)[1]) / 1_000_000
+                    emit(self.progress, max(0.0, min(1.0, done / duration)))
+                except ValueError:
+                    pass
+            elif line == "progress=end":
+                emit(self.progress, 1.0)
+        code = self._proc.wait()
+        drain.join(timeout=2)
+
+        if self._cancelled:
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+            return
+        if code != 0:
+            tail = "\n".join(errors[-6:]) or f"ffmpeg exited with code {code}"
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+            emit(self.failed, tail)
+            return
+        emit(self.done, dst)

@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
     QGraphicsBlurEffect, QGraphicsScene, QGraphicsPixmapItem,
     QFrame, QSystemTrayIcon, QMenu, QFileDialog,
-    QDialog, QCheckBox, QTextEdit, QComboBox, QScrollArea,
+    QDialog, QCheckBox, QTextEdit, QComboBox, QScrollArea, QProgressBar,
     QLineEdit,
 )
 from PyQt6.QtCore import (
@@ -47,6 +47,8 @@ from video_recorder import (
     ffmpeg_version, find_ffmpeg,
     format_elapsed, list_audio_devices, pick_region_natively,
     screen_under_cursor, virtual_desktop_rect,
+    EXPORT_FORMATS, GIF_RATES, GIF_WIDTHS, MediaConverter, export_path,
+    probe_duration,
 )
 
 # ── Resource path helper (dev + PyInstaller bundle) ───────────────────────────
@@ -1482,6 +1484,7 @@ class RecordingBar(QWidget):
         row.setSpacing(8)
         for label, fn, primary in [
             ("Play",           self._play,   True),
+            ("Export…",        self._export, False),
             ("Show in folder", self._reveal, False),
             ("Save as…",       self._save_as, False),
             ("Delete",         self._delete, False),
@@ -1497,6 +1500,9 @@ class RecordingBar(QWidget):
     def _play(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
         self.close()
+
+    def _export(self):
+        ExportDialog(self._path, self._duration, self.parent()).exec()
 
     def _reveal(self):
         _reveal_in_file_manager(self._path)
@@ -1524,6 +1530,201 @@ class RecordingBar(QWidget):
         except OSError:
             pass
         self.close()
+
+    def paintEvent(self, _):
+        _dlg_frame_paint(self)
+
+
+class ExportDialog(QDialog):
+    """Convert a finished recording to another format.
+
+    Everything here is a second pass over a file that already exists, which is
+    not a limitation so much as the only way GIF can be done well: its palette
+    has to be chosen from footage that has already been seen.
+    """
+
+    def __init__(self, path: str, duration: float = 0.0, parent=None):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setWindowTitle("Export recording")
+        self._path = path
+        self._duration = duration or probe_duration(path)
+        self._out = ""
+        self._keys = list(EXPORT_FORMATS.keys())
+
+        self._conv = MediaConverter(self)
+        self._conv.progress.connect(self._on_progress)
+        self._conv.done.connect(self._on_done)
+        self._conv.failed.connect(self._on_failed)
+
+        self._build()
+        self.setFixedWidth(430)
+        self.adjustSize()
+        _center_on_display1(self)
+
+    # ── build ─────────────────────────────────────────────────────────────────
+    def _build(self):
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(24, 20, 24, 20)
+        lo.setSpacing(10)
+
+        title = QLabel("Export recording")
+        tf = QFont(DLG_FONT, 13)
+        tf.setBold(True)
+        title.setFont(tf)
+        title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
+        lo.addWidget(title)
+        lo.addWidget(_dlg_sep())
+
+        src = QLabel(f"{os.path.basename(self._path)}   ·   "
+                     f"{format_elapsed(self._duration)}")
+        src.setStyleSheet(
+            f"color:{DLG_MUTED};font-family:'{DLG_FONT}';font-size:11px;"
+            "background:transparent;")
+        lo.addWidget(src)
+
+        def combo(items):
+            c = QComboBox()
+            c.addItems(items)
+            c.setFixedHeight(30)
+            c.setStyleSheet(_dlg_combo_style())
+            return c
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._fmt = combo([EXPORT_FORMATS[k][0] for k in self._keys])
+        self._fmt.currentIndexChanged.connect(self._on_format)
+        self._size = combo(["Original size"] +
+                           [f"{w} px wide" for w in GIF_WIDTHS if w])
+        self._rate = combo([f"{r} fps" for r in GIF_RATES])
+        self._rate.setCurrentText("12 fps")
+        for w in (self._fmt, self._size, self._rate):
+            row.addWidget(w)
+        lo.addLayout(row)
+
+        self._note = QLabel()
+        self._note.setWordWrap(True)
+        self._note.setStyleSheet(
+            f"color:{DLG_MUTED};font-size:10px;background:transparent;")
+        lo.addWidget(self._note)
+
+        self._bar = QProgressBar()
+        self._bar.setFixedHeight(6)
+        self._bar.setTextVisible(False)
+        self._bar.setStyleSheet(
+            f"QProgressBar{{background:{DLG_SURFACE};border:none;}}"
+            f"QProgressBar::chunk{{background:{DLG_ACCENT};}}")
+        self._bar.hide()
+        lo.addWidget(self._bar)
+
+        self._status = QLabel()
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(
+            f"color:{DLG_INK};font-size:11px;background:transparent;")
+        self._status.hide()
+        lo.addWidget(self._status)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addStretch()
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setFixedHeight(34)
+        self._cancel_btn.setCursor(Cursor.PointingHandCursor)
+        self._cancel_btn.setStyleSheet(_dlg_button_style(primary=False))
+        self._cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self._cancel_btn)
+
+        self._go_btn = QPushButton("Export")
+        self._go_btn.setFixedHeight(34)
+        self._go_btn.setCursor(Cursor.PointingHandCursor)
+        self._go_btn.setStyleSheet(_dlg_button_style(primary=True))
+        self._go_btn.clicked.connect(self._start)
+        btns.addWidget(self._go_btn)
+        lo.addLayout(btns)
+
+        self._fmt.setCurrentIndex(0)
+        self._on_format(0)
+
+    # ── state ─────────────────────────────────────────────────────────────────
+    def _kind(self) -> str:
+        return self._keys[self._fmt.currentIndex()]
+
+    def _width(self) -> int:
+        i = self._size.currentIndex()
+        return 0 if i == 0 else [w for w in GIF_WIDTHS if w][i - 1]
+
+    def _on_format(self, _i):
+        kind = self._kind()
+        self._rate.setEnabled(kind == "gif")     # only GIF re-times the frames
+        note = EXPORT_FORMATS[kind][2]
+        if kind == "gif":
+            if self._duration > 30:
+                note += ("  This one runs "
+                         f"{format_elapsed(self._duration)} — expect a big "
+                         "file; 480 px at 10 fps keeps it sane.")
+            elif self._width() == 0:
+                note += "  Scaling down helps more than anything else here."
+        self._note.setText(note)
+
+    def _start(self):
+        kind = self._kind()
+        dst = export_path(self._path, kind)
+        rate = GIF_RATES[self._rate.currentIndex()]
+        if not self._conv.start(self._path, dst, kind, fps=rate,
+                                width=self._width(), duration=self._duration):
+            return
+        for w in (self._fmt, self._size, self._rate, self._go_btn):
+            w.setEnabled(False)
+        self._bar.setRange(0, 100 if self._duration > 0 else 0)  # 0,0 = busy
+        self._bar.setValue(0)
+        self._bar.show()
+        self._status.setText(f"Converting to {EXPORT_FORMATS[kind][0]}…")
+        self._status.show()
+        self._cancel_btn.setText("Stop")
+        self.adjustSize()
+
+    def _on_progress(self, fraction: float):
+        if self._duration > 0:
+            self._bar.setValue(int(fraction * 100))
+
+    def _on_done(self, path: str):
+        self._out = path
+        try:
+            size = f"{os.path.getsize(path) / (1024 * 1024):.1f} MB"
+        except OSError:
+            size = "—"
+        self._bar.setRange(0, 100)
+        self._bar.setValue(100)
+        self._status.setText(f"Saved  {os.path.basename(path)}   ·   {size}")
+        self._cancel_btn.setText("Close")
+        self._go_btn.setText("Show in folder")
+        self._go_btn.setEnabled(True)
+        try:
+            self._go_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self._go_btn.clicked.connect(self._reveal)
+        self.adjustSize()
+
+    def _on_failed(self, message: str):
+        self._bar.hide()
+        self._status.setText(f"Export failed.\n{message}")
+        for w in (self._fmt, self._size, self._rate, self._go_btn):
+            w.setEnabled(True)
+        self._rate.setEnabled(self._kind() == "gif")
+        self._cancel_btn.setText("Close")
+        self.adjustSize()
+
+    def _reveal(self):
+        if self._out:
+            _reveal_in_file_manager(self._out)
+        self.accept()
+
+    def reject(self):
+        if self._conv.running:
+            self._conv.cancel()
+        super().reject()
 
     def paintEvent(self, _):
         _dlg_frame_paint(self)
@@ -3408,6 +3609,16 @@ def _start_hotkey(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
     hotkey_mgr.start(hotkey, on_activate)
 
 
+def _convert_recording(overlay) -> None:
+    """Export an older recording — the result panel is long gone by then."""
+    start = overlay.recording.config().out_dir
+    path, _ = QFileDialog.getOpenFileName(
+        overlay, "Choose a recording to convert", start,
+        "Video (*.mp4 *.mkv *.webm *.mov);;All files (*)")
+    if path:
+        ExportDialog(path, 0.0, overlay).exec()
+
+
 # ── System tray ────────────────────────────────────────────────────────────────
 def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
     ico_path = _resource(os.path.join('icons', 'tray.ico'))
@@ -3442,6 +3653,9 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
     overlay.recording.state_changed.connect(
         lambda on: rec_action.setText("Stop recording" if on
                                       else "Start recording"))
+
+    conv_action = menu.addAction("Convert a recording…")
+    conv_action.triggered.connect(lambda: _convert_recording(overlay))
 
     menu.addSeparator()
     quit_action = menu.addAction("Exit")

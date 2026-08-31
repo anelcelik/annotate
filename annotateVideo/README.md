@@ -77,6 +77,29 @@ Press Stop and the file is already on disk — a panel offers **Play**,
 Files go to `Videos/ScreenAnnotatorPro/annotation_YYYYMMDD_HHMMSS.mp4`
 (H.264 + AAC), changeable in Settings.
 
+### Exporting — GIF, WebM, smaller MP4
+
+**Export…** on that panel converts the recording. Later on, the tray menu's
+**Convert a recording…** opens any file you already have.
+
+| Format | Good for | Notes |
+|---|---|---|
+| **GIF** | Chat, issue trackers, docs — it loops by itself and needs no player | No sound. Gets large fast: pick a width and 10–12 fps |
+| **WebM** | The web — VP9 is noticeably smaller than the same MP4 | Keeps sound. Slower to encode |
+| **MP4** | Shrinking or scaling down a recording you already have | H.264, plays everywhere |
+
+Any of them can be scaled down on the way out (1280 / 960 / 720 / 480 px wide);
+GIF also re-times to 10, 12, 15 or 24 fps.
+
+Recording always writes MP4 first, and export is always a second pass over
+that file. That is not laziness about GIF — it is the only way to make a good
+one. A GIF has a 256-colour palette, and choosing a decent palette means
+looking at the footage before quantising it (`palettegen` then `paletteuse`).
+Encoding a GIF live would mean a fixed generic palette: visibly worse, and
+several times larger. H.264, meanwhile, is the one codec that reliably encodes
+in real time while frames are still arriving, which is the actual constraint
+during a recording.
+
 ### What ends up in the frame
 
 Everything you drew, and nothing you didn't. Arrows, callouts, highlights,
@@ -116,7 +139,7 @@ contains the overlay and drawing the shapes again would double them up.
 | Quality | High (CRF 18) · Balanced (23) · Small file (28) | x264, `veryfast` preset |
 | Show the cursor | on / off | A drawn pointer on Windows; the real one on wlroots |
 | Record the microphone | on / off | Pause is disabled while the mic is live — the mic has no pause |
-| Save to | any folder | Defaults to `Videos/ScreenAnnotatorPro` |
+| Save to | any folder | Defaults to `Videos/ScreenAnnotatorPro`; exports land beside the recording |
 | Shortcut | any combo | `Ctrl+Shift+R` by default |
 
 ### ffmpeg
