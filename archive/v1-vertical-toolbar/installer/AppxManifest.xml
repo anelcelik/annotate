@@ -21,7 +21,7 @@
   <Identity
     Name="Casultra.ScreenAnnotatorPro"
     Publisher="CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C"
-    Version="4.0.0.0"
+    Version="3.0.1.0"
     ProcessorArchitecture="x64" />
 
   <Properties>

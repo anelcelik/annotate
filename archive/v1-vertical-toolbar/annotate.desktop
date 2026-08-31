@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Screen Annotator Pro
+GenericName=Screen Annotation Tool
+Comment=Draw, highlight, and annotate anything on your screen
+Exec=python3 /home/anel/annotate/annotate.py
+Icon=/home/anel/annotate/icons/Square310x310Logo.scale-100.png
+Terminal=false
+Categories=Graphics;Utility;
+Keywords=annotate;screenshot;draw;screen;overlay;highlight;
+StartupNotify=false

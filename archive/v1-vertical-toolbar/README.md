@@ -4,7 +4,7 @@
 
 A fullscreen transparent overlay built with **Python + PyQt6**. The overlay sits on top of all windows; you draw on it like a whiteboard, then hide it or clear it when you're done. Everything runs locally — no cloud, no account.
 
-Available on the **Microsoft Store** · **Current version: 4.0.0**
+Available on the **Microsoft Store** · **Current version: 3.0.1**
 
 ---
 
@@ -165,24 +165,9 @@ Open an issue with a clear description of the use case. What are you trying to d
 
 ---
 
-## Repo layout
 
-Everything at root is the live app — what actually builds and ships:
 
-```
-annotate.py, dock_toolbar.py   the app
-annotate.spec, requirements.txt, .github/   build + CI
-installer/                     Windows (MSIX) + Linux (.desktop) packaging
-```
 
-Everything else is grouped out of the way:
-
-```
-docs/       Store listing text, marketing screenshots, screenshot generator
-archive/    frozen snapshots of past toolbar redesigns (see archive/README.md)
-```
-
----
 
 ## License
 

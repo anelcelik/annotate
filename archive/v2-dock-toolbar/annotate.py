@@ -26,14 +26,10 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
     QGraphicsBlurEffect, QGraphicsScene, QGraphicsPixmapItem,
-    QFrame, QSystemTrayIcon, QMenu, QFileDialog,
-    QDialog, QCheckBox, QTextEdit, QComboBox, QScrollArea,
-    QLineEdit,
+    QInputDialog, QFrame, QSystemTrayIcon, QMenu, QFileDialog,
+    QDialog, QCheckBox, QKeySequenceEdit, QTextEdit, QComboBox, QScrollArea,
 )
-from PyQt6.QtCore import (
-    Qt, QPointF, QRectF, QUrl, QThread, QTimer, QKeyCombination,
-    pyqtSignal, pyqtSlot,
-)
+from PyQt6.QtCore import Qt, QPointF, QRectF, QUrl, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
     QPolygonF, QPainterPath, QFontMetrics, QPixmap, QCursor, QIcon,
@@ -92,7 +88,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "4.0.0"
+VERSION = "3.0.1"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -100,15 +96,9 @@ IS_MAC = platform.system() == "Darwin"
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 _DEFAULT_SETTINGS: dict = {
-    "hotkey":         "<ctrl>+<shift>+a",
-    "ocr_hotkey":    "<ctrl>+t",
-    "start_on_boot":  False,
-    "theme":          "light",
-    # Where you last put the dock (or the collapsed puck) — None means
-    # "never moved, use the default resting spot".
-    "dock_collapsed": False,
-    "dock_x":         None,
-    "dock_y":         None,
+    "hotkey":        "<ctrl>+<shift>+a",
+    "ocr_hotkey":   "<ctrl>+t",
+    "start_on_boot": False,
 }
 
 def _settings_path() -> Path:
@@ -810,20 +800,12 @@ class Canvas(QWidget):
         if self.tool == "ocr":
             rect = _norm(self._start, pos)
             if rect.width() > 10 and rect.height() > 10:
-                r = rect.toRect()
-                # r.x()/r.y() are canvas-local — the overlay covers the union of
-                # every monitor and can sit at a negative global position (e.g.
-                # a screen placed above/left of the primary), so a canvas-local
-                # point is not a global desktop coordinate. Resolve it via
-                # mapToGlobal before the overlay hides, or the grab below reads
-                # from the wrong monitor (or nothing) on non-trivial layouts.
-                global_top_left = self.mapToGlobal(r.topLeft())
                 overlay = self.window()
                 overlay.hide()                # get overlay out of the way before grab
                 QApplication.processEvents()  # flush so overlay is fully hidden
+                r = rect.toRect()
                 pixmap = QApplication.primaryScreen().grabWindow(
-                    0, global_top_left.x(), global_top_left.y(),
-                    max(r.width(), 1), max(r.height(), 1)
+                    0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
                 )
                 dlg = OcrResultDialog(pixmap)
                 dlg.exec()
@@ -849,11 +831,9 @@ class Canvas(QWidget):
         col = _with_alpha(self.pen_color, self.pen_alpha)
         t = self.tool
         if t == "text":
-            dlg = TextInputDialog(self.window())
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                text = dlg.text()
-                if text:
-                    self._commit(TextShape(pos, text, col, self.font_size))
+            text, ok = QInputDialog.getText(self, "Add Text", "Text:")
+            if ok and text:
+                self._commit(TextShape(pos, text, col, self.font_size))
         elif t == "callout":
             self._commit(CalloutShape(pos, self._callout_n, col))
             self._callout_n += 1
@@ -1030,15 +1010,8 @@ class ScreenshotBar(QWidget):
         self._pixmap = pixmap
         self._build()
         self.adjustSize()
-        # Centering on parent (the overlay, which spans every monitor's
-        # combined bounding box) can land this in a gap or seam on a
-        # non-trivial layout — same bug Settings/Help had. This widget is a
-        # child, not a top-level window, so `move()` is parent-local: convert
-        # display 1's global center into the overlay's local coordinates.
-        geo = QApplication.primaryScreen().availableGeometry()
-        local_center = parent.mapFromGlobal(geo.center())
-        self.move(local_center.x() - self.width()  // 2,
-                  local_center.y() - self.height() // 2)
+        self.move((parent.width() - self.width()) // 2,
+                  (parent.height() - self.height()) // 2)
         self.show()
         self.raise_()
 
@@ -1056,15 +1029,21 @@ class ScreenshotBar(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        for label, fn, primary in [
-            ("Copy",     self._copy,  False),
-            ("Save PNG", self._save,  True),
-            ("Discard",  self.close,  False),
+        for icon, label, fn, color in [
+            ("📋", "Copy",     self._copy, "#0A84FF"),
+            ("💾", "Save PNG", self._save, "#32D74B"),
+            ("✕",  "Discard",  self.close, "#FF453A"),
         ]:
-            btn = QPushButton(label)
-            btn.setFixedHeight(34)
+            btn = QPushButton(f"  {icon}  {label}")
+            btn.setFixedHeight(36)
             btn.setCursor(Cursor.PointingHandCursor)
-            btn.setStyleSheet(_dlg_button_style(primary))
+            btn.setStyleSheet(
+                f"QPushButton{{color:{color};background:rgba(255,255,255,0.06);"
+                f"border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+                f"font-size:13px;padding:0 12px;}}"
+                f"QPushButton:hover{{background:rgba(255,255,255,0.13);"
+                f"border:1px solid {color};}}"
+            )
             btn.clicked.connect(fn)
             btn_row.addWidget(btn)
         lo.addLayout(btn_row)
@@ -1088,7 +1067,18 @@ class ScreenshotBar(QWidget):
         self.close()
 
     def paintEvent(self, _):
-        _dlg_frame_paint(self)
+        p = QPainter(self)
+        p.setRenderHint(RHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(16, 16, 18, 247)))
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 14, 14)
+        p.drawPath(path)
+        if IS_WIN:
+            p.setPen(QPen(QColor(70, 70, 75, 220), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(0.5, 0.5, self.width()-1, self.height()-1), 14, 14)
+        p.end()
 
 
 # ── Collapsible tool section ───────────────────────────────────────────────────
@@ -1164,56 +1154,14 @@ class ToolSection(QWidget):
 
 # ── Dialog chrome tokens ────────────────────────────────────────────────────────
 # Same palette as the dock toolbar (dock_toolbar.py) — flat, 2px rules, no radius.
-# Same two palettes as dock_toolbar.py's THEMES, duplicated rather than
-# imported — annotate.py's dialogs are meant to keep working even if the
-# `from dock_toolbar import Toolbar` line gets commented out to revert to
-# the old vertical panel (see REDESIGN.md).
-_DLG_THEMES = {
-    "light": dict(
-        ink="#201e1d", ground="#f3f2f2", surface="#eae9e9",
-        tint="#ffe0d9", accent="#ec3013", accent_600="#dd2b0f",
-        muted="#7d7979",
-    ),
-    "dark": dict(
-        ink="#f3f2f2", ground="#201e1d", surface="#2c2a29",
-        tint="#3a1f1a", accent="#ec3013", accent_600="#dd2b0f",
-        muted="#9b9797",
-    ),
-}
-_current_dlg_theme = "light"
-
-DLG_INK        = _DLG_THEMES["light"]["ink"]
-DLG_GROUND     = _DLG_THEMES["light"]["ground"]
-DLG_SURFACE    = _DLG_THEMES["light"]["surface"]
-DLG_TINT       = _DLG_THEMES["light"]["tint"]
-DLG_ACCENT     = _DLG_THEMES["light"]["accent"]
-DLG_ACCENT_600 = _DLG_THEMES["light"]["accent_600"]
-DLG_MUTED      = _DLG_THEMES["light"]["muted"]
+DLG_INK        = "#201e1d"
+DLG_GROUND     = "#f3f2f2"
+DLG_SURFACE    = "#eae9e9"
+DLG_TINT       = "#ffe0d9"    # accent-200 — focus / checked fill
+DLG_ACCENT     = "#ec3013"
+DLG_ACCENT_600 = "#dd2b0f"
+DLG_MUTED      = "#7d7979"
 DLG_FONT       = "Segoe UI Variable"
-
-
-def _apply_dlg_theme(name: str):
-    """Switch the dialog palette (and the dock's, if it's loaded) live.
-
-    Widgets that are already on screen don't repaint themselves just because
-    a module constant changed — callers are responsible for rebuilding/
-    repainting whatever's currently visible afterward (see
-    SettingsDialog._set_theme, which is the only place this is called from
-    while something is on screen).
-    """
-    global DLG_INK, DLG_GROUND, DLG_SURFACE, DLG_TINT
-    global DLG_ACCENT, DLG_ACCENT_600, DLG_MUTED, _current_dlg_theme
-    t = _DLG_THEMES.get(name, _DLG_THEMES["light"])
-    DLG_INK, DLG_GROUND, DLG_SURFACE = t["ink"], t["ground"], t["surface"]
-    DLG_TINT, DLG_ACCENT             = t["tint"], t["accent"]
-    DLG_ACCENT_600, DLG_MUTED        = t["accent_600"], t["muted"]
-    _current_dlg_theme = name if name in _DLG_THEMES else "light"
-
-    try:
-        import dock_toolbar
-        dock_toolbar.set_theme(_current_dlg_theme)
-    except ImportError:
-        pass  # dock import commented out (reverted to the old vertical panel)
 
 
 def _dlg_frame_paint(dlg, painter_cls=QPainter):
@@ -1226,24 +1174,6 @@ def _dlg_frame_paint(dlg, painter_cls=QPainter):
     p.setPen(QPen(QColor(DLG_INK), 4))   # pen straddles the edge → 2px visible
     p.drawRect(0, 0, w, h)
     p.end()
-
-
-def _center_on_display1(dlg):
-    """Center a dialog on the primary monitor's available geometry.
-
-    The overlay these dialogs are parented to spans every connected screen
-    (it's one big window covering the whole virtual desktop), so centering
-    on `parent.geometry()` lands the dialog on the *bounding box* of all
-    monitors combined — which on an irregular multi-monitor layout can be a
-    gap between screens, or straddling the seam where several meet. Always
-    landing on display 1 keeps it fully visible and interactive no matter
-    how the monitors are arranged.
-    """
-    geo = QApplication.primaryScreen().availableGeometry()
-    dlg.move(
-        geo.x() + (geo.width()  - dlg.width())  // 2,
-        geo.y() + (geo.height() - dlg.height()) // 2,
-    )
 
 
 def _dlg_sep() -> QFrame:
@@ -1264,60 +1194,6 @@ def _dlg_section_lbl(text: str) -> QLabel:
     return lbl
 
 
-class ShortcutCapture(QLineEdit):
-    """Flat, fully stylesheet-controlled stand-in for QKeySequenceEdit.
-
-    QKeySequenceEdit has a long-standing Qt quirk where its displayed text
-    doesn't reliably take the color set via stylesheet *or* palette — it can
-    look fine once and then go low-contrast (sometimes fully invisible)
-    after a later runtime palette change, which is exactly what this app's
-    dark-mode toggle does. Forcing the palette by hand didn't hold up across
-    a theme switch either, so this sidesteps the whole class: a plain
-    QLineEdit reliably respects `color` in a stylesheet, always. It only
-    reimplements the one bit of QKeySequenceEdit this app actually uses —
-    show a single key(+modifiers) combo, capture the next one on a
-    keypress — and exposes it the same way (`.keySequence()`), so nothing
-    else about SettingsDialog needs to change.
-    """
-    _IGNORED = {
-        Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Alt,
-        Qt.Key.Key_Meta, Qt.Key.Key_AltGr, Qt.Key.Key_CapsLock,
-        Qt.Key.Key_unknown,
-    }
-
-    def __init__(self, initial: QKeySequence, parent=None):
-        super().__init__(parent)
-        self.setReadOnly(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._seq = initial
-        self._refresh()
-
-    def _refresh(self):
-        self.setText(self._seq.toString())
-
-    def keySequence(self) -> QKeySequence:
-        return self._seq
-
-    def keyPressEvent(self, e):
-        key = Qt.Key(e.key())
-        if key in self._IGNORED:
-            e.accept()
-            return
-        self._seq = QKeySequence(QKeyCombination(e.modifiers(), key))
-        self._refresh()
-        e.accept()
-
-
-def _dlg_input_style(widget_cls: str = "QLineEdit") -> str:
-    return (
-        f"{widget_cls}{{"
-        f"  background:{DLG_GROUND};color:{DLG_INK};"
-        f"  border:2px solid {DLG_INK};border-radius:0;"
-        f"  padding:0 10px;font-size:13px;font-family:'{DLG_FONT}';}}"
-        f"{widget_cls}:focus{{border:2px solid {DLG_ACCENT};}}"
-    )
-
-
 def _dlg_button_style(primary: bool) -> str:
     if primary:
         return (
@@ -1331,64 +1207,6 @@ def _dlg_button_style(primary: bool) -> str:
         "padding:0 16px;}"
         f"QPushButton:hover{{background:{DLG_SURFACE};}}"
     )
-
-
-# ── Text tool input ───────────────────────────────────────────────────────────
-class TextInputDialog(QDialog):
-    """Flat replacement for QInputDialog.getText() — the native version was
-    the one popup still in the old grey/rounded style. Same shape as the
-    other dialogs: ground/ink chrome, square corners, centered on display 1."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent,
-                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
-        self.setAttribute(WAtt.WA_TranslucentBackground)
-        self._build()
-        self.setFixedWidth(320)
-        self.adjustSize()
-        _center_on_display1(self)
-
-    def _build(self):
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(20, 18, 20, 18)
-        lo.setSpacing(10)
-
-        title = QLabel("Add Text")
-        f = QFont(DLG_FONT, 13)
-        f.setBold(True)
-        title.setFont(f)
-        title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
-        lo.addWidget(title)
-        lo.addWidget(_dlg_sep())
-
-        self._edit = QLineEdit()
-        self._edit.setFixedHeight(36)
-        self._edit.setStyleSheet(_dlg_input_style())
-        self._edit.returnPressed.connect(self.accept)
-        lo.addWidget(self._edit)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_row.addStretch()
-        for label, slot, primary in [("Cancel", self.reject, False),
-                                     ("Add",    self.accept, True)]:
-            btn = QPushButton(label)
-            btn.setFixedHeight(34)
-            btn.setCursor(Cursor.PointingHandCursor)
-            btn.setStyleSheet(_dlg_button_style(primary))
-            btn.clicked.connect(slot)
-            btn_row.addWidget(btn)
-        lo.addLayout(btn_row)
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        self._edit.setFocus()
-
-    def text(self) -> str:
-        return self._edit.text()
-
-    def paintEvent(self, _):
-        _dlg_frame_paint(self)
 
 
 # ── Help dialog ───────────────────────────────────────────────────────────────
@@ -1444,7 +1262,11 @@ class HelpDialog(QDialog):
         self.setAttribute(WAtt.WA_TranslucentBackground)
         self._build()
         self.adjustSize()
-        _center_on_display1(self)
+        if parent:
+            self.move(
+                parent.x() + (parent.width()  - self.width())  // 2,
+                parent.y() + (parent.height() - self.height()) // 2,
+            )
 
     # ── Build ──────────────────────────────────────────────────────────────────
     def _build(self):
@@ -1605,7 +1427,11 @@ class SettingsDialog(QDialog):
         self._hotkey_mgr = hotkey_mgr
         self._build()
         self.adjustSize()
-        _center_on_display1(self)
+        if parent:
+            self.move(
+                parent.x() + (parent.width()  - self.width())  // 2,
+                parent.y() + (parent.height() - self.height()) // 2,
+            )
 
     # ── Build UI ───────────────────────────────────────────────────────────────
     def _build(self):
@@ -1624,9 +1450,10 @@ class SettingsDialog(QDialog):
         # ── Hotkey ─────────────────────────────────────────────────────────────
         lo.addWidget(_dlg_section_lbl("Activation shortcut"))
 
-        self._hk_edit = ShortcutCapture(
+        self._hk_edit = QKeySequenceEdit(
             QKeySequence(_pynput_to_ks(self._settings.get("hotkey")))
         )
+        self._hk_edit.setMaximumSequenceLength(1)
         self._hk_edit.setFixedHeight(36)
         self._hk_edit.setStyleSheet(self._input_style())
         lo.addWidget(self._hk_edit)
@@ -1639,9 +1466,10 @@ class SettingsDialog(QDialog):
         # ── OCR shortcut ───────────────────────────────────────────────────────
         lo.addWidget(_dlg_section_lbl("OCR shortcut  (Snip & Read)"))
 
-        self._ocr_hk_edit = ShortcutCapture(
+        self._ocr_hk_edit = QKeySequenceEdit(
             QKeySequence(_pynput_to_ks(self._settings.get("ocr_hotkey")))
         )
+        self._ocr_hk_edit.setMaximumSequenceLength(1)
         self._ocr_hk_edit.setFixedHeight(36)
         self._ocr_hk_edit.setStyleSheet(self._input_style())
         lo.addWidget(self._ocr_hk_edit)
@@ -1661,21 +1489,6 @@ class SettingsDialog(QDialog):
             f"QCheckBox:disabled{{color:{DLG_MUTED};}}"
         )
         lo.addWidget(self._boot_cb)
-        lo.addSpacing(6)
-
-        # ── Appearance ─────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Appearance"))
-        appearance_row = QHBoxLayout()
-        appearance_row.setSpacing(8)
-        current_theme = self._settings.get("theme")
-        for label, key in [("Light", "light"), ("Dark", "dark")]:
-            btn = QPushButton(label)
-            btn.setFixedHeight(32)
-            btn.setCursor(Cursor.PointingHandCursor)
-            btn.setStyleSheet(_dlg_button_style(primary=(key == current_theme)))
-            btn.clicked.connect(lambda _c, k=key: self._set_theme(k))
-            appearance_row.addWidget(btn)
-        lo.addLayout(appearance_row)
 
         lo.addSpacing(6)
         lo.addWidget(_dlg_sep())
@@ -1730,7 +1543,13 @@ class SettingsDialog(QDialog):
 
     # ── Helpers ────────────────────────────────────────────────────────────────
     def _input_style(self) -> str:
-        return _dlg_input_style("QLineEdit")
+        return (
+            "QKeySequenceEdit{"
+            f"  background:{DLG_GROUND};color:{DLG_INK};"
+            f"  border:2px solid {DLG_INK};border-radius:0;"
+            f"  padding:0 10px;font-size:13px;font-family:'{DLG_FONT}';}}"
+            f"QKeySequenceEdit:focus{{border:2px solid {DLG_ACCENT};}}"
+        )
 
     def _save(self):
         ks = self._hk_edit.keySequence().toString()
@@ -1747,33 +1566,6 @@ class SettingsDialog(QDialog):
         _set_startup(self._boot_cb.isChecked())
         self._settings.save()
         self.accept()
-
-    def _set_theme(self, name: str):
-        if name == self._settings.get("theme"):
-            return
-        self._settings.set("theme", name)
-        self._settings.save()
-        _apply_dlg_theme(name)
-
-        # The dock is a long-lived sibling widget (this dialog's parent is
-        # the overlay, which holds it) — refresh it immediately rather than
-        # waiting for the next launch.
-        overlay = self.parent()
-        if overlay is not None and hasattr(overlay, "toolbar"):
-            overlay.toolbar.refresh_theme()
-
-        # Rebuild this dialog's own contents in the new palette. Deferred by
-        # one tick so the click that triggered this finishes before the
-        # button doing the rebuilding gets torn down.
-        QTimer.singleShot(0, self._rebuild_ui)
-
-    def _rebuild_ui(self):
-        old_layout = self.layout()
-        if old_layout is not None:
-            QWidget().setLayout(old_layout)  # detach so it (and its children) can be GC'd
-        self._build()
-        self.adjustSize()
-        self.update()
 
     def paintEvent(self, _):
         _dlg_frame_paint(self)
@@ -1799,8 +1591,7 @@ _TRANSLATE_LANGS = {
     "Azerbaijani": "az", "Kazakh": "kk", "Uzbek": "uz", "Mongolian": "mn",
 }
 
-_ocr_reader      = None            # lazy-loaded EasyOCR Reader (cached after first use)
-_ocr_reader_lock = threading.Lock()
+_ocr_reader = None   # lazy-loaded EasyOCR Reader (cached after first use)
 
 def _ocr_model_dir() -> str:
     """Store OCR models in the app data folder, not in the user's home dir."""
@@ -1819,51 +1610,6 @@ def _ocr_models_present() -> bool:
             os.path.exists(os.path.join(d, "english_g2.pth")))
 
 
-def _get_ocr_reader():
-    """Build (or return the already-cached) EasyOCR reader.
-
-    The slow part of OCR isn't recognition — it's this ~5-10s model load,
-    which used to only start once the user had already drawn a selection
-    and was sitting there waiting on it. Thread-safe so the background
-    preload kicked off when the OCR tool is selected (see
-    _preload_ocr_reader) and an on-demand build from OcrThread can both
-    call this without racing each other or building it twice.
-    """
-    global _ocr_reader
-    if _ocr_reader is not None:
-        return _ocr_reader
-    with _ocr_reader_lock:
-        if _ocr_reader is None:
-            import easyocr
-            _ocr_reader = easyocr.Reader(
-                ["en"],
-                gpu=False,
-                verbose=False,
-                model_storage_directory=_ocr_model_dir(),
-            )
-    return _ocr_reader
-
-
-class OcrPreloadThread(QThread):
-    """Warms up the EasyOCR reader as soon as the OCR tool is selected, so
-    the model is usually already loaded by the time a selection is drawn."""
-    def run(self):
-        try:
-            _get_ocr_reader()
-        except Exception:
-            pass  # not fatal here — OcrThread surfaces any real error when used
-
-
-_ocr_preload_thread = None
-
-def _preload_ocr_reader():
-    global _ocr_preload_thread
-    if _ocr_reader is not None or _ocr_preload_thread is not None:
-        return
-    _ocr_preload_thread = OcrPreloadThread()
-    _ocr_preload_thread.start()
-
-
 class OcrThread(QThread):
     """Runs EasyOCR in a background thread so the UI stays responsive."""
     status   = pyqtSignal(str)   # progress updates for the dialog label
@@ -1875,6 +1621,7 @@ class OcrThread(QThread):
         self._pixmap = pixmap
 
     def run(self):
+        global _ocr_reader
         try:
             import io
             import numpy as np
@@ -1890,36 +1637,27 @@ class OcrThread(QThread):
             img = Image.open(io.BytesIO(bytes(ba))).convert("RGB")
 
             if _ocr_reader is None:
+                import easyocr
                 if not _ocr_models_present():
                     self.status.emit(
                         "Downloading OCR model (~150 MB) — first use only…"
                     )
                 else:
                     self.status.emit("Loading OCR engine…")
-            reader = _get_ocr_reader()
+                _ocr_reader = easyocr.Reader(
+                    ["en"],
+                    gpu=False,
+                    verbose=False,
+                    model_storage_directory=_ocr_model_dir(),
+                )
 
             self.status.emit("Reading text…")
-            results = reader.readtext(np.array(img))
+            results = _ocr_reader.readtext(np.array(img))
             text    = "\n".join(r[1] for r in results).strip()
             self.finished.emit(text or "(no text detected)")
 
         except Exception as exc:
             self.error.emit(str(exc))
-
-
-def _looks_like_error_page(text: str) -> bool:
-    """deep-translator hits Google's translate endpoint directly (no API
-    key). When Google rate-limits or blocks that — or a network in between
-    does, e.g. a corporate proxy — it doesn't always raise; sometimes it just
-    hands back Google's raw HTML error page as if it were the translation.
-    Catch the obvious cases so that never gets shown to the user as a
-    result."""
-    t = text.strip().lower()
-    return (
-        "<html" in t or "<!doctype html" in t
-        or "that's an error" in t or "that's all we know" in t
-        or t.startswith("error 500") or t.startswith("error 429")
-    )
 
 
 class TranslateThread(QThread):
@@ -1936,14 +1674,6 @@ class TranslateThread(QThread):
         try:
             from deep_translator import GoogleTranslator
             result = GoogleTranslator(source="auto", target=self._lang).translate(self._text)
-            if result and _looks_like_error_page(result):
-                self.error.emit(
-                    "Translation service returned an error page instead of a "
-                    "result — likely a temporary block or rate limit from "
-                    "Google, or a network/proxy filtering the request. Wait "
-                    "a moment and try again."
-                )
-                return
             self.finished.emit(result or "(empty result)")
         except ImportError:
             self.error.emit(
@@ -1966,15 +1696,23 @@ class OcrResultDialog(QDialog):
                          WType.WindowMaximizeButtonHint)
         self.setWindowTitle("OCR & Translate — Screen Annotator Pro")
         self.setStyleSheet(
-            f"QDialog{{background:{DLG_GROUND};}}"
-            f"QLabel{{color:{DLG_INK};background:transparent;font-family:'{DLG_FONT}';}}"
+            "QDialog{background:#101012;}"
+            "QLabel{color:#e5e5e7;}"
+            "QTextEdit{background:#1c1c1e;color:#e5e5e7;"
+            " border:1px solid #3a3a3c;border-radius:8px;padding:6px;font-size:12px;}"
+            "QScrollBar:vertical{background:#1c1c1e;width:6px;}"
+            "QScrollBar::handle:vertical{background:#3a3a3c;border-radius:3px;}"
         )
         self._pixmap       = pixmap
         self._ocr_thread   = None
         self._trans_thread = None
         self._build()
         self.resize(520, 480)
-        _center_on_display1(self)
+        geo = QApplication.primaryScreen().availableGeometry()
+        self.move(
+            geo.center().x() - self.width()  // 2,
+            geo.center().y() - self.height() // 2,
+        )
         self._start_ocr()
 
     # ── Build UI ───────────────────────────────────────────────────────────────
@@ -1985,7 +1723,7 @@ class OcrResultDialog(QDialog):
 
         # Status
         self._status = QLabel("Reading text…")
-        self._status.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        self._status.setStyleSheet("color:#636366;font-size:10px;")
         lo.addWidget(self._status)
 
         # OCR text box — grows with window
@@ -1997,37 +1735,41 @@ class OcrResultDialog(QDialog):
         lo.addWidget(self._ocr_box, 1)
 
         # Copy text button
-        copy_ocr = QPushButton("Copy text")
+        copy_ocr = QPushButton("📋  Copy text")
         copy_ocr.setFixedHeight(30)
         copy_ocr.setCursor(Cursor.PointingHandCursor)
-        copy_ocr.setStyleSheet(_dlg_button_style(primary=False))
+        copy_ocr.setStyleSheet(self._ghost_btn())
         copy_ocr.clicked.connect(
             lambda: self._copy_and_flash(copy_ocr, self._ocr_box.toPlainText())
         )
         lo.addWidget(copy_ocr)
 
-        lo.addWidget(_dlg_sep())
+        lo.addWidget(self._sep())
 
         # Translate row
         lang_row = QHBoxLayout()
         lang_lbl = QLabel("Translate to")
-        lang_lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:12px;")
+        lang_lbl.setStyleSheet("color:#98989d;font-size:12px;")
         self._lang_box = QComboBox()
         self._lang_box.addItems(list(_TRANSLATE_LANGS.keys()))
         self._lang_box.setCurrentText("English")
         self._lang_box.setFixedHeight(30)
         self._lang_box.setStyleSheet(
-            f"QComboBox{{background:{DLG_GROUND};color:{DLG_INK};"
-            f"border:2px solid {DLG_INK};border-radius:0;"
-            f"padding:0 8px;font-size:12px;font-family:'{DLG_FONT}';}}"
+            "QComboBox{background:rgba(255,255,255,0.07);color:#e5e5e7;"
+            "border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+            "padding:0 8px;font-size:12px;}"
             "QComboBox::drop-down{border:none;}"
-            f"QComboBox QAbstractItemView{{background:{DLG_GROUND};color:{DLG_INK};"
-            f"selection-background-color:{DLG_TINT};border:2px solid {DLG_INK};}}"
+            "QComboBox QAbstractItemView{background:#1c1c1e;color:#e5e5e7;"
+            "selection-background-color:#0A84FF;border:1px solid #3a3a3c;}"
         )
-        go_btn = QPushButton("Translate")
+        go_btn = QPushButton("Translate →")
         go_btn.setFixedHeight(30)
         go_btn.setCursor(Cursor.PointingHandCursor)
-        go_btn.setStyleSheet(_dlg_button_style(primary=True))
+        go_btn.setStyleSheet(
+            "QPushButton{color:#fff;background:#0A84FF;border:none;"
+            "border-radius:8px;font-size:12px;font-weight:600;padding:0 12px;}"
+            "QPushButton:hover{background:#1A94FF;}"
+        )
         go_btn.clicked.connect(self._start_translate)
         lang_row.addWidget(lang_lbl)
         lang_row.addWidget(self._lang_box, 1)
@@ -2043,10 +1785,10 @@ class OcrResultDialog(QDialog):
         lo.addWidget(self._trans_box, 1)
 
         # Copy translation button
-        copy_tr = QPushButton("Copy translation")
+        copy_tr = QPushButton("📋  Copy translation")
         copy_tr.setFixedHeight(30)
         copy_tr.setCursor(Cursor.PointingHandCursor)
-        copy_tr.setStyleSheet(_dlg_button_style(primary=False))
+        copy_tr.setStyleSheet(self._ghost_btn())
         copy_tr.clicked.connect(
             lambda: self._copy_and_flash(copy_tr, self._trans_box.toPlainText())
         )
@@ -2055,7 +1797,7 @@ class OcrResultDialog(QDialog):
     def _copy_and_flash(self, btn: QPushButton, text: str):
         QApplication.clipboard().setText(text)
         original = btn.text()
-        btn.setText("Copied")
+        btn.setText("✅  Copied!")
         btn.setEnabled(False)
         QTimer.singleShot(1500, lambda: (btn.setText(original), btn.setEnabled(True)))
 
@@ -2073,11 +1815,11 @@ class OcrResultDialog(QDialog):
 
     def _on_ocr_done(self, text: str):
         self._ocr_box.setPlainText(text)
-        self._status.setText("Text recognized")
+        self._status.setText("✓  Text recognized")
 
     def _on_ocr_error(self, msg: str):
         self._ocr_box.setPlainText(msg)
-        self._status.setText("Could not read text")
+        self._status.setText("⚠  Could not read text")
 
     # ── Translation ────────────────────────────────────────────────────────────
     def _start_translate(self):
@@ -2094,10 +1836,23 @@ class OcrResultDialog(QDialog):
     # ── Style helpers ──────────────────────────────────────────────────────────
     def _box_style(self) -> str:
         return (
-            f"QTextEdit{{background:{DLG_SURFACE};color:{DLG_INK};"
-            f"border:2px solid {DLG_INK};border-radius:0;"
-            f"padding:6px;font-size:12px;font-family:'{DLG_FONT}';}}"
+            "QTextEdit{background:rgba(255,255,255,0.06);color:#e5e5e7;"
+            "border:1px solid rgba(255,255,255,0.10);border-radius:8px;"
+            "padding:6px;font-size:12px;}"
         )
+
+    def _ghost_btn(self) -> str:
+        return (
+            "QPushButton{color:#98989d;background:rgba(255,255,255,0.06);"
+            "border:1px solid rgba(255,255,255,0.12);border-radius:8px;"
+            "font-size:12px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.10);color:#e5e5e7;}"
+        )
+
+    def _sep(self) -> QFrame:
+        f = QFrame(); f.setFrameShape(QFrame.Shape.HLine); f.setFixedHeight(1)
+        f.setStyleSheet("background:rgba(255,255,255,0.06);margin:0;")
+        return f
 
 
 TOOL_GROUPS = [
@@ -2661,23 +2416,11 @@ def main():
     app.setApplicationName("Screen Annotator Pro")
     app.setQuitOnLastWindowClosed(False)
 
-    # App-wide icon — every window (Settings, Help, the OCR result window's
-    # real title bar, Alt-Tab/taskbar entries) picks this up unless it sets
-    # its own. The system tray icon is set separately in _setup_tray().
-    ico_path = _resource(os.path.join('icons', 'annotate.ico'))
-    if os.path.exists(ico_path):
-        app.setWindowIcon(QIcon(ico_path))
-
     settings_mgr = SettingsManager()
-    _apply_dlg_theme(settings_mgr.get("theme"))
     hotkey_mgr   = HotkeyManager()
     overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
     tray         = _setup_tray(overlay)
     _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"))
-
-    # Safety net: catches any exit path that isn't already covered by the
-    # dock's own save-on-drag/-collapse/-expand calls.
-    app.aboutToQuit.connect(overlay.toolbar._save_dock_state)
 
     from PyQt6.QtCore import QMetaObject, Qt as _Qt
     def _on_ocr():

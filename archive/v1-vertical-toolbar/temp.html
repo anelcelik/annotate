@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Screen Annotator Pro — Live Preview</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Page shell ──────────────────────────────────────────────────── */
+html, body { height: 100%; overflow: hidden; background: #f8f9fa;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+
+/* ── Utility spacers ─────────────────────────────────────────────── */
+.sp-3 { height: 3px; flex-shrink: 0; }
+.sp-4 { height: 4px; flex-shrink: 0; }
+.sp-6 { height: 6px; flex-shrink: 0; }
+
+/* ── Wikipedia layout ────────────────────────────────────────────── */
+.wiki-shell { position: absolute; inset: 0; overflow: hidden; background: #fff; }
+
+.wiki-topbar {
+  height: 50px; background: #fff; border-bottom: 1px solid #a2a9b1;
+  display: flex; align-items: center; padding: 0 20px; gap: 16px; position: relative; z-index: 0;
+}
+.wiki-logo { display: flex; align-items: center; gap: 8px; text-decoration: none; }
+.wiki-logo-globe {
+  width: 36px; height: 36px;
+  background: radial-gradient(circle at 40% 35%, #eaecf0 0%, #a2a9b1 100%);
+  border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+.wiki-logo-text { font-family: "Linux Libertine", Georgia, serif; font-size: 18px;
+  color: #202122; letter-spacing: -0.3px; }
+.wiki-logo-text small { display: block; font-family: -apple-system, sans-serif;
+  font-size: 9px; color: #54595d; letter-spacing: 0.5px; font-weight: 400; margin-top: -2px; }
+
+.wiki-search {
+  flex: 1; max-width: 360px; height: 32px; border: 1px solid #a2a9b1; border-radius: 2px;
+  padding: 0 10px; display: flex; align-items: center; gap: 6px;
+}
+.wiki-search-icon { color: #a2a9b1; font-size: 12px; }
+.wiki-search-text  { color: #54595d; font-size: 13px; }
+
+.wiki-nav-links { margin-left: auto; display: flex; gap: 14px; font-size: 12px; }
+.wiki-nav-links a { color: #0645ad; text-decoration: none; }
+
+.wiki-body { display: flex; height: calc(100% - 50px); overflow: hidden; }
+
+.wiki-sidebar {
+  width: 180px; flex-shrink: 0; border-right: 1px solid #a2a9b1;
+  background: #f8f9fa; padding: 16px 0; overflow: hidden; font-size: 12px;
+}
+.wiki-sidebar-section { padding: 6px 16px 2px; font-weight: 700; font-size: 11px;
+  color: #54595d; text-transform: uppercase; letter-spacing: 0.5px; }
+.wiki-sidebar-link { display: block; padding: 4px 16px; color: #0645ad;
+  font-size: 12px; text-decoration: none; cursor: default; }
+.wiki-sidebar-link.active { background: #eaf3fb; font-weight: 600; color: #0b0080; }
+.wiki-sidebar-divider { height: 1px; background: #a2a9b1; margin: 8px 0; }
+
+.wiki-article { flex: 1; overflow-y: auto; padding: 24px 30px 40px; position: relative; }
+.wiki-article::-webkit-scrollbar { width: 6px; }
+.wiki-article::-webkit-scrollbar-track { background: #f8f9fa; }
+.wiki-article::-webkit-scrollbar-thumb { background: #a2a9b1; border-radius: 3px; }
+
+.article-cats { font-size: 11px; color: #54595d; margin-bottom: 4px; }
+.article-cats a { color: #0645ad; text-decoration: none; }
+
+h1.article-title { font-family: "Linux Libertine", Georgia, serif; font-size: 28px;
+  font-weight: 400; color: #202122; border-bottom: 1px solid #a2a9b1;
+  padding-bottom: 4px; margin-bottom: 12px; }
+
+.article-tabs { display: flex; margin-bottom: 16px; border-bottom: 1px solid #a2a9b1; font-size: 12px; }
+.article-tab { padding: 6px 14px; color: #0645ad; cursor: default;
+  border: 1px solid transparent; margin-bottom: -1px; }
+.article-tab.active { background: #fff; border-color: #a2a9b1;
+  border-bottom-color: #fff; color: #202122; font-weight: 600; }
+
+.infobox { float: right; clear: right; margin: 0 0 16px 24px; width: 270px;
+  border: 1px solid #a2a9b1; background: #f8f9fa; font-size: 12px; line-height: 1.6; }
+.infobox-title { background: #cee0f2; text-align: center; padding: 6px 8px;
+  font-weight: 700; font-size: 13px; color: #202122;
+  font-family: "Linux Libertine", Georgia, serif; }
+.infobox-img { text-align: center; padding: 10px 8px 4px; border-bottom: 1px solid #a2a9b1; }
+.fake-logo { width: 80px; height: 80px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: center; font-size: 42px; }
+.infobox-img-caption { font-size: 11px; color: #54595d; margin-top: 4px; }
+.infobox table { width: 100%; border-collapse: collapse; }
+.infobox td { padding: 4px 8px; border-top: 1px solid #eaecf0; vertical-align: top; }
+.infobox td:first-child { font-weight: 700; color: #202122; white-space: nowrap; width: 40%; }
+.infobox td:last-child { color: #202122; }
+.infobox a { color: #0645ad; text-decoration: none; }
+
+.article-lead { font-family: Georgia, serif; font-size: 14px; line-height: 1.8;
+  color: #202122; margin-bottom: 16px; }
+.article-lead b { font-weight: 700; }
+.article-lead a { color: #0645ad; text-decoration: none; }
+
+.toc-box { background: #f8f9fa; border: 1px solid #a2a9b1; display: inline-block;
+  padding: 10px 16px; margin: 0 0 16px; font-size: 12px; min-width: 180px; }
+.toc-title { font-weight: 700; font-size: 13px; text-align: center; margin-bottom: 6px; }
+.toc-item { padding: 2px 0; }
+.toc-item a { color: #0645ad; text-decoration: none; }
+.toc-sub { padding: 2px 0 2px 14px; }
+.toc-sub a { color: #0645ad; text-decoration: none; }
+
+h2.section-title { font-family: "Linux Libertine", Georgia, serif; font-size: 20px;
+  font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 3px;
+  margin: 20px 0 10px; color: #202122; }
+h3.subsection-title { font-family: "Linux Libertine", Georgia, serif; font-size: 16px;
+  font-weight: 700; margin: 14px 0 8px; color: #202122; }
+
+.article-p { font-family: Georgia, serif; font-size: 14px; line-height: 1.8;
+  color: #202122; margin-bottom: 12px; }
+.article-p a { color: #0645ad; text-decoration: none; }
+.article-p code { background: #f8f9fa; border: 1px solid #eaecf0; border-radius: 2px;
+  padding: 1px 4px; font-size: 12px; font-family: "Courier New", monospace; }
+
+.code-block { background: #f8f9fa; border: 1px solid #eaecf0; padding: 12px 16px;
+  font-family: "Courier New", monospace; font-size: 12px; line-height: 1.8;
+  color: #202122; margin: 8px 0 16px; overflow-x: auto; }
+.code-kw  { color: #008000; font-weight: 700; }
+.code-str { color: #a31515; }
+.code-cm  { color: #008000; font-style: italic; }
+.code-fn  { color: #0000ff; }
+.code-num { color: #098658; }
+
+/* ── Text highlights on wiki content ─────────────────────────────── */
+.hl-yellow { background: rgba(255,214,10,0.45); border-radius: 2px; }
+.hl-blue   { background: rgba(10,132,255,0.22); border-radius: 2px; }
+.hl-green  { background: rgba(50,215,75,0.28);  border-radius: 2px; }
+
+/* ── Overlay + SVG canvas ────────────────────────────────────────── */
+.overlay-layer { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+.annotations-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+/* ── Annotation labels ───────────────────────────────────────────── */
+.ann-label {
+  position: fixed; pointer-events: none; z-index: 11;
+  font-size: 11px; font-weight: 700;
+  font-family: -apple-system, sans-serif;
+  padding: 3px 8px; border-radius: 4px; white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.ann-label.yellow { background: #FFD60A; color: #1c1c1e; }
+.ann-label.blue   { background: #0A84FF; color: #fff; }
+.ann-label.green  { background: #32D74B; color: #1c1c1e; }
+.ann-label.red    { background: #FF3B3B; color: #fff; }
+
+/* individual positions for each annotation label */
+.ann-guido   { top: 236px; left: 670px; }
+.ann-release { top: 388px; left: 720px; }
+.ann-popular { top: 323px; left: 960px; }
+.ann-code    { top: 624px; left: 395px; }
+.ann-ruler   { top: 779px; left: 730px; }
+.ann-ocr     { top: 490px; left: 732px; font-size: 10px; padding: 2px 7px; }
+
+.ruler-label {
+  position: fixed; pointer-events: none; z-index: 11;
+  font-size: 10px; font-weight: 600; color: #32D74B;
+  font-family: -apple-system, sans-serif;
+  background: rgba(16,16,18,0.85); padding: 2px 6px; border-radius: 4px;
+  top: 779px; left: 730px;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────── */
+.toolbar {
+  position: fixed; top: 64px; left: 20px; width: 220px;
+  background: rgba(16,16,18,0.97); border-radius: 14px;
+  border: 1px solid rgba(70,70,75,0.86);
+  padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 2px;
+  box-shadow: 4px 5px 32px rgba(0,0,0,0.6);
+  z-index: 100;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.drag-handle { text-align: center; font-size: 10px; font-weight: 600;
+  color: #3a3a3c; letter-spacing: 0.5px; padding: 0 0 4px; cursor: move; }
+
+.hsep { height: 1px; background: rgba(255,255,255,0.06); margin: 2px 0; flex-shrink: 0; }
+
+.section-header { height: 28px; display: flex; align-items: center; padding-left: 4px;
+  font-size: 10px; font-weight: 600; letter-spacing: 1px; color: #636366;
+  border-radius: 6px; cursor: pointer; gap: 4px; }
+.section-header.open { color: #e5e5e7; }
+.chev { margin-left: auto; padding-right: 6px; font-size: 11px; }
+
+.section-body { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 6px 2px; }
+
+.tool-btn { height: 30px; display: flex; align-items: center; padding-left: 8px;
+  font-size: 12px; color: #98989d; border-radius: 8px; border: 1.5px solid transparent;
+  cursor: pointer; gap: 10px; white-space: nowrap; }
+.ti { width: 18px; text-align: center; flex-shrink: 0; }
+.tool-btn.active { background: rgba(10,132,255,0.22); color: #4DA3FF;
+  border-color: rgba(10,132,255,0.4); }
+
+.section-label { font-size: 9px; font-weight: 600; letter-spacing: 1px; color: #48484a; }
+
+/* ── Swatch grid ─────────────────────────────────────────────────── */
+.swatch-grid { display: grid; grid-template-columns: repeat(4, 22px); gap: 4px; margin-top: 3px; }
+.swatch { width: 22px; height: 22px; border-radius: 5px; border: 2px solid transparent; cursor: pointer; }
+.swatch.sel { border-color: white; }
+
+.sw-red      { background: #FF3B3B; }
+.sw-orange   { background: #FF6B00; }
+.sw-yellow   { background: #FFD60A; }
+.sw-green    { background: #34C759; }
+.sw-blue     { background: #0A84FF; }
+.sw-purple   { background: #BF5AF2; }
+.sw-pink     { background: #FF375F; }
+.sw-mint     { background: #30D158; }
+.sw-white    { background: #FFFFFF; }
+.sw-silver   { background: #E5E5EA; }
+.sw-midgray  { background: #8E8E93; }
+.sw-gray     { background: #636366; }
+.sw-darkgray { background: #3A3A3C; }
+.sw-nearblk  { background: #1C1C1E; }
+.sw-black    { background: #000000; border-color: #3a3a3c; }
+.sw-amber    { background: #FF9F0A; }
+
+/* ── Slider row variants ─────────────────────────────────────────── */
+.slider-row { display: flex; align-items: center; justify-content: space-between; }
+.slider-row-mt { margin-top: 8px; }
+.slider-val { font-size: 9px; color: #636366; }
+
+.slider-track { position: relative; height: 4px; background: #3a3a3c;
+  border-radius: 2px; margin: 4px 0; }
+.slider-fill { position: absolute; left: 0; top: 0; height: 100%;
+  background: #0A84FF; border-radius: 2px; }
+.slider-handle { position: absolute; top: 50%; transform: translate(-50%, -50%);
+  width: 13px; height: 13px; background: #e5e5e7; border-radius: 7px; }
+
+/* slider fill widths */
+.fill-100    { width: 100%; }
+.fill-stroke { width: 7%; }
+.fill-text   { width: 19%; }
+
+/* slider handle positions */
+.handle-100    { left: 100%; }
+.handle-stroke { left: 7%; }
+.handle-text   { left: 19%; }
+
+/* ── Dot preview ─────────────────────────────────────────────────── */
+.dot-preview { height: 20px; display: flex; align-items: center; justify-content: center; }
+.dot { border-radius: 50%; background: #FF3B3B; }
+.dot-sm { width: 5px; height: 5px; }
+.dot-md { width: 8px; height: 8px; }
+
+/* ── Custom color btn ────────────────────────────────────────────── */
+.custom-color-btn { height: 28px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #636366; border: 1px dashed #3a3a3c; border-radius: 8px;
+  cursor: pointer; margin-top: 4px; }
+
+/* ── Action buttons ──────────────────────────────────────────────── */
+.action-btn { height: 32px; display: flex; align-items: center; padding-left: 10px;
+  font-size: 12px; border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+  gap: 8px; margin-top: 2px; }
+.action-btn.ss { color: #32D74B; background: rgba(50,215,75,0.1); border-color: rgba(50,215,75,0.3); }
+.action-btn.pa { color: #0A84FF; background: rgba(10,132,255,0.1); border-color: rgba(10,132,255,0.3); }
+
+.ghost-btn { height: 30px; display: flex; align-items: center; padding-left: 10px;
+  font-size: 12px; color: #636366; border-radius: 8px; border: none; cursor: pointer; gap: 6px; }
+.ghost-btn.danger { color: #FF453A; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     WIKIPEDIA PAGE
+══════════════════════════════════════════ -->
+<div class="wiki-shell">
+
+  <div class="wiki-topbar">
+    <div class="wiki-logo">
+      <div class="wiki-logo-globe">🌐</div>
+      <div class="wiki-logo-text">
+        Wikipedia
+        <small>The Free Encyclopedia</small>
+      </div>
+    </div>
+    <div class="wiki-search">
+      <span class="wiki-search-icon">🔍</span>
+      <div class="wiki-search-text">Search Wikipedia</div>
+    </div>
+    <div class="wiki-nav-links">
+      <a href="#">Create account</a>
+      <a href="#">Log in</a>
+      <a href="#">Talk</a>
+      <a href="#">Contributions</a>
+    </div>
+  </div>
+
+  <div class="wiki-body">
+
+    <div class="wiki-sidebar">
+      <div class="wiki-sidebar-section">Navigation</div>
+      <a class="wiki-sidebar-link active" href="#">Main page</a>
+      <a class="wiki-sidebar-link" href="#">Contents</a>
+      <a class="wiki-sidebar-link" href="#">Current events</a>
+      <a class="wiki-sidebar-link" href="#">Random article</a>
+      <a class="wiki-sidebar-link" href="#">About Wikipedia</a>
+      <div class="wiki-sidebar-divider"></div>
+      <div class="wiki-sidebar-section">Contribute</div>
+      <a class="wiki-sidebar-link" href="#">Help</a>
+      <a class="wiki-sidebar-link" href="#">Learn to edit</a>
+      <a class="wiki-sidebar-link" href="#">Community portal</a>
+      <div class="wiki-sidebar-divider"></div>
+      <div class="wiki-sidebar-section">Tools</div>
+      <a class="wiki-sidebar-link" href="#">What links here</a>
+      <a class="wiki-sidebar-link" href="#">Related changes</a>
+      <a class="wiki-sidebar-link" href="#">Upload file</a>
+      <a class="wiki-sidebar-link" href="#">Special pages</a>
+      <a class="wiki-sidebar-link" href="#">Permanent link</a>
+      <a class="wiki-sidebar-link" href="#">Cite this page</a>
+    </div>
+
+    <div class="wiki-article">
+
+      <div class="article-cats">
+        <a href="#">Programming languages</a> › <a href="#">Python</a>
+      </div>
+
+      <h1 class="article-title">Python (programming language)</h1>
+
+      <div class="article-tabs">
+        <div class="article-tab active">Article</div>
+        <div class="article-tab">Talk</div>
+        <div class="article-tab">Read</div>
+        <div class="article-tab">Edit</div>
+        <div class="article-tab">View history</div>
+      </div>
+
+      <div class="infobox">
+        <div class="infobox-title">Python</div>
+        <div class="infobox-img">
+          <div class="fake-logo">🐍</div>
+          <div class="infobox-img-caption">The Python logo</div>
+        </div>
+        <table>
+          <tr><td>Paradigm</td><td><a href="#">Multi-paradigm</a>: <a href="#">object-oriented</a>, <a href="#">procedural</a>, <a href="#">functional</a></td></tr>
+          <tr><td>Designed by</td><td><a href="#">Guido van Rossum</a></td></tr>
+          <tr><td>Developer</td><td><a href="#">Python Software Foundation</a></td></tr>
+          <tr><td>First appeared</td><td>1991<sup><a href="#">[1]</a></sup></td></tr>
+          <tr><td>Stable release</td><td>3.12.4 / June 6, 2024</td></tr>
+          <tr><td>Typing discipline</td><td><a href="#">Duck</a>, <a href="#">dynamic</a>, <a href="#">strong</a></td></tr>
+          <tr><td>OS</td><td>Windows, macOS, Linux, and more</td></tr>
+          <tr><td>License</td><td><a href="#">Python Software Foundation License</a></td></tr>
+          <tr><td>Filename ext.</td><td><code>.py</code>, <code>.pyw</code>, <code>.pyz</code></td></tr>
+          <tr><td>Website</td><td><a href="#">python.org</a></td></tr>
+        </table>
+      </div>
+
+      <p class="article-lead">
+        <b>Python</b> is a <a href="#">high-level</a>, <a href="#">general-purpose programming language</a>.
+        Its design philosophy emphasizes <a href="#">code readability</a> with the use of
+        <a href="#">significant indentation</a>.<sup><a href="#">[33]</a></sup>
+        Python is <a href="#">dynamically typed</a> and <a href="#">garbage-collected</a>.
+        It supports multiple <a href="#">programming paradigms</a>, including
+        <span class="hl-yellow"><a href="#">structured</a> (particularly <a href="#">procedural</a>),
+        <a href="#">object-oriented</a> and <a href="#">functional programming</a></span>.
+        It is often described as a "batteries included" language due to its comprehensive
+        <a href="#">standard library</a>.<sup><a href="#">[34]</a></sup>
+      </p>
+
+      <p class="article-lead">
+        <a href="#">Guido van Rossum</a> began working on Python in the late 1980s as a
+        successor to the <a href="#">ABC programming language</a> and first released it in
+        <span class="hl-green">1991 as Python 0.9.0</span>.<sup><a href="#">[36]</a></sup>
+        Python 2.0 was released in 2000. Python 3.0, released in 2008, was a major revision
+        not completely <a href="#">backward-compatible</a> with earlier versions.
+        Python 2.7.18, released in 2020, was the last release of Python 2.<sup><a href="#">[37]</a></sup>
+      </p>
+
+      <p class="article-lead">
+        Python consistently ranks as one of the most popular programming languages,
+        and has gained widespread use in the fields of
+        <a href="#">machine learning</a> and <a href="#">data science</a>.
+        <span class="hl-blue">As of December 2024, Python is the most popular language
+        on the <a href="#">TIOBE index</a>.</span><sup><a href="#">[38]</a></sup>
+      </p>
+
+      <div class="toc-box">
+        <div class="toc-title">Contents</div>
+        <div class="toc-item"><a href="#">1 History</a></div>
+        <div class="toc-sub"><a href="#">1.1 Design philosophy</a></div>
+        <div class="toc-sub"><a href="#">1.2 Early development</a></div>
+        <div class="toc-item"><a href="#">2 Features and philosophy</a></div>
+        <div class="toc-item"><a href="#">3 Syntax and semantics</a></div>
+        <div class="toc-sub"><a href="#">3.1 Indentation</a></div>
+        <div class="toc-sub"><a href="#">3.2 Statements and control flow</a></div>
+        <div class="toc-item"><a href="#">4 Programming examples</a></div>
+        <div class="toc-item"><a href="#">5 Standard library</a></div>
+        <div class="toc-item"><a href="#">6 References</a></div>
+      </div>
+
+      <h2 class="section-title">History</h2>
+
+      <p class="article-p">
+        Python was conceived in the late 1980s by <a href="#">Guido van Rossum</a>
+        at <a href="#">Centrum Wiskunde &amp; Informatica</a> (CWI) in the Netherlands
+        as a successor to the <a href="#">ABC language</a> (itself inspired by <a href="#">SETL</a>),
+        capable of <a href="#">exception handling</a> and interfacing with the
+        <a href="#">Amoeba</a> operating system.<sup><a href="#">[39]</a></sup>
+        Its implementation began in December 1989.<sup><a href="#">[40]</a></sup>
+        Van Rossum shouldered sole responsibility for the project, as the lead developer,
+        until <span class="hl-yellow">12 July 2018, when he announced his "permanent vacation"
+        from his responsibilities as Python's <a href="#">benevolent dictator for life</a></span>,
+        a title the Python community bestowed upon him to reflect his long-term commitment as
+        the project's chief decision-maker.<sup><a href="#">[41]</a></sup>
+      </p>
+
+      <h2 class="section-title">Features and philosophy</h2>
+
+      <p class="article-p">
+        Python is a <a href="#">multi-paradigm programming language</a>.
+        <a href="#">Object-oriented programming</a> and <a href="#">structured programming</a>
+        are fully supported, and many of their features support <a href="#">functional programming</a>
+        and <a href="#">aspect-oriented programming</a> (including <a href="#">metaprogramming</a>
+        and <a href="#">metaobjects</a>). Many other paradigms are supported via extensions,
+        including <a href="#">design by contract</a> and <a href="#">logic programming</a>.
+      </p>
+
+      <p class="article-p">
+        Python uses <span class="hl-blue">dynamic typing and a combination of
+        <a href="#">reference counting</a> and a cycle-detecting <a href="#">garbage collector</a></span>
+        for <a href="#">memory management</a>.<sup><a href="#">[42]</a></sup>
+        It uses <a href="#">dynamic name resolution</a> (<a href="#">late binding</a>),
+        which binds method and variable names during program execution.
+      </p>
+
+      <h2 class="section-title">Syntax and semantics</h2>
+
+      <h3 class="subsection-title">Indentation</h3>
+
+      <p class="article-p">
+        Python uses <a href="#">whitespace indentation</a>, rather than
+        <a href="#">curly brackets</a> or <a href="#">keywords</a>, to delimit
+        <a href="#">blocks</a>. An increase in indentation comes after certain statements;
+        a decrease in indentation signifies the end of the current block.
+        Thus, the program's visual structure accurately represents its semantic structure.
+        This feature is sometimes termed the <a href="#">off-side rule</a>.
+      </p>
+
+      <h3 class="subsection-title">Programming examples</h3>
+
+      <p class="article-p">Hello world program in Python:</p>
+
+      <div class="code-block">
+<span class="code-fn">print</span>(<span class="code-str">"Hello, World!"</span>)
+      </div>
+
+      <p class="article-p">Fibonacci sequence using a generator expression:</p>
+
+      <div class="code-block">
+<span class="code-kw">def</span> <span class="code-fn">fibonacci</span>(n):
+    a, b = <span class="code-num">0</span>, <span class="code-num">1</span>
+    <span class="code-kw">while</span> a &lt; n:
+        <span class="code-kw">yield</span> a
+        a, b = b, a + b
+
+<span class="code-cm"># Print first 10 Fibonacci numbers</span>
+<span class="code-kw">for</span> num <span class="code-kw">in</span> fibonacci(<span class="code-num">100</span>):
+    <span class="code-fn">print</span>(num)
+      </div>
+
+      <h2 class="section-title">Standard library</h2>
+
+      <p class="article-p">
+        Python has a large <a href="#">standard library</a>, commonly cited as one of
+        Python's greatest strengths, providing tools suited to many tasks. For
+        Internet-facing applications, many standard formats and protocols such as
+        <a href="#">MIME</a> and <a href="#">HTTP</a> are supported.
+        It includes modules for creating <a href="#">graphical user interfaces</a>,
+        connecting to <a href="#">relational databases</a>, generating
+        <a href="#">pseudorandom numbers</a>, arithmetic with arbitrary-precision
+        <a href="#">decimals</a>, manipulating <a href="#">regular expressions</a>,
+        and unit <a href="#">testing</a>.
+      </p>
+
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════
+     ANNOTATION OVERLAY LAYER
+══════════════════════════════════════════ -->
+<div class="overlay-layer">
+  <svg class="annotations-svg" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ah-red" markerWidth="9" markerHeight="7" refX="7" refY="3.5" orient="auto">
+        <polygon points="0 0, 9 3.5, 0 7" fill="#FF3B3B"/>
+      </marker>
+      <marker id="ah-blue" markerWidth="9" markerHeight="7" refX="7" refY="3.5" orient="auto">
+        <polygon points="0 0, 9 3.5, 0 7" fill="#0A84FF"/>
+      </marker>
+      <marker id="ah-yellow" markerWidth="9" markerHeight="7" refX="7" refY="3.5" orient="auto">
+        <polygon points="0 0, 9 3.5, 0 7" fill="#FFD60A"/>
+      </marker>
+      <marker id="ah-green" markerWidth="9" markerHeight="7" refX="7" refY="3.5" orient="auto">
+        <polygon points="0 0, 9 3.5, 0 7" fill="#32D74B"/>
+      </marker>
+    </defs>
+
+    <!-- Blue rectangle around infobox -->
+    <rect x="893" y="110" width="282" height="440"
+          stroke="#0A84FF" stroke-width="2.5" fill="rgba(10,132,255,0.04)" rx="3"/>
+
+    <!-- Red arrow: "Key designer!" → infobox Guido row -->
+    <line x1="810" y1="242" x2="893" y2="218"
+          stroke="#FF3B3B" stroke-width="2.5" stroke-linecap="round"
+          marker-end="url(#ah-red)"/>
+
+    <!-- Yellow arrow: "First release" → 1991 row in infobox -->
+    <line x1="860" y1="395" x2="950" y2="310"
+          stroke="#FFD60A" stroke-width="2.5" stroke-linecap="round"
+          marker-end="url(#ah-yellow)"/>
+
+    <!-- Callout ① near "most popular" sentence -->
+    <circle cx="1148" cy="337" r="13" fill="#FF3B3B"/>
+    <text x="1148" y="342" fill="white" font-size="12" text-anchor="middle"
+          font-family="-apple-system,sans-serif" font-weight="700">①</text>
+
+    <!-- Callout ② near fibonacci block -->
+    <circle cx="1150" cy="665" r="13" fill="#FF3B3B"/>
+    <text x="1150" y="670" fill="white" font-size="12" text-anchor="middle"
+          font-family="-apple-system,sans-serif" font-weight="700">②</text>
+
+    <!-- Blue rectangle around fibonacci code block -->
+    <rect x="390" y="648" width="750" height="130"
+          stroke="#0A84FF" stroke-width="2" fill="rgba(10,132,255,0.05)" rx="4"/>
+
+    <!-- Blue arrow from "Study this code!" label to code block -->
+    <line x1="480" y1="635" x2="500" y2="648"
+          stroke="#0A84FF" stroke-width="2" stroke-linecap="round"
+          marker-end="url(#ah-blue)"/>
+
+    <!-- Green ruler measuring the code block width -->
+    <line x1="390" y1="792" x2="1140" y2="792"
+          stroke="#32D74B" stroke-width="2" stroke-linecap="round"/>
+    <line x1="390" y1="786" x2="390" y2="798" stroke="#32D74B" stroke-width="2"/>
+    <line x1="1140" y1="786" x2="1140" y2="798" stroke="#32D74B" stroke-width="2"/>
+
+    <!-- Red freehand scribble near "batteries included" -->
+    <path d="M667 285 C672 278,680 290,688 282 C695 275,700 286,708 280 C714 274,720 284,726 279"
+          stroke="#FF3B3B" stroke-width="2.5" fill="none"
+          stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Purple underline under "high-level, general-purpose" -->
+    <path d="M433 177 L680 177"
+          stroke="#BF5AF2" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+
+    <!-- Step square ① — History section -->
+    <rect x="387" y="452" width="26" height="26" rx="5" fill="#FF3B3B"/>
+    <text x="400" y="469" fill="white" font-size="12" text-anchor="middle"
+          font-family="-apple-system,sans-serif" font-weight="700">1</text>
+    <text x="420" y="469" fill="#FF3B3B" font-size="10"
+          font-family="-apple-system,sans-serif">▸</text>
+
+    <!-- Step square ② — Features section -->
+    <rect x="387" y="567" width="26" height="26" rx="5" fill="#FF3B3B"/>
+    <text x="400" y="584" fill="white" font-size="12" text-anchor="middle"
+          font-family="-apple-system,sans-serif" font-weight="700">2</text>
+    <text x="420" y="584" fill="#FF3B3B" font-size="10"
+          font-family="-apple-system,sans-serif">▸</text>
+
+    <!-- Redact box over "Stable release" version number -->
+    <rect x="1028" y="256" width="130" height="22" fill="#2c2c2e" rx="2"/>
+    <text x="1093" y="271" fill="#48484a" font-size="9" text-anchor="middle"
+          font-family="-apple-system,sans-serif" letter-spacing="1">REDACTED</text>
+
+    <!-- OCR selection dashed box around indentation paragraph -->
+    <rect x="395" y="494" width="330" height="38"
+          stroke="rgba(10,132,255,0.9)" stroke-width="1.5"
+          stroke-dasharray="5,4" fill="rgba(10,132,255,0.06)" rx="2"/>
+
+  </svg>
+
+  <!-- Floating annotation labels -->
+  <div class="ann-label red ann-guido">Key designer!</div>
+  <div class="ann-label yellow ann-release">First release → 1991</div>
+  <div class="ann-label blue ann-popular">#1 Most Popular — TIOBE 2024</div>
+  <div class="ann-label green ann-code">Study this code!</div>
+  <div class="ruler-label">750 px</div>
+  <div class="ann-label blue ann-ocr">🔍 OCR selecting…</div>
+
+</div>
+
+
+<!-- ══════════════════════════════════════════
+     TOOLBAR
+══════════════════════════════════════════ -->
+<div class="toolbar">
+
+  <div class="drag-handle">· · ·  Screen Annotator Pro  · · ·</div>
+  <div class="hsep"></div>
+  <div class="sp-4"></div>
+
+  <!-- ✏️ Draw — expanded, Arrow active -->
+  <div class="section-header open">
+    <span>✏️ Draw</span>
+    <span class="chev">‹</span>
+  </div>
+  <div class="section-body">
+    <div class="tool-btn"><span class="ti">↖</span> Select / Move</div>
+    <div class="tool-btn"><span class="ti">〜</span> Pen</div>
+    <div class="tool-btn"><span class="ti">—</span> Line</div>
+    <div class="tool-btn active"><span class="ti">→</span> Arrow</div>
+    <div class="tool-btn"><span class="ti">▭</span> Rectangle</div>
+    <div class="tool-btn"><span class="ti">○</span> Circle</div>
+    <div class="tool-btn"><span class="ti">📏</span> Ruler</div>
+    <div class="tool-btn"><span class="ti">⊙</span> Laser  I</div>
+    <div class="tool-btn"><span class="ti">◻</span> Eraser  E</div>
+  </div>
+
+  <!-- 🏷 Annotate — collapsed -->
+  <div class="section-header">
+    <span>🏷 Annotate</span>
+    <span class="chev">›</span>
+  </div>
+
+  <!-- 🔒 Redact — collapsed -->
+  <div class="section-header">
+    <span>🔒 Redact</span>
+    <span class="chev">›</span>
+  </div>
+
+  <!-- 🔍 OCR — collapsed -->
+  <div class="section-header">
+    <span>🔍 OCR</span>
+    <span class="chev">›</span>
+  </div>
+
+  <div class="sp-4"></div>
+  <div class="hsep"></div>
+  <div class="sp-6"></div>
+
+  <!-- Color -->
+  <div class="section-label">COLOR</div>
+  <div class="sp-3"></div>
+  <div class="swatch-grid">
+    <div class="swatch sel sw-red"></div>
+    <div class="swatch sw-orange"></div>
+    <div class="swatch sw-yellow"></div>
+    <div class="swatch sw-green"></div>
+    <div class="swatch sw-blue"></div>
+    <div class="swatch sw-purple"></div>
+    <div class="swatch sw-pink"></div>
+    <div class="swatch sw-mint"></div>
+    <div class="swatch sw-white"></div>
+    <div class="swatch sw-silver"></div>
+    <div class="swatch sw-midgray"></div>
+    <div class="swatch sw-gray"></div>
+    <div class="swatch sw-darkgray"></div>
+    <div class="swatch sw-nearblk"></div>
+    <div class="swatch sw-black"></div>
+    <div class="swatch sw-amber"></div>
+  </div>
+
+  <!-- Opacity -->
+  <div class="slider-row slider-row-mt">
+    <span class="section-label">OPACITY</span>
+    <span class="slider-val">100%</span>
+  </div>
+  <div class="slider-track">
+    <div class="slider-fill fill-100"></div>
+    <div class="slider-handle handle-100"></div>
+  </div>
+  <div class="sp-4"></div>
+  <div class="custom-color-btn">⊕  Custom color…</div>
+
+  <div class="sp-6"></div>
+  <div class="hsep"></div>
+  <div class="sp-4"></div>
+
+  <!-- Stroke -->
+  <div class="slider-row">
+    <span class="section-label">STROKE</span>
+    <span class="slider-val">3</span>
+  </div>
+  <div class="sp-3"></div>
+  <div class="dot-preview"><div class="dot dot-sm"></div></div>
+  <div class="slider-track">
+    <div class="slider-fill fill-stroke"></div>
+    <div class="slider-handle handle-stroke"></div>
+  </div>
+  <div class="sp-4"></div>
+
+  <!-- Text size -->
+  <div class="slider-row">
+    <span class="section-label">TEXT SIZE</span>
+    <span class="slider-val">20</span>
+  </div>
+  <div class="slider-track">
+    <div class="slider-fill fill-text"></div>
+    <div class="slider-handle handle-text"></div>
+  </div>
+
+  <div class="sp-6"></div>
+  <div class="hsep"></div>
+  <div class="sp-4"></div>
+
+  <div class="action-btn ss">📷&nbsp;&nbsp;Screenshot</div>
+  <div class="action-btn pa">⏸&nbsp;&nbsp;Pause</div>
+
+  <div class="sp-4"></div>
+  <div class="hsep"></div>
+  <div class="sp-4"></div>
+
+  <div class="ghost-btn">⚙&nbsp;&nbsp;&nbsp;Settings</div>
+  <div class="ghost-btn">↩&nbsp;&nbsp;&nbsp;Undo</div>
+  <div class="ghost-btn">↪&nbsp;&nbsp;&nbsp;Redo</div>
+  <div class="ghost-btn">🗑&nbsp;&nbsp;Clear all</div>
+  <div class="ghost-btn danger">✕&nbsp;&nbsp;&nbsp;Exit</div>
+
+</div>
+
+</body>
+</html>
