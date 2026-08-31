@@ -1,0 +1,132 @@
+name: Build single-file Windows EXE (video)
+
+# Produces ONE .exe that runs on a Windows machine with no Python, no Qt and
+# no ffmpeg installed — download it, double-click it, done.
+#
+# Two variants, because "everything included" and "reasonable to download"
+# pull in opposite directions:
+#   lite  — no OCR. Annotation + recording. Small, starts fast.
+#   full  — adds Snip & Read, which drags in EasyOCR and Torch. Several
+#           hundred MB and a slow first launch while it unpacks.
+
+on:
+  push:
+    branches: [main, video-recording]
+    paths:
+      - 'annotateVideo/**'
+      - '.github/workflows/build-video.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [lite, full]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      # ── ffmpeg ──────────────────────────────────────────────────────────────
+      # A single-file build has no PATH to fall back on, so the encoder has to
+      # travel inside the exe. find_ffmpeg() picks it up from _MEIPASS at run
+      # time.
+      - name: Fetch a static ffmpeg.exe
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
+          $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe |
+                 Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe not found in the downloaded archive" }
+          New-Item -ItemType Directory -Force -Path annotateVideo\vendor | Out-Null
+          Copy-Item $exe.FullName annotateVideo\vendor\ffmpeg.exe
+          "{0:N0} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
+          & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
+
+      # ── Python dependencies ─────────────────────────────────────────────────
+      - name: Install core dependencies
+        run: pip install PyQt6 Pillow pynput pyinstaller
+
+      - name: Install OCR stack (full build only)
+        if: matrix.variant == 'full'
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install easyocr deep-translator
+
+      # ── Build ───────────────────────────────────────────────────────────────
+      - name: Generate icons
+        working-directory: annotateVideo
+        run: python create_icons.py
+
+      - name: Build the single-file executable
+        working-directory: annotateVideo
+        env:
+          ANNOTATE_LITE: ${{ matrix.variant == 'lite' && '1' || '' }}
+        run: pyinstaller annotate_onefile.spec
+
+      - name: Report what came out
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          Get-ChildItem dist\*.exe | ForEach-Object {
+            "{0}  —  {1:N0} MB" -f $_.Name, ($_.Length / 1MB)
+          }
+
+      - name: Write the read-me that ships beside it
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          @'
+          Screen Annotator Pro — Video  (single-file build)
+          =================================================
+
+          One file. No installer, no Python, no ffmpeg to install — it is all
+          inside the .exe. Copy it anywhere and double-click it.
+
+          FIRST LAUNCH
+            The exe unpacks itself into a temp folder each time it starts, so
+            the first run takes a few seconds (longer for the full build,
+            which carries the OCR models' machine-learning stack). Later runs
+            are quicker while the file is still in the disk cache.
+
+          WINDOWS SMARTSCREEN
+            This build is not code-signed, so Windows will say "Windows
+            protected your PC". Click "More info" then "Run anyway". The
+            signed builds are the MSIX/MSI from the main workflow.
+
+          WHERE THINGS GO
+            Recordings   %USERPROFILE%\Videos\ScreenAnnotatorPro\
+            Settings     %APPDATA%\ScreenAnnotatorPro\settings.json
+            Nothing else on the system is touched. To remove it: delete
+            the .exe (and those two folders if you want them gone).
+
+          RECORDING
+            Ctrl+Shift+R, the Record button on the dock, or the tray icon.
+            Stop the same way. The dock and the HUD are excluded from the
+            capture on Windows, so they never appear in the video.
+          '@ | Set-Content dist\READ-ME-FIRST.txt -Encoding UTF8
+
+      - name: Upload the executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenAnnotatorProVideo-${{ matrix.variant }}
+          path: |
+            annotateVideo/dist/*.exe
+            annotateVideo/dist/READ-ME-FIRST.txt
+          retention-days: 30
+
+      - name: Attach to the release on a tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: annotateVideo/dist/*.exe
