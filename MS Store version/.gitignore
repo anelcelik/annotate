@@ -5,11 +5,6 @@ __pycache__/
 *.pyd
 .Python
 
-# Virtualenvs — the shared one both app folders are run from
-.venv/
-venv/
-env/
-
 # Build output
 dist/
 build/
@@ -19,15 +14,8 @@ build/
 # PyInstaller
 *.spec.bak
 
-# Bundled binaries fetched at build time, never committed (ffmpeg is ~170 MB)
-vendor/
-**/vendor/
-
 # Generated icons (re-created by create_icons.py)
 icons/
-
-# Recordings, in case anyone points the output folder at the repo
-*.mp4
 
 # IDE / OS
 .vscode/

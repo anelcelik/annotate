@@ -17,6 +17,20 @@ jobs:
       # ── Source ──────────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
+      # The shipping app now lives in "MS Store version/", while installer/,
+      # icons and docs stayed at the repo root. Everything below — the spec,
+      # the WiX paths, create_icons.py — expects them all in one place, so
+      # stage the app back at the root rather than rewriting every path.
+      - name: Stage the Store app at the repo root
+        shell: pwsh
+        run: |
+          if (Test-Path "MS Store version\annotate.py") {
+            Copy-Item "MS Store version\*" . -Recurse -Force
+            Write-Host "Staged the app from 'MS Store version/' to the repo root"
+          } else {
+            Write-Host "App already at the repo root — nothing to stage"
+          }
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
