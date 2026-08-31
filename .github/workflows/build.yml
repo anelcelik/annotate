@@ -39,6 +39,42 @@ jobs:
       - name: Build executable with PyInstaller
         run: pyinstaller annotate.spec
 
+      # ── Portable ZIP (no installer, no admin rights needed) ──────────────────
+      # Just the PyInstaller output folder, zipped as-is — extract anywhere
+      # you have write access and run the .exe directly. No elevation, no
+      # Program Files, nothing for a "block software installs" policy to
+      # catch, since nothing is actually being installed.
+      - name: Build portable ZIP
+        shell: pwsh
+        run: |
+          @'
+          Screen Annotator Pro — Portable build
+          ======================================
+
+          No installer, no admin rights required.
+
+          1. Extract this ZIP anywhere you have write access (Desktop,
+             Documents, a USB drive — anywhere except a read-only location).
+          2. Run ScreenAnnotatorPro.exe directly. That's it.
+
+          Settings and the OCR model cache still go to your own profile
+          (%APPDATA%\ScreenAnnotatorPro\), same as the installed version —
+          nothing is written outside this folder except there.
+
+          "Start on boot" (in the app's own Settings) works exactly the same
+          as the installed version: it writes to your personal registry Run
+          key (HKEY_CURRENT_USER), which doesn't need admin rights either.
+          If you move or delete this folder later, remember to turn that
+          off first, or Windows will keep trying to launch a .exe that's no
+          longer there.
+
+          To uninstall: close the app, delete this folder. Nothing else on
+          the system was touched.
+          '@ | Set-Content dist\ScreenAnnotatorPro\PORTABLE-README.txt -Encoding UTF8
+
+          Compress-Archive -Path dist\ScreenAnnotatorPro\* `
+            -DestinationPath dist\ScreenAnnotatorPro-Portable.zip
+
       # ── MSI (WiX 4) ─────────────────────────────────────────────────────────
       - name: Install WiX 4 + extensions
         run: |
@@ -135,6 +171,7 @@ jobs:
           path: |
             dist/ScreenAnnotatorPro-Setup.msi
             dist/ScreenAnnotatorPro.msix
+            dist/ScreenAnnotatorPro-Portable.zip
           retention-days: 30
 
       # Publish to GitHub Releases when a tag like v1.2.3 is pushed
@@ -145,4 +182,5 @@ jobs:
           files: |
             dist/ScreenAnnotatorPro-Setup.msi
             dist/ScreenAnnotatorPro.msix
+            dist/ScreenAnnotatorPro-Portable.zip
           generate_release_notes: true
