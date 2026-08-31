@@ -90,17 +90,16 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 
 ## Toolbar Controls
 
-- **16-colour swatch palette** + custom colour picker
-- **Opacity slider** (10–100 %) — softens any colour for new shapes
-- **Stroke size slider** (1–30 px)
-- **Text size slider** (8–72 pt)
-- **Screenshot** — hides overlay, captures all monitors, shows Copy / Save PNG / Discard
-- **Pause** — hides overlay; resume from tray or hotkey
-- **Undo / Redo**
-- **Clear all**
-- **Settings** — hotkey, OCR hotkey, start on boot, help reference
+A single horizontal dock sits at the bottom of the screen. The top row is every tool, always in the same place; the row below it shows only the properties the *active* tool actually uses — a color swatch and stroke slider for Pen, nothing at all for Select, a radius slider for Blur, and so on.
 
-The toolbar is scrollable — if your screen is short or you've expanded a section, scroll inside the toolbar panel.
+- **6-colour swatch row** + custom colour picker, when the tool uses colour
+- **Opacity slider** (10–100 %), **Stroke size slider** (1–30 px), **Text size slider** (8–72 pt) — shown only for the tools that use them
+- **Capture** — hides overlay, captures all monitors, shows Copy / Save PNG / Discard
+- **Pause** — hides overlay; resume from tray or hotkey
+- **Undo / Redo / Clear all**
+- **Settings** — hotkey, OCR hotkey, start on boot, appearance, help reference
+
+**Move it** by dragging the dotted grip at the left end — clicking a tool never moves the dock by accident. **Collapse it** by double-clicking that same grip: it shrinks down to a single draggable icon (the active tool, so you can always tell what's armed) that sits wherever you left it; click it once to expand back to the full dock. Wherever you leave it — collapsed or expanded — is remembered across restarts.
 
 ---
 
@@ -113,6 +112,7 @@ Open via the **Settings** button in the toolbar.
 | Activation Shortcut | Global hotkey to show/hide the overlay (default `Ctrl+Shift+A`) |
 | OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+T`) |
 | Start on boot | Adds to Windows startup registry; app launches hidden in the tray |
+| Appearance | Light or Dark — applies immediately, remembered next launch |
 
 Settings are saved to:
 - **Windows:** `%APPDATA%\ScreenAnnotatorPro\settings.json`
@@ -126,19 +126,15 @@ Settings are saved to:
 Search **"Screen Annotator Pro"** in the Microsoft Store, or use Store ID **`9NS87MQB29C7`**.  
 The Store version is signed by Microsoft and updates automatically.
 
-
-
-
 ---
 
-#
-
+## Support
 
 ### Bug reports — please include
 
 1. **What happened** — describe the problem and what you expected instead
 2. **Steps to reproduce** — the exact sequence of actions that triggers it
-3. **Version** — shown in the tray tooltip or Settings → Help (`v2.2.7`)
+3. **Version** — shown in Settings, bottom-right (e.g. `Version 4.0.0`)
 4. **OS and display setup** — e.g. Windows 11, single 4K monitor; or Ubuntu 24.04 Wayland, dual monitors
 5. **Error message or crash log** (if any) — on Windows, check `%APPDATA%\ScreenAnnotatorPro\` for any log files; on Linux run `python annotate.py` from terminal to see console output
 6. **Screenshot or screen recording** (if visual) — helps a lot for rendering or layout bugs
