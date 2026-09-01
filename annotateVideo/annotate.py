@@ -20,7 +20,7 @@ Windows notes
 • High-DPI monitors are handled automatically.
 """
 
-import sys, os, json, math, random as _rng, shutil, subprocess, threading, platform
+import sys, os, json, math, random as _rng, shutil, subprocess, threading, time, platform
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -127,6 +127,10 @@ _DEFAULT_SETTINGS: dict = {
     "dock_x":         None,
     "dock_y":         None,
     # ── Recording ──────────────────────────────────────────────────────────
+    # ── Store review prompt ────────────────────────────────────────────────
+    "review_state":   "pending",       # pending | later | never | done
+    "review_after":   0,               # epoch seconds; stays quiet until then
+    "usage_seconds":  0,               # time the app has actually been in use
     "rec_hotkey":     "<ctrl>+<shift>+r",
     "rec_fps":        30,
     "rec_quality":    "balanced",      # high | balanced | small
@@ -1239,6 +1243,181 @@ class ScreenshotBar(QWidget):
                 path += ".png"
             self._pixmap.save(path, "PNG")
         self.close()
+
+    def paintEvent(self, _):
+        _dlg_frame_paint(self)
+
+
+# ── Store review prompt ───────────────────────────────────────────────────────
+#
+# ms-windows-store://review/?ProductId=… opens the Store on this app's review
+# dialog. No SDK needed — it is where the Store's own "rate this" button goes.
+#
+# The rules below exist because a badly-timed review prompt is the fastest way
+# to make someone resent an app they otherwise liked:
+#   · not until the app has been genuinely used for eight hours in total
+#   · never mid-task — not while drawing is armed, not while recording
+#   · "later" means a fortnight of silence, not the next launch
+#   · "don't ask again" is permanent, and it is on the dialog, not buried
+#   · Esc means later, never never — dismissing must not be punishing
+
+STORE_ID           = "9NS87MQB29C7"
+STORE_REVIEW_URI   = f"ms-windows-store://review/?ProductId={STORE_ID}"
+STORE_WEB_URL      = f"https://apps.microsoft.com/detail/{STORE_ID}"
+REVIEW_MIN_SECONDS = 8 * 3600   # eight hours of use before asking, ever
+REVIEW_SNOOZE_DAYS = 14
+USAGE_TICK_SECONDS = 60         # how often usage time is counted up
+
+
+def open_store_review() -> bool:
+    """Send the user to the Store's review dialog, falling back to the web."""
+    if IS_WIN and QDesktopServices.openUrl(QUrl(STORE_REVIEW_URI)):
+        return True
+    return QDesktopServices.openUrl(QUrl(STORE_WEB_URL))
+
+
+def format_usage(seconds: float) -> str:
+    h, m = divmod(int(seconds) // 60, 60)
+    return f"{h} h {m:02d} m" if h else f"{m} m"
+
+
+class UsageClock(QObject):
+    """Counts how long the app has genuinely been in use.
+
+    Not process uptime: this is a tray app that can sit there all day
+    untouched, and eight hours of sitting in the tray is not eight hours of
+    use. A minute counts when the overlay is on screen or a recording is
+    running — otherwise the app is only resident, not being used.
+    """
+
+    def __init__(self, overlay, settings: SettingsManager):
+        super().__init__(overlay)
+        self._overlay = overlay
+        self._settings = settings
+        self._unsaved = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(USAGE_TICK_SECONDS * 1000)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    @property
+    def seconds(self) -> float:
+        return float(self._settings.get("usage_seconds") or 0)
+
+    def _in_use(self) -> bool:
+        return (self._overlay.isVisible()
+                or self._overlay.recording.active)
+
+    def _tick(self):
+        if not self._in_use():
+            return
+        self._settings.set("usage_seconds", self.seconds + USAGE_TICK_SECONDS)
+        self._unsaved += 1
+        if self._unsaved >= 5:              # don't touch the disk every minute
+            self._settings.save()
+            self._unsaved = 0
+        maybe_ask_for_review(self._settings, self._overlay)
+
+    def flush(self):
+        if self._unsaved:
+            self._settings.save()
+            self._unsaved = 0
+
+
+def maybe_ask_for_review(settings: SettingsManager, overlay):
+    """Ask for a Store review — but only if this is a fair moment to ask."""
+    if not IS_WIN:
+        return                                    # no Store to review on
+    if settings.get("review_state") in ("never", "done"):
+        return
+    if float(settings.get("usage_seconds") or 0) < REVIEW_MIN_SECONDS:
+        return
+    if time.time() < float(settings.get("review_after") or 0):
+        return
+    # Not while they are in the middle of something: drawing armed, recording
+    # running, or another dialog already open.
+    if overlay.recording.active or not overlay.passthrough:
+        return
+    if QApplication.activeModalWidget() is not None:
+        return
+    settings.save()
+    ReviewPrompt(settings, overlay).exec()
+
+
+class ReviewPrompt(QDialog):
+    """Asked once the app has earned it: rate, remind me later, or never."""
+
+    def __init__(self, settings: SettingsManager, parent=None):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setWindowTitle("Enjoying Screen Annotator Pro?")
+        self._settings = settings
+
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(24, 20, 24, 20)
+        lo.setSpacing(12)
+
+        title = QLabel("Enjoying Screen Annotator Pro?")
+        tf = QFont(DLG_FONT, 13)
+        tf.setBold(True)
+        title.setFont(tf)
+        title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
+        lo.addWidget(title)
+        lo.addWidget(_dlg_sep())
+
+        used = format_usage(float(settings.get("usage_seconds") or 0))
+        body = QLabel(
+            f"You have been using it for {used} now, so it seems fair to ask: "
+            "a review on the Microsoft Store helps other people find it, and "
+            "it is most of what decides whether they ever do.\n\n"
+            "It takes about thirty seconds, and this won't ask again "
+            "afterwards.")
+        body.setWordWrap(True)
+        body.setStyleSheet(
+            f"color:{DLG_INK};font-family:'{DLG_FONT}';font-size:12px;"
+            "background:transparent;")
+        lo.addWidget(body)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for label, fn, primary in [("Don't ask again", self._never, False),
+                                   ("Maybe later",     self._later, False),
+                                   ("Write a review",  self._rate,  True)]:
+            b = QPushButton(label)
+            b.setFixedHeight(34)
+            b.setCursor(Cursor.PointingHandCursor)
+            b.setStyleSheet(_dlg_button_style(primary))
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        lo.addLayout(row)
+
+        self.setFixedWidth(430)
+        self.adjustSize()
+        _center_on_display1(self)
+
+    def _rate(self):
+        open_store_review()
+        self._finish("done")
+
+    def _later(self):
+        self._settings.set("review_after",
+                           time.time() + REVIEW_SNOOZE_DAYS * 86400)
+        self._finish("later")
+
+    def _never(self):
+        self._finish("never")
+
+    def _finish(self, state: str):
+        self._settings.set("review_state", state)
+        self._settings.save()
+        self.accept()
+
+    def keyPressEvent(self, e):
+        if e.key() == Key.Key_Escape:
+            self._later()
+        else:
+            super().keyPressEvent(e)
 
     def paintEvent(self, _):
         _dlg_frame_paint(self)
@@ -3695,6 +3874,7 @@ class AnnotationOverlay(QWidget):
         self.canvas.setCursor(_cross_cursor())
         self.toolbar.set_mode_shortcut(_pynput_to_ks(settings_mgr.get("hotkey")))
         self.recording = RecordingController(self, settings_mgr)
+        self.usage = UsageClock(self, settings_mgr)
         self.recording.state_changed.connect(self.toolbar.set_recording)
         self.recording.ticked.connect(self.toolbar.set_record_elapsed)
 
@@ -3991,6 +4171,7 @@ def main():
     # Safety net: catches any exit path that isn't already covered by the
     # dock's own save-on-drag/-collapse/-expand calls.
     app.aboutToQuit.connect(overlay.toolbar._save_dock_state)
+    app.aboutToQuit.connect(overlay.usage.flush)
 
     from PyQt6.QtCore import QMetaObject, Qt as _Qt
     def _on_ocr():
