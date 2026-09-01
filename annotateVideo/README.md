@@ -250,6 +250,22 @@ A single horizontal dock sits at the bottom of the screen. The top row is every 
 
 ---
 
+## Asking for a Store review
+
+After **eight hours of actual use** — time the overlay is on screen or a
+recording is running, not time it sits in the tray — the app asks once whether
+you would leave a review, and opens the Store's review dialog directly
+(`ms-windows-store://review/?ProductId=…`).
+
+It never interrupts: not while drawing is armed, not while recording, not over
+another dialog. **Maybe later** buys a fortnight of silence, **Don't ask
+again** is permanent, and Esc counts as "later" rather than "never", so
+dismissing it is never punishing. Nothing is gated behind reviewing, and the
+prompt deliberately does not screen for happy users first — a rating you got by
+only asking people who already said they liked it is not worth having.
+
+Windows only; there is no Store to review on anywhere else.
+
 ## Settings
 
 Open via the **Settings** button in the toolbar.
