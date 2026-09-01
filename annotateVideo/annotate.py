@@ -120,6 +120,9 @@ _DEFAULT_SETTINGS: dict = {
     "theme":          "light",
     # Where you last put the dock (or the collapsed puck) — None means
     # "never moved, use the default resting spot".
+    # 1.0 is the original dock size; smaller fits a dock that runs off the
+    # edge on a small or unscalable display.
+    "dock_scale":     0.80,
     "dock_collapsed": False,
     "dock_x":         None,
     "dock_y":         None,
@@ -2595,6 +2598,22 @@ class SettingsDialog(QDialog):
         lo.addWidget(self._boot_cb)
         lo.addSpacing(6)
 
+        # ── Dock size ──────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Dock size"))
+        self._scale_values = [1.0, 0.9, 0.8, 0.7, 0.6]
+        self._scale_box = QComboBox()
+        self._scale_box.addItems([f"{int(v * 100)} %" for v in self._scale_values])
+        current = float(self._settings.get("dock_scale") or 1.0)
+        nearest = min(self._scale_values, key=lambda v: abs(v - current))
+        self._scale_box.setCurrentText(f"{int(nearest * 100)} %")
+        self._scale_box.setFixedHeight(30)
+        self._scale_box.setStyleSheet(_dlg_combo_style())
+        lo.addWidget(self._scale_box)
+        scale_hint = QLabel("Applies next time the app starts.")
+        scale_hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        lo.addWidget(scale_hint)
+        lo.addSpacing(6)
+
         # ── Appearance ─────────────────────────────────────────────────────────
         lo.addWidget(_dlg_section_lbl("Appearance"))
         appearance_row = QHBoxLayout()
@@ -2825,6 +2844,8 @@ class SettingsDialog(QDialog):
             self._settings.set("rec_audio_dev", self._rec_dev.currentText())
         self._settings.set("rec_dir", self._rec_dir)
 
+        self._settings.set("dock_scale",
+                           self._scale_values[self._scale_box.currentIndex()])
         self._settings.set("start_on_boot", self._boot_cb.isChecked())
         _set_startup(self._boot_cb.isChecked())
         self._settings.save()
@@ -3850,6 +3871,10 @@ def main():
 
     settings_mgr = SettingsManager()
     _apply_dlg_theme(settings_mgr.get("theme"))
+    # Must happen before the dock is constructed — every widget on it reads
+    # these sizes as it is built.
+    import dock_toolbar
+    dock_toolbar.set_dock_scale(settings_mgr.get("dock_scale"))
     hotkey_mgr   = HotkeyManager()
     overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
     tray         = _setup_tray(overlay)

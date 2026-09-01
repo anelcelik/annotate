@@ -130,3 +130,145 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: annotateVideo/dist/*.exe
+
+  # ── MSIX ────────────────────────────────────────────────────────────────────
+  # A proper installed package: Start-menu entry, its own identity, clean
+  # uninstall. Deliberately a different identity from the Store app, so it
+  # installs *alongside* it rather than replacing the one you actually use.
+  msix:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Fetch a static ffmpeg.exe
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
+          $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe |
+                 Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe not found in the downloaded archive" }
+          New-Item -ItemType Directory -Force -Path annotateVideo\vendor | Out-Null
+          Copy-Item $exe.FullName annotateVideo\vendor\ffmpeg.exe
+
+      - name: Install dependencies
+        run: pip install PyQt6 Pillow pynput pyinstaller
+
+      - name: Generate icons
+        working-directory: annotateVideo
+        run: python create_icons.py
+
+      # The folder build, not the single file: MSIX needs real files on disk,
+      # and an installed package has no reason to unpack itself at every launch.
+      - name: Build the app
+        working-directory: annotateVideo
+        env:
+          ANNOTATE_LITE: '1'
+        run: pyinstaller annotate.spec
+
+      - name: Stage the package contents
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          New-Item -ItemType Directory -Path msix_staging/Assets -Force | Out-Null
+          Copy-Item dist\ScreenAnnotatorPro\ScreenAnnotatorPro.exe msix_staging\
+          # PyInstaller 6+ puts every DLL and module in _internal
+          Copy-Item dist\ScreenAnnotatorPro\_internal msix_staging\_internal -Recurse
+          Copy-Item installer\AppxManifest.xml msix_staging\
+          Copy-Item icons\*.png msix_staging\Assets\
+
+      - name: Locate the Windows SDK tools
+        id: sdk
+        shell: pwsh
+        run: |
+          $base = "C:\Program Files (x86)\Windows Kits\10\bin"
+          $pick = { param($n)
+            Get-ChildItem $base -Recurse -Filter $n |
+              Where-Object { $_.FullName -match "x64" } |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          "makeappx=$( &$pick makeappx.exe )" >> $env:GITHUB_OUTPUT
+          "signtool=$(  &$pick signtool.exe  )" >> $env:GITHUB_OUTPUT
+
+      - name: Pack the MSIX
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          & "${{ steps.sdk.outputs.makeappx }}" pack /d msix_staging `
+            /p dist\ScreenAnnotatorProVideo.msix /nv
+
+      # Windows will not install an unsigned MSIX, so CI makes a throwaway
+      # certificate. Its subject must match Publisher in AppxManifest.xml
+      # exactly or the package is rejected as tampered with.
+      - name: Sign it with a self-signed certificate
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          $cert = New-SelfSignedCertificate `
+            -Type Custom `
+            -Subject "CN=Casultra-Video-Dev" `
+            -KeyUsage DigitalSignature `
+            -FriendlyName "Screen Annotator Pro Video — sideload test cert" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          $pwd = ConvertTo-SecureString "SAPVideoDev!" -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath dist\dev.pfx -Password $pwd | Out-Null
+          # The .cer is what the user has to trust before Windows will install
+          Export-Certificate -Cert $cert -FilePath dist\ScreenAnnotatorProVideo.cer | Out-Null
+          & "${{ steps.sdk.outputs.signtool }}" sign /fd SHA256 /f dist\dev.pfx `
+            /p "SAPVideoDev!" dist\ScreenAnnotatorProVideo.msix
+          Remove-Item dist\dev.pfx
+          "{0:N0} MB  msix" -f ((Get-Item dist\ScreenAnnotatorProVideo.msix).Length / 1MB)
+
+      - name: Write the install instructions
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          @'
+          Screen Annotator Pro — Video  (MSIX, sideload build)
+          ====================================================
+
+          This installs ALONGSIDE the Store version — different package
+          identity, so it will not touch or replace the app you already use.
+
+          Windows refuses to install an MSIX whose signer it does not trust,
+          and this one is signed with a throwaway certificate made by CI, so
+          the certificate has to be trusted first. In an ADMIN PowerShell, in
+          this folder:
+
+            Import-Certificate -FilePath .\ScreenAnnotatorProVideo.cer `
+              -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+
+          Then double-click ScreenAnnotatorProVideo.msix and choose Install
+          (or: Add-AppxPackage .\ScreenAnnotatorProVideo.msix).
+
+          To remove everything afterwards:
+            Get-AppxPackage *ScreenAnnotatorProVideo* | Remove-AppxPackage
+          and delete the certificate from certlm.msc under Trusted People.
+
+          If you would rather not touch the certificate store at all, use the
+          single-file .exe artifact instead — it needs no install and no trust,
+          only a SmartScreen "More info -> Run anyway".
+
+          This is the LITE build: no Snip & Read / OCR. Everything else —
+          annotation, click-through, recording, GIF and WebM export — is here.
+          '@ | Set-Content dist\INSTALL-MSIX.txt -Encoding UTF8
+
+      - name: Upload the MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenAnnotatorProVideo-msix
+          path: |
+            annotateVideo/dist/ScreenAnnotatorProVideo.msix
+            annotateVideo/dist/ScreenAnnotatorProVideo.cer
+            annotateVideo/dist/INSTALL-MSIX.txt
+          retention-days: 30

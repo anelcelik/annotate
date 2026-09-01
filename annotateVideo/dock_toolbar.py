@@ -100,10 +100,41 @@ ACCENT_600 = THEMES["light"]["accent_600"]
 MUTED      = THEMES["light"]["muted"]
 HOVER      = THEMES["light"]["hover"]
 
-CELL   = 48       # tool button width
-ROW1   = 56       # tool row height
-ROW2   = 52       # property row height
+# ── Dock size ─────────────────────────────────────────────────────────────────
+# Every measurement on the dock derives from one factor, so the whole thing
+# scales as a unit instead of drifting out of proportion. 1.0 is the original
+# size; the default is smaller because the dock is wide, and on a laptop or a
+# VM that cannot drop its display scaling it ran off the edge. 0.80 measures
+# as 17 % narrower than the original — the rules between the cells cannot go
+# below 1 px, so the factor and the result are not quite the same number.
+DOCK_SCALE = 0.80
+
+
+def _s(n: float) -> int:
+    """Scale a pixel measurement."""
+    return max(1, round(n * DOCK_SCALE))
+
+
+def _fs(pt: float) -> int:
+    """Scale a font point size, with a floor where text stops being legible."""
+    return max(6, round(pt * DOCK_SCALE))
+
+
+CELL   = 48       # tool button width   ) recomputed by set_dock_scale();
+ROW1   = 56       # tool row height     ) the values here are the 1.0 sizes
+ROW2   = 52       # property row height )
 RULE   = 2
+
+
+def set_dock_scale(scale: float):
+    """Resize the whole dock. Call before building the Toolbar."""
+    global DOCK_SCALE, CELL, ROW1, ROW2, RULE
+    DOCK_SCALE = max(0.6, min(1.25, float(scale or 1.0)))
+    CELL, ROW1, ROW2 = _s(48), _s(56), _s(52)
+    RULE = max(1, _s(2))
+
+
+set_dock_scale(DOCK_SCALE)
 
 FONT = "Segoe UI Variable"  # Archivo isn't bundled; this ships with Windows 11
 
@@ -355,16 +386,17 @@ class ToolButton(QPushButton):
             p.fillRect(0, 0, w, h, HOVER)
 
         p.save()
-        p.translate((w - 20) / 2, (h - 20) / 2 - 1)
-        _paint_icon(p, self.tid, 20, QColor(INK))
+        ic = _s(20)
+        p.translate((w - ic) / 2, (h - ic) / 2 - 1)
+        _paint_icon(p, self.tid, ic, QColor(INK))
         p.restore()
 
         if self.show_key and self.key:
-            f = QFont(FONT, 7)
+            f = QFont(FONT, _fs(7))
             f.setBold(True)
             p.setFont(f)
             p.setPen(QPen(QColor(MUTED)))
-            p.drawText(QRectF(0, h - 17, w - 5, 12),
+            p.drawText(QRectF(0, h - _s(17), w - _s(5), _s(12)),
                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                        self.key)
         p.end()
@@ -402,8 +434,9 @@ class ActionButton(QPushButton):
                 p.fillRect(0, 0, w, h, HOVER)
             fg = QColor("#444141")
         p.save()
-        p.translate((w - 19) / 2, (h - 19) / 2)
-        _paint_icon(p, self.tid, 19, fg)
+        ic = _s(19)
+        p.translate((w - ic) / 2, (h - ic) / 2)
+        _paint_icon(p, self.tid, ic, fg)
         p.restore()
         p.end()
 
@@ -419,7 +452,7 @@ class CaptureButton(QPushButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(118, ROW1)
+        self.setFixedSize(_s(118), ROW1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Screenshot — hides the overlay, grabs every monitor")
         self.setFlat(True)
@@ -432,14 +465,15 @@ class CaptureButton(QPushButton):
         if self.underMouse():
             p.fillRect(0, 0, w, h, HOVER)
         p.save()
-        p.translate(14, (h - 19) / 2)
-        _paint_icon(p, "camera", 19, QColor(INK))
+        ic = _s(19)
+        p.translate(_s(14), (h - ic) / 2)
+        _paint_icon(p, "camera", ic, QColor(INK))
         p.restore()
-        f = QFont(FONT, 9)
+        f = QFont(FONT, _fs(9))
         f.setBold(True)
         p.setFont(f)
         p.setPen(QPen(QColor(INK)))
-        p.drawText(QRectF(41, 0, w - 41, h),
+        p.drawText(QRectF(_s(41), 0, w - _s(41), h),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    "Capture")
         p.end()
@@ -460,7 +494,7 @@ class ModeButton(QPushButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(140, ROW1)
+        self.setFixedSize(_s(140), ROW1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFlat(True)
         self.setStyleSheet("border:none;background:transparent;")
@@ -497,14 +531,15 @@ class ModeButton(QPushButton):
             p.fillRect(0, 0, w, h, QColor(ACCENT))
             ink, icon, label = QColor("#FFFFFF"), "pen", "Drawing"
         p.save()
-        p.translate(12, (h - 18) / 2)
-        _paint_icon(p, icon, 18, ink)
+        ic = _s(18)
+        p.translate(_s(12), (h - ic) / 2)
+        _paint_icon(p, icon, ic, ink)
         p.restore()
-        f = QFont(FONT, 9)
+        f = QFont(FONT, _fs(9))
         f.setBold(True)
         p.setFont(f)
         p.setPen(QPen(ink))
-        p.drawText(QRectF(38, 0, w - 38, h),
+        p.drawText(QRectF(_s(38), 0, w - _s(38), h),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    label)
         p.end()
@@ -523,7 +558,7 @@ class RecordButton(QPushButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(132, ROW1)
+        self.setFixedSize(_s(132), ROW1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFlat(True)
         self.setStyleSheet("border:none;background:transparent;")
@@ -559,14 +594,15 @@ class RecordButton(QPushButton):
                 p.fillRect(0, 0, w, h, HOVER)
             ink, icon, label = QColor(INK), "record", "Record"
         p.save()
-        p.translate(14, (h - 19) / 2)
-        _paint_icon(p, icon, 19, QColor("#FF3B3B") if not self._recording else ink)
+        ic = _s(19)
+        p.translate(_s(14), (h - ic) / 2)
+        _paint_icon(p, icon, ic, QColor("#FF3B3B") if not self._recording else ink)
         p.restore()
-        f = QFont(FONT, 9)
+        f = QFont(FONT, _fs(9))
         f.setBold(True)
         p.setFont(f)
         p.setPen(QPen(ink))
-        p.drawText(QRectF(41, 0, w - 41, h),
+        p.drawText(QRectF(_s(41), 0, w - _s(41), h),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    label)
         p.end()
@@ -583,7 +619,7 @@ class Swatch(QPushButton):
         super().__init__(parent)
         self.hex_c = hex_c
         self.active = False
-        self.setFixedSize(22, 22)
+        self.setFixedSize(_s(22), _s(22))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(hex_c)
         self.setFlat(True)
@@ -609,7 +645,7 @@ class DockSlider(QSlider):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setRange(lo, hi)
         self.setValue(val)
-        self.setFixedWidth(104)
+        self.setFixedWidth(_s(104))
         self.setStyleSheet(
             "QSlider{background:transparent;}"
             "QSlider::groove:horizontal{height:2px;background:#9b9797;}"
@@ -631,7 +667,7 @@ def _vrule() -> QFrame:
 
 def _label(text: str, size=7, bold=True, color=MUTED) -> QLabel:
     l = QLabel(text)
-    f = QFont(FONT, size)
+    f = QFont(FONT, _fs(size))
     f.setBold(bold)
     f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
     l.setFont(f)
@@ -661,7 +697,9 @@ class CollapsedIndicator(QWidget):
     that doesn't move the cursor expands back to the full dock; dragging
     moves the puck around instead.
     """
-    SIZE = (56, 56)
+    @staticmethod
+    def size_now():
+        return (_s(56), _s(56))
 
     def __init__(self, toolbar: "Toolbar"):
         # Its own top-level window, like the dock — see Toolbar.__init__.
@@ -674,7 +712,7 @@ class CollapsedIndicator(QWidget):
         self._key      = "P"
         self._drag_pos = None
         self._dragged  = False
-        self.setFixedSize(*self.SIZE)
+        self.setFixedSize(*self.size_now())
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
 
@@ -696,15 +734,16 @@ class CollapsedIndicator(QWidget):
         p.fillRect(0, 0, w, h, QColor(TINT))
         p.fillRect(0, h - 4, w, 4, QColor(ACCENT))
         p.save()
-        p.translate((w - 22) / 2, (h - 22) / 2 - 1)
-        _paint_icon(p, self._tid, 22, QColor(INK))
+        ic = _s(22)
+        p.translate((w - ic) / 2, (h - ic) / 2 - 1)
+        _paint_icon(p, self._tid, ic, QColor(INK))
         p.restore()
         if self._key:
-            f = QFont(FONT, 7)
+            f = QFont(FONT, _fs(7))
             f.setBold(True)
             p.setFont(f)
             p.setPen(QPen(QColor(MUTED)))
-            p.drawText(QRectF(0, h - 17, w - 5, 12),
+            p.drawText(QRectF(0, h - _s(17), w - _s(5), _s(12)),
                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                        self._key)
         p.end()
@@ -786,7 +825,7 @@ class Toolbar(QWidget):
         row1.setSpacing(0)
 
         self._grip = QWidget()
-        self._grip.setFixedSize(34, ROW1)
+        self._grip.setFixedSize(_s(34), ROW1)
         self._grip.setCursor(Qt.CursorShape.SizeAllCursor)
         self._grip.setToolTip("Drag to move the dock  ·  double-click to collapse")
         self._grip.paintEvent = self._paint_grip
@@ -871,8 +910,10 @@ class Toolbar(QWidget):
     def _paint_grip(self, _):
         p = QPainter(self._grip)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.translate((self._grip.width() - 14) / 2, (self._grip.height() - 20) / 2)
-        _paint_icon(p, "grip", 20, QColor("#9b9797"))
+        gi = _s(20)
+        p.translate((self._grip.width() - _s(14)) / 2,
+                    (self._grip.height() - gi) / 2)
+        _paint_icon(p, "grip", gi, QColor("#9b9797"))
         p.end()
 
     # ── contextual property row ───────────────────────────────────────────────
@@ -900,13 +941,13 @@ class Toolbar(QWidget):
 
         # name + key, flush left
         name_box = QWidget()
-        name_box.setFixedWidth(168)
+        name_box.setFixedWidth(_s(168))
         name_box.setStyleSheet("background:transparent;")
         nb = QVBoxLayout(name_box)
         nb.setContentsMargins(16, 0, 16, 0)
         nb.setSpacing(0)
         nl = QLabel(label)
-        nf = QFont(FONT, 10)
+        nf = QFont(FONT, _fs(10))
         nf.setBold(True)
         nl.setFont(nf)
         nl.setStyleSheet(f"color:{INK};background:transparent;")
@@ -931,7 +972,7 @@ class Toolbar(QWidget):
                 self._swatches.append(s)
                 sl.addWidget(s)
             custom = QPushButton("+")
-            custom.setFixedSize(22, 22)
+            custom.setFixedSize(_s(22), _s(22))
             custom.setCursor(Qt.CursorShape.PointingHandCursor)
             custom.setToolTip("Custom colour…")
             custom.setStyleSheet(
@@ -947,7 +988,7 @@ class Toolbar(QWidget):
         if "stroke" in props:
             cap = {"eraser": "WIDTH", "highlight": "HEIGHT"}.get(tid, "STROKE")
             val = _label(f"{self.canvas.pen_width} px", size=8, color=INK)
-            val.setFixedWidth(38)
+            val.setFixedWidth(_s(38))
             sld = DockSlider(1, 30, int(self.canvas.pen_width))
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "pen_width", v),
@@ -957,7 +998,7 @@ class Toolbar(QWidget):
 
         if "size" in props:
             val = _label(f"{self.canvas.font_size} pt", size=8, color=INK)
-            val.setFixedWidth(38)
+            val.setFixedWidth(_s(38))
             sld = DockSlider(8, 72, int(self.canvas.font_size))
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "font_size", v),
@@ -968,7 +1009,7 @@ class Toolbar(QWidget):
         if "opacity" in props:
             pct = int(round(self.canvas.pen_alpha * 100 / 255))
             val = _label(f"{pct}%", size=8, color=INK)
-            val.setFixedWidth(38)
+            val.setFixedWidth(_s(38))
             sld = DockSlider(10, 100, pct)
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "pen_alpha", int(v * 255 / 100)),
@@ -979,7 +1020,7 @@ class Toolbar(QWidget):
         if "blur" in props:
             cur = int(getattr(self.canvas, "blur_radius", 18))
             val = _label(f"{cur} px", size=8, color=INK)
-            val.setFixedWidth(38)
+            val.setFixedWidth(_s(38))
             sld = DockSlider(4, 40, cur)
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "blur_radius", v),
@@ -990,7 +1031,7 @@ class Toolbar(QWidget):
         if "pixel" in props:
             cur = int(getattr(self.canvas, "pixel_size", 12))
             val = _label(f"{cur} px", size=8, color=INK)
-            val.setFixedWidth(38)
+            val.setFixedWidth(_s(38))
             sld = DockSlider(4, 40, cur)
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "pixel_size", v),
@@ -1199,7 +1240,7 @@ class Toolbar(QWidget):
             if self._indicator is None:
                 self._indicator = CollapsedIndicator(self)
             self._indicator.set_tool(self._active_tid)
-            w, h = CollapsedIndicator.SIZE
+            w, h = CollapsedIndicator.size_now()
             geo = self._screen_geometry()
             px = max(geo.left(), min(self._anchor.x() - w // 2, geo.right()  - w))
             py = max(geo.top(),  min(self._anchor.y() - h // 2, geo.bottom() - h))
@@ -1288,7 +1329,7 @@ class Toolbar(QWidget):
             self._anchor = _center_of(self)
 
         geo = self._screen_geometry()
-        w, h = CollapsedIndicator.SIZE
+        w, h = CollapsedIndicator.size_now()
         x = max(geo.left(), min(self._anchor.x() - w // 2, geo.right()  - w))
         y = max(geo.top(),  min(self._anchor.y() - h // 2, geo.bottom() - h))
         self._indicator.show_at(QPoint(x, y))

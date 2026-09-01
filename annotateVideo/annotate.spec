@@ -5,13 +5,25 @@
 # ── Collect EasyOCR + deep-translator data/binaries/imports ──────────────────
 # collect_all() handles every file the package ships so nothing is missed.
 # Wrapped in try/except so local builds without these packages still work.
+import os as _os
+
+# Same switch as annotate_onefile.spec: ANNOTATE_LITE=1 leaves out EasyOCR and
+# Torch. Everything except Snip & Read still works, and the package drops from
+# roughly a gigabyte to something you can install on a test VM.
+LITE = _os.environ.get("ANNOTATE_LITE", "") not in ("", "0", "false", "False")
+print(f"spec: folder build, {'LITE (no OCR)' if LITE else 'FULL'}")
+
 try:
+    if LITE:
+        raise RuntimeError("lite build: skipping the OCR stack")
     from PyInstaller.utils.hooks import collect_all
     _easyocr_d, _easyocr_b, _easyocr_h  = collect_all('easyocr')
     _dt_d,      _dt_b,      _dt_h        = collect_all('deep_translator')
     _torch_d,   _torch_b,   _torch_h     = collect_all('torch')
     _tv_d,      _tv_b,      _tv_h        = collect_all('torchvision')
-except Exception:
+except Exception as _e:
+    if not LITE:
+        print(f"spec: OCR packages not collectable ({_e})")
     _easyocr_d = _easyocr_b = _easyocr_h = []
     _dt_d      = _dt_b      = _dt_h      = []
     _torch_d   = _torch_b   = _torch_h   = []
@@ -45,6 +57,7 @@ a = Analysis(
         'video_recorder',
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
+    ] + ([] if LITE else [
         # EasyOCR
         'easyocr', 'easyocr.detection', 'easyocr.recognition',
         'easyocr.utils', 'easyocr.config', 'easyocr.model',
@@ -60,7 +73,7 @@ a = Analysis(
         # Numeric / image
         'numpy', 'scipy', 'scipy.ndimage', 'skimage',
         'PIL', 'PIL.Image',
-    ] + _easyocr_h + _dt_h + _torch_h + _tv_h,
+    ]) + _easyocr_h + _dt_h + _torch_h + _tv_h,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -87,7 +100,10 @@ a = Analysis(
         'tkinter', '_tkinter',
         'tkinter', '_tkinter',
         'curses', 'lib2to3', 'test',
-    ],
+    ] + ([
+        'easyocr', 'torch', 'torchvision', 'scipy', 'skimage', 'cv2',
+        'numpy', 'deep_translator', 'matplotlib', 'pandas',
+    ] if LITE else []),
     noarchive=False,
 )
 

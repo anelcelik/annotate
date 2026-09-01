@@ -259,6 +259,7 @@ Open via the **Settings** button in the toolbar.
 | OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+T`) |
 | Recording | Area, frame rate, quality, cursor, microphone, output folder, shortcut |
 | Start on boot | Adds to Windows startup registry; app launches hidden in the tray |
+| Dock size | 100 / 90 / 80 / 70 / 60 % — for displays the dock runs off the edge of. Applies next launch |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
 
 Settings are saved to:
@@ -268,6 +269,23 @@ Settings are saved to:
 ---
 
 ## Installation
+
+### Test builds (this branch)
+
+CI publishes three artifacts per run, under Actions → *Build single-file
+Windows EXE (video)*:
+
+| Artifact | What it is | Install |
+|---|---|---|
+| `…Video-lite` | One ~95 MB .exe, everything but OCR | Run it. SmartScreen → More info → Run anyway |
+| `…Video-full` | Same plus Snip & Read (~334 MB) | As above, slower to start |
+| `…Video-msix` | A real installed package | Trust the bundled .cer, then install — see `INSTALL-MSIX.txt` |
+
+The MSIX uses a **different package identity** from the Store app, so it
+installs alongside it and cannot disturb the version you actually use. It is
+signed with a throwaway CI certificate, which Windows will not trust until you
+import the included `.cer` into `LocalMachine\TrustedPeople` from an admin
+shell. If that is more ceremony than you want, the .exe needs none of it.
 
 ### Microsoft Store
 Search **"Screen Annotator Pro"** in the Microsoft Store, or use Store ID **`9NS87MQB29C7`**.  
