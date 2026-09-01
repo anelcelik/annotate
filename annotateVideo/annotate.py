@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
 )
 from PyQt6.QtCore import (
-    Qt, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
+    Qt, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
     QKeyCombination,
     pyqtSignal, pyqtSlot,
 )
@@ -1847,6 +1847,7 @@ class RecordingController(QObject):
         self.overlay   = overlay
         self._settings = settings
         self._hud: RecordingHUD | None = None
+        self._result_bar = None
         self._duration = 0.0
         self._dock_hidden = False
         self._dock_parked = False
@@ -1995,7 +1996,10 @@ class RecordingController(QObject):
     def _on_finished(self, path: str):
         self._teardown_hud()
         self._restore_chrome()
-        RecordingBar(path, self._duration, self.overlay)
+        # Held, not dropped: these are parentless top-level windows now, so
+        # nothing but this reference keeps them alive — an unassigned one is
+        # collected the moment this method returns and the panel never appears.
+        self._result_bar = RecordingBar(path, self._duration, self.overlay)
 
     def _on_failed(self, message: str):
         self._teardown_hud()
@@ -3579,7 +3583,7 @@ class Toolbar(QWidget):
 
     def _take_screenshot(self):
         pixmap = self.canvas.capture_annotated()
-        ScreenshotBar(pixmap, self.overlay)
+        self._shot_bar = ScreenshotBar(pixmap, self.overlay)
 
     def _pick_custom(self):
         color = QColorDialog.getColor(QColor(self.canvas.pen_color), self, "Custom Color")
@@ -3790,6 +3794,14 @@ class AnnotationOverlay(QWidget):
 
     def changeEvent(self, e):
         super().changeEvent(e)
+        # Clicking the canvas activates the overlay, and on Windows that lifts
+        # it to the front of the always-on-top band — back over the dock. So
+        # the dock has to be put back on top every time this window is
+        # activated, not just when draw mode is armed. Without this the dock
+        # works for exactly one click and then goes dead.
+        if e.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            if hasattr(self, "toolbar"):
+                self.toolbar.raise_chrome()
 
     def keyPressEvent(self, e):
         k = e.key()

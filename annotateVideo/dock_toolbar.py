@@ -796,6 +796,7 @@ class Toolbar(QWidget):
         self._hotkey_mgr   = hotkey_mgr
 
         self._drag_pos   = None
+        self._shot_bar   = None      # the capture panel, kept alive (see below)
         self._tool_btns  = {}
         self._swatches   = []
         self._active_tid = "pen"
@@ -1109,6 +1110,7 @@ class Toolbar(QWidget):
         # underneath would be worse than useless.
         if self._built:
             self.overlay.set_passthrough(False)
+            self.raise_chrome()      # no-op if already on top; cheap insurance
         self._active_tid = tid
         self.canvas.tool = tid
 
@@ -1233,7 +1235,7 @@ class Toolbar(QWidget):
     def _take_screenshot(self):
         import annotate as A
         pixmap = self.canvas.capture_annotated()
-        A.ScreenshotBar(pixmap, self.overlay)
+        self._shot_bar = A.ScreenshotBar(pixmap, self.overlay)
 
     def _open_settings(self):
         import annotate as A
