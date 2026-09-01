@@ -451,6 +451,71 @@ class CaptureButton(QPushButton):
         self.update(); super().leaveEvent(e)
 
 
+class ModeButton(QPushButton):
+    """Draw ⇄ click-through, and the dock's most important control.
+
+    It shows the state rather than the action: what you need at a glance is
+    "is this thing eating my clicks right now", not what the button will do.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(140, ROW1)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFlat(True)
+        self.setStyleSheet("border:none;background:transparent;")
+        self._passthrough = False
+        self._shortcut = "Ctrl+Shift+A"
+        self._sync_tip()
+
+    def set_passthrough(self, on: bool):
+        self._passthrough = on
+        self._sync_tip()
+        self.update()
+
+    def set_shortcut_label(self, text: str):
+        self._shortcut = text or "—"
+        self._sync_tip()
+
+    def _sync_tip(self):
+        self.setToolTip(
+            f"Click-through — your clicks go to the app underneath. "
+            f"{self._shortcut} to draw again."
+            if self._passthrough else
+            f"Drawing — the overlay has the mouse. {self._shortcut} to use "
+            f"your computer normally.")
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        if self._passthrough:
+            if self.underMouse():
+                p.fillRect(0, 0, w, h, HOVER)
+            ink, icon, label = QColor(MUTED), "select", "Click-through"
+        else:
+            p.fillRect(0, 0, w, h, QColor(ACCENT))
+            ink, icon, label = QColor("#FFFFFF"), "pen", "Drawing"
+        p.save()
+        p.translate(12, (h - 18) / 2)
+        _paint_icon(p, icon, 18, ink)
+        p.restore()
+        f = QFont(FONT, 9)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QPen(ink))
+        p.drawText(QRectF(38, 0, w - 38, h),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   label)
+        p.end()
+
+    def enterEvent(self, e):
+        self.update(); super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.update(); super().leaveEvent(e)
+
+
 class RecordButton(QPushButton):
     """Twin of CaptureButton for video: red dot + "Record", and while rolling,
     a solid red cell counting up. It is the same control either way — one
@@ -599,7 +664,11 @@ class CollapsedIndicator(QWidget):
     SIZE = (56, 56)
 
     def __init__(self, toolbar: "Toolbar"):
-        super().__init__(toolbar.overlay)
+        # Its own top-level window, like the dock — see Toolbar.__init__.
+        super().__init__(None,
+                         Qt.WindowType.FramelessWindowHint |
+                         Qt.WindowType.WindowStaysOnTopHint |
+                         Qt.WindowType.Tool)
         self.toolbar   = toolbar
         self._tid      = "pen"
         self._key      = "P"
@@ -667,7 +736,15 @@ class Toolbar(QWidget):
     """Horizontal dock. Same constructor and _activate() as the old panel."""
 
     def __init__(self, canvas, overlay, settings_mgr, hotkey_mgr):
-        super().__init__(overlay)
+        # A top-level window rather than a child of the overlay, and that is
+        # load-bearing: click-through mode is an OS-level flag on the overlay's
+        # window, and it applies to every child. If the dock were still a child
+        # it would go dead the moment you switched to click-through, leaving no
+        # way back. Its own window keeps it clickable in both modes.
+        super().__init__(None,
+                         Qt.WindowType.FramelessWindowHint |
+                         Qt.WindowType.WindowStaysOnTopHint |
+                         Qt.WindowType.Tool)
         self.canvas        = canvas
         self.overlay       = overlay
         self._settings_mgr = settings_mgr
@@ -679,6 +756,9 @@ class Toolbar(QWidget):
         self._active_tid = "pen"
         self._collapsed  = False
         self._indicator  = None
+        # _activate() runs during construction; nothing may reach back into
+        # the overlay until this dock is fully built.
+        self._built      = False
         # The one stable "where the user put it" reference point — the
         # center the dock (or, collapsed, the puck) is kept centered on.
         # None means "never customized, use the default resting spot".
@@ -692,6 +772,7 @@ class Toolbar(QWidget):
         self._build()
         self._activate("pen")
         self._restore_position()
+        self._built = True
 
     # ── build ─────────────────────────────────────────────────────────────────
     def _build(self):
@@ -710,6 +791,11 @@ class Toolbar(QWidget):
         self._grip.setToolTip("Drag to move the dock  ·  double-click to collapse")
         self._grip.paintEvent = self._paint_grip
         row1.addWidget(self._grip)
+        row1.addWidget(_vrule())
+
+        self._mode_btn = ModeButton()
+        self._mode_btn.clicked.connect(self._toggle_mode)
+        row1.addWidget(self._mode_btn)
         row1.addWidget(_vrule())
 
         for gi, group in enumerate(GROUPS):
@@ -960,6 +1046,11 @@ class Toolbar(QWidget):
     def _activate(self, tid: str):
         if tid not in TOOL_META:
             return
+        # Reaching for a tool means you want to draw with it — being dropped
+        # into click-through and having the first stroke land in the app
+        # underneath would be worse than useless.
+        if self._built:
+            self.overlay.set_passthrough(False)
         self._active_tid = tid
         self.canvas.tool = tid
 
@@ -1002,10 +1093,12 @@ class Toolbar(QWidget):
         target = self._indicator if self._collapsed else self
         if target is None or rect is None:
             return False
-        bounds = self.overlay.rect()
+        bounds = QRect()
+        for scr in QApplication.screens():
+            bounds = bounds.united(scr.geometry())
         w, h = target.width(), target.height()
-        x = max(0, min(target.x(), bounds.width() - w))
-        y = max(0, min(target.y(), bounds.height() - h))
+        x = max(bounds.left(), min(target.x(), bounds.right() - w))
+        y = max(bounds.top(),  min(target.y(), bounds.bottom() - h))
         for pos in (QPoint(x, rect.bottom() + 8),        # below the recording
                     QPoint(x, rect.top() - h - 8),       # above it
                     QPoint(rect.right() + 8, y),         # beside it
@@ -1028,6 +1121,21 @@ class Toolbar(QWidget):
         if target is not None:
             target.move(self._parked_from)
         self._parked_from = None
+
+    def set_mode(self, passthrough: bool):
+        self._mode_btn.set_passthrough(passthrough)
+
+    def set_mode_shortcut(self, text: str):
+        self._mode_btn.set_shortcut_label(text)
+
+    def _toggle_mode(self):
+        self.overlay.toggle_passthrough()
+
+    def chrome_windows(self) -> list:
+        """The dock's own top-level windows. The recorder needs these to hide
+        them from the capture on Windows — they are no longer children of the
+        overlay, so excluding the overlay no longer covers them."""
+        return [w for w in (self, self._indicator) if w is not None]
 
     def set_chrome_visible(self, visible: bool):
         """Hide or restore whatever the dock currently is — the full bar, or
@@ -1151,10 +1259,11 @@ class Toolbar(QWidget):
 
     # ── collapse / expand ─────────────────────────────────────────────────────
     def _screen_geometry(self):
-        # screenAt() takes a *global* point — self.geometry() is in the
-        # overlay's local coordinates, so it has to be mapped first.
-        global_center = self.mapToGlobal(self.rect().center())
-        screen = QApplication.screenAt(global_center)
+        # Now that the dock is its own window its position *is* global, so the
+        # comparisons in _clamp_to_screen() finally mean what they always read
+        # as. (They were only correct before because the overlay happens to sit
+        # at the virtual desktop's origin.)
+        screen = QApplication.screenAt(_center_of(self))
         return (screen or QApplication.primaryScreen()).availableGeometry()
 
     def _clamp_to_screen(self):

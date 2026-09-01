@@ -111,7 +111,10 @@ IS_MAC = platform.system() == "Darwin"
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 _DEFAULT_SETTINGS: dict = {
+    # Switches drawing on and off — the one you reach for constantly.
     "hotkey":         "<ctrl>+<shift>+a",
+    # Takes the overlay off the screen entirely, marks and all.
+    "visibility_hotkey": "<ctrl>+<shift>+h",
     "ocr_hotkey":    "<ctrl>+t",
     "start_on_boot":  False,
     "theme":          "light",
@@ -268,6 +271,12 @@ class HotkeyManager:
     def update_ocr(self, pynput_str: str):
         self.rebind("ocr", pynput_str)
 
+    def start_visibility(self, pynput_str: str, callback):
+        self.bind("visibility", pynput_str, callback)
+
+    def update_visibility(self, pynput_str: str):
+        self.rebind("visibility", pynput_str)
+
     def start_rec(self, pynput_str: str, callback):
         self.bind("record", pynput_str, callback)
 
@@ -293,6 +302,47 @@ class HotkeyManager:
             self._listener.start()
         except (ImportError, Exception):
             pass
+
+# ── Click-through ──────────────────────────────────────────────────────────────
+# The overlay covers the whole desktop, so while it accepts input nothing
+# underneath can be reached — no clicks, no typing, no switching apps. That is
+# right while you are drawing and wrong the rest of the time, which is what
+# click-through mode fixes: the marks stay on screen, the input goes past them.
+#
+# It has to be done at the window-manager level. A Qt-side "ignore this event"
+# is too late — the OS has already decided the click belongs to this window.
+
+GWL_EXSTYLE        = -20
+WS_EX_TRANSPARENT  = 0x00000020
+WS_EX_LAYERED      = 0x00080000
+
+
+def _set_click_through(widget, on: bool) -> bool:
+    """Let mouse input fall through a window while it stays visible."""
+    # Qt's own attribute is what makes this work outside Windows: on Wayland it
+    # turns into an empty input region on the surface.
+    widget.setAttribute(WAtt.WA_TransparentForMouseEvents, on)
+    if not IS_WIN:
+        return True
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        get = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        setl = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        get.restype, get.argtypes = ctypes.c_longlong, [ctypes.c_void_p, ctypes.c_int]
+        setl.restype = ctypes.c_longlong
+        setl.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_longlong]
+        hwnd = ctypes.c_void_p(int(widget.winId()))
+        ex = get(hwnd, GWL_EXSTYLE)
+        # WS_EX_LAYERED has to stay on: a plain WS_EX_TRANSPARENT window still
+        # gets hit-tested by some compositing paths.
+        ex = (ex | WS_EX_TRANSPARENT | WS_EX_LAYERED) if on \
+            else (ex & ~WS_EX_TRANSPARENT)
+        setl(hwnd, GWL_EXSTYLE, ex)
+        return True
+    except Exception:
+        return False
+
 
 # ── Qt enum aliases ────────────────────────────────────────────────────────────
 WType  = Qt.WindowType
@@ -1812,7 +1862,9 @@ class RecordingController(QObject):
         in_frame = not can_exclude_from_capture()
         rect = region if region and region.isValid() else virtual_desktop_rect()
 
-        exclude = [self.overlay]
+        # The dock is a separate top-level window since click-through landed,
+        # so excluding the overlay no longer covers it.
+        exclude = [self.overlay] + self.overlay.toolbar.chrome_windows()
         if in_frame:
             self._clear_chrome(rect)
         else:
@@ -1838,8 +1890,7 @@ class RecordingController(QObject):
         room left. There is no HUD in this mode — the dock's own Record cell
         turns red, counts up and stops the recording, so a second timer would
         only be one more thing to keep out of frame."""
-        local = rect.translated(-self.overlay.geometry().topLeft())
-        if self.overlay.toolbar.clear_of(local):
+        if self.overlay.toolbar.clear_of(rect):   # global coords now
             self._dock_parked = True
             return
         self.overlay.toolbar.set_chrome_visible(False)
@@ -2476,7 +2527,7 @@ class SettingsDialog(QDialog):
         lo.addWidget(_dlg_sep())
 
         # ── Hotkey ─────────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Activation shortcut"))
+        lo.addWidget(_dlg_section_lbl("Draw / click-through shortcut"))
 
         self._hk_edit = ShortcutCapture(
             QKeySequence(_pynput_to_ks(self._settings.get("hotkey")))
@@ -2485,9 +2536,29 @@ class SettingsDialog(QDialog):
         self._hk_edit.setStyleSheet(self._input_style())
         lo.addWidget(self._hk_edit)
 
-        hint = QLabel("Click the box and press a new key combination.")
+        hint = QLabel("Switches between drawing on the screen and using your "
+                      "computer normally. Click the box and press a new key "
+                      "combination.")
+        hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
         lo.addWidget(hint)
+        lo.addSpacing(6)
+
+        # ── Show / hide ────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Show / hide the overlay"))
+
+        self._vis_hk_edit = ShortcutCapture(
+            QKeySequence(_pynput_to_ks(self._settings.get("visibility_hotkey")))
+        )
+        self._vis_hk_edit.setFixedHeight(36)
+        self._vis_hk_edit.setStyleSheet(self._input_style())
+        lo.addWidget(self._vis_hk_edit)
+
+        hint2 = QLabel("Takes the overlay off the screen entirely, marks and "
+                       "all. The tray icon does the same.")
+        hint2.setWordWrap(True)
+        hint2.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        lo.addWidget(hint2)
         lo.addSpacing(6)
 
         # ── OCR shortcut ───────────────────────────────────────────────────────
@@ -2711,6 +2782,15 @@ class SettingsDialog(QDialog):
             new_hotkey = _ks_to_pynput(ks)
             self._settings.set("hotkey", new_hotkey)
             self._hotkey_mgr.update(new_hotkey)
+            overlay = self.parent()
+            if overlay is not None and hasattr(overlay, "toolbar"):
+                overlay.toolbar.set_mode_shortcut(ks)
+
+        vis_ks = self._vis_hk_edit.keySequence().toString()
+        if vis_ks:
+            new_vis = _ks_to_pynput(vis_ks)
+            self._settings.set("visibility_hotkey", new_vis)
+            self._hotkey_mgr.update_visibility(new_vis)
         ocr_ks = self._ocr_hk_edit.keySequence().toString()
         if ocr_ks:
             new_ocr = _ks_to_pynput(ocr_ks)
@@ -3490,9 +3570,11 @@ class AnnotationOverlay(QWidget):
         self.setAttribute(WAtt.WA_TranslucentBackground)
         self.setAttribute(WAtt.WA_NoSystemBackground)
 
+        self._passthrough = False
         self.canvas  = Canvas(self)
         self.toolbar = Toolbar(self.canvas, self, settings_mgr, hotkey_mgr)
         self.canvas.setCursor(_cross_cursor())
+        self.toolbar.set_mode_shortcut(_pynput_to_ks(settings_mgr.get("hotkey")))
         self.recording = RecordingController(self, settings_mgr)
         self.recording.state_changed.connect(self.toolbar.set_recording)
         self.recording.ticked.connect(self.toolbar.set_record_elapsed)
@@ -3511,6 +3593,45 @@ class AnnotationOverlay(QWidget):
             self.show()
             self.raise_()
             self.activateWindow()
+            # The dock is its own window now, so it has to be shown explicitly
+            # — and it honours the collapsed-to-a-puck state while doing it.
+            self.toolbar.set_chrome_visible(True)
+            # Start out of the way. The app appearing should never be the
+            # reason you cannot click something.
+            self.set_passthrough(True)
+
+    # ── Draw ⇄ click-through ───────────────────────────────────────────────────
+    @property
+    def passthrough(self) -> bool:
+        return self._passthrough
+
+    def set_passthrough(self, on: bool):
+        """Click-through: marks stay on screen, input goes to what is beneath."""
+        if on == self._passthrough:
+            return
+        self._passthrough = on
+        _set_click_through(self, on)
+        self.canvas.setAttribute(WAtt.WA_TransparentForMouseEvents, on)
+        self.toolbar.set_mode(on)
+        if not on:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.canvas.setFocus()
+        else:
+            # Nothing is being pointed at any more; drop the laser dot rather
+            # than leaving it frozen mid-screen.
+            self.canvas._laser_pos = None
+            self.canvas.update()
+
+    @pyqtSlot()
+    def toggle_passthrough(self):
+        if not self.isVisible():          # hidden entirely: bring it back armed
+            self.show()
+            self.toolbar.set_chrome_visible(True)
+            self.set_passthrough(False)
+            return
+        self.set_passthrough(not self._passthrough)
 
     # ── Display configuration helpers ──────────────────────────────────────────
     def _fit_to_screens(self):
@@ -3537,6 +3658,19 @@ class AnnotationOverlay(QWidget):
             scr.logicalDotsPerInchChanged.connect(self._on_dpi_change)
         self._fit_to_screens()
 
+    def resizeEvent(self, e):
+        """Keep the canvas filling the window.
+
+        On Windows the overlay sizes itself to the desktop and is never
+        touched again, so _fit_to_screens() was the only path that mattered.
+        A Wayland compositor sizes windows itself — Hyprland will happily tile
+        this one — and without this the drawing surface keeps its old size
+        while the window changes underneath it, which puts every click at the
+        wrong coordinates.
+        """
+        super().resizeEvent(e)
+        self.canvas.setGeometry(0, 0, self.width(), self.height())
+
     def _on_dpi_change(self, *_):
         """DPI changed at runtime (user changed Windows display scale).
         Invalidate the cursor so it's rebuilt at the new pixel density."""
@@ -3559,6 +3693,8 @@ class AnnotationOverlay(QWidget):
     def activate_ocr(self):
         if not self.isVisible():
             self.show(); self.raise_()
+            self.toolbar.set_chrome_visible(True)
+        self.set_passthrough(False)       # you cannot drag a snip through it
         self.toolbar._activate("ocr")
 
     @pyqtSlot()
@@ -3569,10 +3705,12 @@ class AnnotationOverlay(QWidget):
     def toggle(self):
         if self.isVisible():
             self.hide()
+            self.toolbar.set_chrome_visible(False)
         else:
             self.show()
             self.raise_()
             self.activateWindow()
+            self.toolbar.set_chrome_visible(True)
 
     def changeEvent(self, e):
         super().changeEvent(e)
@@ -3581,7 +3719,9 @@ class AnnotationOverlay(QWidget):
         k = e.key()
         mods = e.modifiers()
         if k == Key.Key_Escape:
-            self.hide()
+            # Esc means "stop taking my clicks", not "disappear" — the marks
+            # stay up and the dock stays reachable.
+            self.set_passthrough(True)
         elif k == Key.Key_C and not (mods & Qt.KeyboardModifier.ControlModifier):
             self.canvas.clear()
         elif k == Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
@@ -3601,12 +3741,18 @@ class AnnotationOverlay(QWidget):
 
 # ── Global hotkey bootstrap ────────────────────────────────────────────────────
 def _start_hotkey(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
-                  hotkey: str):
+                  hotkey: str, visibility_hotkey: str):
     from PyQt6.QtCore import QMetaObject, Qt as _Qt
-    def on_activate():
+
+    def on_mode():
+        QMetaObject.invokeMethod(overlay, "toggle_passthrough",
+                                 _Qt.ConnectionType.QueuedConnection)
+    hotkey_mgr.start(hotkey, on_mode)
+
+    def on_visibility():
         QMetaObject.invokeMethod(overlay, "toggle",
                                  _Qt.ConnectionType.QueuedConnection)
-    hotkey_mgr.start(hotkey, on_activate)
+    hotkey_mgr.start_visibility(visibility_hotkey, on_visibility)
 
 
 def _convert_recording(overlay) -> None:
@@ -3694,7 +3840,8 @@ def main():
     hotkey_mgr   = HotkeyManager()
     overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
     tray         = _setup_tray(overlay)
-    _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"))
+    _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"),
+                  settings_mgr.get("visibility_hotkey"))
 
     # Safety net: catches any exit path that isn't already covered by the
     # dock's own save-on-drag/-collapse/-expand calls.

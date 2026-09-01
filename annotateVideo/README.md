@@ -14,7 +14,25 @@ Based on **version 4.0.0** · recording is the new feature in this tree
 
 ## How it works
 
-Screen Annotator Pro creates a transparent, click-through window that covers your entire screen (or all monitors). When you activate it, the overlay intercepts mouse input so you can draw shapes, write text, and apply redactions directly on top of whatever application is underneath. When you hide or pause the overlay, the underlying apps regain full mouse control instantly — no restart, no alt-tab, no disruption.
+Screen Annotator Pro creates a transparent window covering your entire screen
+(or all monitors), and it has two modes.
+
+| Mode | The overlay | You |
+|---|---|---|
+| **Drawing** | takes the mouse | draw, annotate, redact |
+| **Click-through** | ignores the mouse | type, click, switch apps — normally |
+
+Your marks stay on screen in both. `Ctrl+Shift+A` switches between them (and is
+rebindable), Esc drops you into click-through, and picking any tool on the dock
+puts you straight back into drawing. The dock stays clickable either way.
+
+This is the difference between an overlay you can present with and one that
+holds your desktop hostage — you demo the app underneath, mark it up, keep
+demoing, all without the annotations going anywhere. It matters most while
+recording, which is exactly when you need to use the machine *and* draw on it.
+
+The app starts in click-through mode: it appearing should never be the reason
+you cannot click something.
 
 The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shift+A` by default) so you can flip it on and off in under a second during a presentation, meeting, or tutorial recording.
 
@@ -196,19 +214,25 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl + Shift + A` | Toggle overlay on / off (customisable in Settings) |
+| `Ctrl + Shift + A` | Draw ⇄ click-through (customisable in Settings) |
+| `Ctrl + Shift + H` | Show / hide the overlay entirely (customisable) |
 | `Ctrl + T` | Activate Snip & Read / OCR (customisable in Settings) |
 | `Ctrl + Shift + R` | Start / stop recording (customisable in Settings) |
 | `Ctrl + Z` | Undo last shape |
 | `Ctrl + Y` | Redo (restore undone shape) |
 | `C` | Clear all shapes |
-| `Esc` | Hide overlay (app stays in tray) |
+| `Esc` | Drop into click-through — marks stay up, the dock stays reachable |
 | `Delete` | Remove selected shape (Select tool) |
 | **Hold Shift** | 45° snap for lines / perfect square / perfect circle |
 
 ---
 
 ## Toolbar Controls
+
+The dock is its own window, so it stays clickable even when the overlay is
+letting clicks through — that is the way back into drawing when a global hotkey
+is unavailable. Its first cell is the mode: **Drawing** (filled, accent) or
+**Click-through** (muted). Click it to switch.
 
 A single horizontal dock sits at the bottom of the screen. The top row is every tool, always in the same place; the row below it shows only the properties the *active* tool actually uses — a color swatch and stroke slider for Pen, nothing at all for Select, a radius slider for Blur, and so on.
 
@@ -230,7 +254,8 @@ Open via the **Settings** button in the toolbar.
 
 | Setting | Description |
 |---|---|
-| Activation Shortcut | Global hotkey to show/hide the overlay (default `Ctrl+Shift+A`) |
+| Draw / click-through | Global hotkey to switch modes (default `Ctrl+Shift+A`) |
+| Show / hide the overlay | Global hotkey to put it away entirely (default `Ctrl+Shift+H`) |
 | OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+T`) |
 | Recording | Area, frame rate, quality, cursor, microphone, output folder, shortcut |
 | Start on boot | Adds to Windows startup registry; app launches hidden in the tray |
