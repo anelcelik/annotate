@@ -519,11 +519,11 @@ class ModeButton(QPushButton):
 
     def _sync_tip(self):
         self.setToolTip(
-            f"Click-through — your clicks go to the app underneath. "
-            f"{self._shortcut} to draw again."
+            f"Drawing is OFF — your clicks go to the app underneath. "
+            f"Click here or press {self._shortcut} to start drawing."
             if self._passthrough else
-            f"Drawing — the overlay has the mouse. {self._shortcut} to use "
-            f"your computer normally.")
+            f"Drawing is ON — the overlay has the mouse. Click here or press "
+            f"{self._shortcut} to use your computer normally.")
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -532,10 +532,10 @@ class ModeButton(QPushButton):
         if self._passthrough:
             if self.underMouse():
                 p.fillRect(0, 0, w, h, HOVER)
-            ink, icon, label = QColor(MUTED), "select", "Click-through"
+            ink, icon, label = QColor(MUTED), "select", "Drawing OFF"
         else:
             p.fillRect(0, 0, w, h, QColor(ACCENT))
-            ink, icon, label = QColor("#FFFFFF"), "pen", "Drawing"
+            ink, icon, label = QColor("#FFFFFF"), "pen", "Drawing ON"
         p.save()
         ic = _s(18)
         p.translate(_s(12), (h - ic) / 2)
@@ -1188,6 +1188,18 @@ class Toolbar(QWidget):
 
     def _toggle_mode(self):
         self.overlay.toggle_passthrough()
+
+    def raise_chrome(self):
+        """Lift the dock (or the puck) above the overlay.
+
+        They are sibling top-level windows now, both always-on-top, so their
+        order is whichever was raised last. Arming draw mode raises the
+        overlay — without this the overlay lands on top of the dock and eats
+        every click meant for a tool.
+        """
+        target = self._indicator if self._collapsed else self
+        if target is not None and target.isVisible():
+            target.raise_()
 
     def chrome_windows(self) -> list:
         """The dock's own top-level windows. The recorder needs these to hide

@@ -1556,26 +1556,42 @@ class RecordingBar(QWidget):
             "background:transparent;")
         lo.addWidget(meta)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        for label, fn, primary in [
-            ("Play",           self._play,   True),
-            ("Export…",        self._export, False),
-            ("Show in folder", self._reveal, False),
-            ("Save as…",       self._save_as, False),
-            ("Delete",         self._delete, False),
-        ]:
-            b = QPushButton(label)
-            b.setFixedHeight(34)
-            b.setCursor(Cursor.PointingHandCursor)
-            b.setStyleSheet(_dlg_button_style(primary))
-            b.clicked.connect(fn)
-            row.addWidget(b)
-        lo.addLayout(row)
+        # Two rows: what you probably want to do with it, then housekeeping.
+        # GIF gets its own button rather than living behind "Export…" — it is
+        # the format people actually reach for after a screen recording, and
+        # burying it meant nobody was offered it at all.
+        for buttons in (
+            [("Play",           self._play,     True),
+             ("Make GIF",       self._make_gif, True),
+             ("Export…",        self._export,   False)],
+            [("Show in folder", self._reveal,   False),
+             ("Save as…",       self._save_as,  False),
+             ("Delete",         self._delete,   False)],
+        ):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            for label, fn, primary in buttons:
+                b = QPushButton(label)
+                b.setFixedHeight(34)
+                b.setCursor(Cursor.PointingHandCursor)
+                b.setStyleSheet(_dlg_button_style(primary))
+                b.clicked.connect(fn)
+                row.addWidget(b)
+            lo.addLayout(row)
 
     def _play(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
         self.close()
+
+    def _make_gif(self):
+        """Straight to a GIF at sensible defaults — no questions asked.
+
+        The dialog opens on GIF with 720 px / 12 fps already chosen, so this is
+        one more click, and every other format is still one panel away.
+        """
+        dlg = ExportDialog(self._path, self._duration, self._overlay)
+        dlg.preselect("gif", width=720, fps=12)
+        dlg.exec()
 
     def _export(self):
         ExportDialog(self._path, self._duration, self._overlay).exec()
@@ -1720,6 +1736,16 @@ class ExportDialog(QDialog):
         lo.addLayout(btns)
 
         self._fmt.setCurrentIndex(0)
+        self._on_format(0)
+
+    def preselect(self, kind: str, width: int = 0, fps: int = 12):
+        """Open with a format already chosen."""
+        if kind in self._keys:
+            self._fmt.setCurrentIndex(self._keys.index(kind))
+        if width and width in GIF_WIDTHS:
+            self._size.setCurrentIndex([w for w in GIF_WIDTHS].index(width))
+        if fps in GIF_RATES:
+            self._rate.setCurrentIndex(GIF_RATES.index(fps))
         self._on_format(0)
 
     # ── state ─────────────────────────────────────────────────────────────────
@@ -3640,6 +3666,7 @@ class AnnotationOverlay(QWidget):
             # The dock is its own window now, so it has to be shown explicitly
             # — and it honours the collapsed-to-a-puck state while doing it.
             self.toolbar.set_chrome_visible(True)
+            self.toolbar.raise_chrome()
             # Start out of the way. The app appearing should never be the
             # reason you cannot click something.
             self.set_passthrough(True)
@@ -3662,6 +3689,9 @@ class AnnotationOverlay(QWidget):
             self.raise_()
             self.activateWindow()
             self.canvas.setFocus()
+            # …and then put the dock back on top of it, or the overlay we just
+            # raised swallows every click aimed at a tool.
+            self.toolbar.raise_chrome()
         else:
             # Nothing is being pointed at any more; drop the laser dot rather
             # than leaving it frozen mid-screen.
@@ -3674,6 +3704,7 @@ class AnnotationOverlay(QWidget):
             self.show()
             self.toolbar.set_chrome_visible(True)
             self.set_passthrough(False)
+            self.toolbar.raise_chrome()
             return
         self.set_passthrough(not self._passthrough)
 
@@ -3755,6 +3786,7 @@ class AnnotationOverlay(QWidget):
             self.raise_()
             self.activateWindow()
             self.toolbar.set_chrome_visible(True)
+            self.toolbar.raise_chrome()
 
     def changeEvent(self, e):
         super().changeEvent(e)
@@ -3885,6 +3917,14 @@ def main():
     # these sizes as it is built.
     import dock_toolbar
     dock_toolbar.set_dock_scale(settings_mgr.get("dock_scale"))
+
+    # Touch ffmpeg once, in the background, before anyone presses Record.
+    # The bundled binary is ~146 MB and the first spawn of it on a fresh
+    # machine pays for an antivirus scan — several seconds of it, on whatever
+    # thread asked. Paying that here means Record starts promptly instead of
+    # freezing the overlay at exactly the wrong moment.
+    threading.Thread(target=ffmpeg_version, daemon=True,
+                     name="ffmpeg-warmup").start()
     hotkey_mgr   = HotkeyManager()
     overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
     tray         = _setup_tray(overlay)

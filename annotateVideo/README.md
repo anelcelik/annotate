@@ -97,7 +97,8 @@ Files go to `Videos/ScreenAnnotatorPro/annotation_YYYYMMDD_HHMMSS.mp4`
 
 ### Exporting — GIF, WebM, smaller MP4
 
-**Export…** on that panel converts the recording. Later on, the tray menu's
+**Make GIF** on that panel does it in one click at sensible defaults
+(720 px, 12 fps). **Export…** opens the same panel with every option. Later on, the tray menu's
 **Convert a recording…** opens any file you already have.
 
 | Format | Good for | Notes |
@@ -231,8 +232,8 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 
 The dock is its own window, so it stays clickable even when the overlay is
 letting clicks through — that is the way back into drawing when a global hotkey
-is unavailable. Its first cell is the mode: **Drawing** (filled, accent) or
-**Click-through** (muted). Click it to switch.
+is unavailable. It carries the mode cell: **Drawing ON** (filled, accent) or
+**Drawing OFF** (muted). Click it to switch.
 
 A single horizontal dock sits at the bottom of the screen. The top row is every tool, always in the same place; the row below it shows only the properties the *active* tool actually uses — a color swatch and stroke slider for Pen, nothing at all for Select, a radius slider for Blur, and so on.
 
