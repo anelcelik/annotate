@@ -992,13 +992,11 @@ class Canvas(QWidget):
     def capture_annotated(self) -> QPixmap:
         """Grab the desktop behind the overlay and composite all shapes on top."""
         overlay = self.window()
-        overlay.setWindowOpacity(0.0)
-        QApplication.processEvents()
-        sr = QApplication.primaryScreen().virtualGeometry()
-        bg = QApplication.primaryScreen().grabWindow(
-            0, sr.x(), sr.y(), sr.width(), sr.height()
-        )
-        overlay.setWindowOpacity(1.0)
+        with _ChromeHidden(overlay):
+            sr = QApplication.primaryScreen().virtualGeometry()
+            bg = QApplication.primaryScreen().grabWindow(
+                0, sr.x(), sr.y(), sr.width(), sr.height()
+            )
 
         p = QPainter(bg)
         p.setRenderHint(RHint.Antialiasing)
@@ -1038,14 +1036,14 @@ class Canvas(QWidget):
         self.update()
 
     def _grab_behind(self, rect: QRectF) -> QPixmap:
+        # Same reason as capture_annotated: without hiding the dock, a blur or
+        # pixelate region drawn under it would sample the dock itself.
         overlay = self.window()
-        overlay.setWindowOpacity(0.0)
-        QApplication.processEvents()
-        r = rect.toRect()
-        pix = QApplication.primaryScreen().grabWindow(
-            0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
-        )   # grabWindow with explicit coords works across the virtual desktop
-        overlay.setWindowOpacity(1.0)
+        with _ChromeHidden(overlay):
+            r = rect.toRect()
+            pix = QApplication.primaryScreen().grabWindow(
+                0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
+            )   # grabWindow with explicit coords works across the virtual desktop
         return pix
 
     def paintEvent(self, _):
@@ -1131,6 +1129,40 @@ class DotPreview(QWidget):
         p.drawEllipse(cx - sz // 2, cy - sz // 2, sz, sz)
 
 
+class _ChromeHidden:
+    """Hide the app's own windows for the duration of a single grab.
+
+    The overlay used to own the dock, so dropping the overlay's opacity took
+    the dock with it. The dock is its own window now — the same window that
+    the recorder excludes from video — so a screenshot has to hide it
+    explicitly or the bar ends up in the picture.
+
+    Opacity rather than hide(): the windows keep their geometry and there is
+    no re-layout to flicker through on the way back.
+    """
+
+    def __init__(self, overlay):
+        self._windows = []
+        if overlay is None:
+            return
+        self._windows.append(overlay)
+        toolbar = getattr(overlay, "toolbar", None)
+        if toolbar is not None:
+            self._windows += [w for w in toolbar.chrome_windows()
+                              if w.isVisible()]
+
+    def __enter__(self):
+        for w in self._windows:
+            w.setWindowOpacity(0.0)
+        QApplication.processEvents()
+        return self
+
+    def __exit__(self, *_):
+        for w in self._windows:
+            w.setWindowOpacity(1.0)
+        return False
+
+
 # ── Screenshot result bar ─────────────────────────────────────────────────────
 class ScreenshotBar(QWidget):
     """Floating panel shown after capture: Copy | Save PNG | Discard
@@ -1183,6 +1215,12 @@ class ScreenshotBar(QWidget):
             btn.clicked.connect(fn)
             btn_row.addWidget(btn)
         lo.addLayout(btn_row)
+
+    def keyPressEvent(self, e):
+        if e.key() == Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(e)
 
     def _copy(self):
         QApplication.clipboard().setPixmap(self._pixmap)
@@ -1566,7 +1604,8 @@ class RecordingBar(QWidget):
              ("Export…",        self._export,   False)],
             [("Show in folder", self._reveal,   False),
              ("Save as…",       self._save_as,  False),
-             ("Delete",         self._delete,   False)],
+             ("Delete",         self._delete,   False),
+             ("Close",          self.close,     False)],
         ):
             row = QHBoxLayout()
             row.setSpacing(8)
@@ -1582,6 +1621,12 @@ class RecordingBar(QWidget):
     def _play(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
         self.close()
+
+    def keyPressEvent(self, e):
+        if e.key() == Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(e)
 
     def _make_gif(self):
         """Straight to a GIF at sensible defaults — no questions asked.

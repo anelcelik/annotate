@@ -239,7 +239,7 @@ A single horizontal dock sits at the bottom of the screen. The top row is every 
 
 - **6-colour swatch row** + custom colour picker, when the tool uses colour
 - **Opacity slider** (10–100 %), **Stroke size slider** (1–30 px), **Text size slider** (8–72 pt) — shown only for the tools that use them
-- **Capture** — hides overlay, captures all monitors, shows Copy / Save PNG / Discard
+- **Capture** — hides the overlay *and the dock*, captures all monitors, shows Copy / Save PNG / Discard
 - **Record** — starts recording; the cell turns red and counts up until you stop it
 - **Pause** — hides overlay; resume from tray or hotkey
 - **Minimise** — collapses the dock to the puck in one click (double-clicking the grip still does it too)
