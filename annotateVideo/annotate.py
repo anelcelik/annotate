@@ -339,6 +339,19 @@ def _set_click_through(widget, on: bool) -> bool:
         ex = (ex | WS_EX_TRANSPARENT | WS_EX_LAYERED) if on \
             else (ex & ~WS_EX_TRANSPARENT)
         setl(hwnd, GWL_EXSTYLE, ex)
+        # A style change is not guaranteed to take effect until the window is
+        # told to re-read it. Without this the flag can sit there doing
+        # nothing until something else happens to move or resize the window —
+        # which reads exactly like "the hotkey did not work".
+        user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                        ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_uint]
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER = 0x0002, 0x0001, 0x0004
+        SWP_NOACTIVATE, SWP_FRAMECHANGED = 0x0010, 0x0020
+        user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                            SWP_NOACTIVATE | SWP_FRAMECHANGED)
         return True
     except Exception:
         return False
