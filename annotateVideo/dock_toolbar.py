@@ -104,10 +104,11 @@ HOVER      = THEMES["light"]["hover"]
 # Every measurement on the dock derives from one factor, so the whole thing
 # scales as a unit instead of drifting out of proportion. 1.0 is the original
 # size; the default is smaller because the dock is wide, and on a laptop or a
-# VM that cannot drop its display scaling it ran off the edge. 0.80 measures
-# as 17 % narrower than the original — the rules between the cells cannot go
-# below 1 px, so the factor and the result are not quite the same number.
-DOCK_SCALE = 0.80
+# VM that cannot drop its display scaling it ran off the edge. 0.78 measures
+# as 17 % narrower than the original dock — the factor and the result differ
+# because the rules between cells cannot go below 1 px, and because the dock
+# has gained a minimise button since.
+DOCK_SCALE = 0.78
 
 
 def _s(n: float) -> int:
@@ -347,6 +348,11 @@ def _paint_icon(p: QPainter, tid: str, size: float, color: QColor):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(color))
         p.drawRect(QRectF(6, 6, 12, 12))
+
+    elif tid == "collapse":
+        # Chevron over a bar: "fold this down into the puck".
+        p.drawPolyline(QPolygonF([QPointF(6, 8), QPointF(12, 14), QPointF(18, 8)]))
+        line(6, 18, 18, 18)
 
     elif tid == "grip":
         p.setPen(Qt.PenStyle.NoPen)
@@ -832,11 +838,6 @@ class Toolbar(QWidget):
         row1.addWidget(self._grip)
         row1.addWidget(_vrule())
 
-        self._mode_btn = ModeButton()
-        self._mode_btn.clicked.connect(self._toggle_mode)
-        row1.addWidget(self._mode_btn)
-        row1.addWidget(_vrule())
-
         for gi, group in enumerate(GROUPS):
             for tid in group:
                 _, label, key, _props, _tip = TOOL_META[tid]
@@ -864,6 +865,14 @@ class Toolbar(QWidget):
         row1.addWidget(hist)
         row1.addWidget(_vrule())
 
+        # Over here rather than at the far left: putting it before the tools
+        # shifted every tool 80 px right and broke the muscle memory for where
+        # each one lives.
+        self._mode_btn = ModeButton()
+        self._mode_btn.clicked.connect(self._toggle_mode)
+        row1.addWidget(self._mode_btn)
+        row1.addWidget(_vrule())
+
         cap = CaptureButton()
         cap.clicked.connect(self._take_screenshot)
         row1.addWidget(cap)
@@ -879,6 +888,14 @@ class Toolbar(QWidget):
         pz = ActionButton("pause", "Pause — hide the overlay, resume from the tray")
         pz.clicked.connect(self.overlay.toggle)
         row1.addWidget(pz)
+
+        # Collapsing used to be double-click-the-dotted-grip and nothing else:
+        # the least discoverable control on the dock, and the scaling made it
+        # smaller still. One click, full-height target. The double-click on the
+        # grip still works for anyone who had learned it.
+        mn = ActionButton("collapse", "Minimise to the puck — or double-click the grip")
+        mn.clicked.connect(self._collapse)
+        row1.addWidget(mn)
 
         row1.addWidget(_vrule())
         ex = ActionButton("close", "Exit", danger=True)

@@ -122,7 +122,7 @@ _DEFAULT_SETTINGS: dict = {
     # "never moved, use the default resting spot".
     # 1.0 is the original dock size; smaller fits a dock that runs off the
     # edge on a small or unscalable display.
-    "dock_scale":     0.80,
+    "dock_scale":     0.78,
     "dock_collapsed": False,
     "dock_x":         None,
     "dock_y":         None,
@@ -1133,24 +1133,29 @@ class DotPreview(QWidget):
 
 # ── Screenshot result bar ─────────────────────────────────────────────────────
 class ScreenshotBar(QWidget):
-    """Floating panel shown after capture: Copy | Save PNG | Discard"""
+    """Floating panel shown after capture: Copy | Save PNG | Discard
+
+    Its own top-level window, and that is not cosmetic: as a child of the
+    overlay it inherited the overlay's click-through state, so in that mode
+    every button here was unclickable and there was no way to save the shot.
+    Result panels are chrome — they have to stay usable in both modes.
+    """
     def __init__(self, pixmap: QPixmap, parent: QWidget):
-        super().__init__(parent)
+        super().__init__(None,
+                         WType.FramelessWindowHint |
+                         WType.WindowStaysOnTopHint |
+                         WType.Tool)
         self.setAttribute(WAtt.WA_NoSystemBackground, True)
         self._pixmap = pixmap
         self._build()
         self.adjustSize()
-        # Centering on parent (the overlay, which spans every monitor's
-        # combined bounding box) can land this in a gap or seam on a
-        # non-trivial layout — same bug Settings/Help had. This widget is a
-        # child, not a top-level window, so `move()` is parent-local: convert
-        # display 1's global center into the overlay's local coordinates.
-        geo = QApplication.primaryScreen().availableGeometry()
-        local_center = parent.mapFromGlobal(geo.center())
-        self.move(local_center.x() - self.width()  // 2,
-                  local_center.y() - self.height() // 2)
+        # Centered on display 1 in global coordinates — the overlay spans every
+        # monitor's combined bounding box, so centering on *that* can land in a
+        # gap or a seam on a non-trivial layout.
+        _center_on_display1(self)
         self.show()
         self.raise_()
+        self.activateWindow()
 
     def _build(self):
         lo = QVBoxLayout(self)
@@ -1509,17 +1514,22 @@ class RecordingBar(QWidget):
     """Shown when a recording lands on disk: play, reveal, save elsewhere, bin."""
 
     def __init__(self, path: str, duration: float, parent: QWidget):
-        super().__init__(parent)
+        # Top-level for the same reason as ScreenshotBar: a child of the
+        # overlay is unclickable whenever the overlay is letting clicks through.
+        super().__init__(None,
+                         WType.FramelessWindowHint |
+                         WType.WindowStaysOnTopHint |
+                         WType.Tool)
         self.setAttribute(WAtt.WA_NoSystemBackground, True)
+        self._overlay = parent
         self._path = path
         self._duration = duration
         self._build()
         self.adjustSize()
-        geo = QApplication.primaryScreen().availableGeometry()
-        local = parent.mapFromGlobal(geo.center())
-        self.move(local.x() - self.width() // 2, local.y() - self.height() // 2)
+        _center_on_display1(self)
         self.show()
         self.raise_()
+        self.activateWindow()
 
     def _build(self):
         lo = QVBoxLayout(self)
@@ -1568,7 +1578,7 @@ class RecordingBar(QWidget):
         self.close()
 
     def _export(self):
-        ExportDialog(self._path, self._duration, self.parent()).exec()
+        ExportDialog(self._path, self._duration, self._overlay).exec()
 
     def _reveal(self):
         _reveal_in_file_manager(self._path)
@@ -2600,12 +2610,12 @@ class SettingsDialog(QDialog):
 
         # ── Dock size ──────────────────────────────────────────────────────────
         lo.addWidget(_dlg_section_lbl("Dock size"))
-        self._scale_values = [1.0, 0.9, 0.8, 0.7, 0.6]
+        self._scale_values = [1.0, 0.9, 0.78, 0.7, 0.6]
         self._scale_box = QComboBox()
-        self._scale_box.addItems([f"{int(v * 100)} %" for v in self._scale_values])
+        self._scale_box.addItems([f"{round(v * 100)} %" for v in self._scale_values])
         current = float(self._settings.get("dock_scale") or 1.0)
         nearest = min(self._scale_values, key=lambda v: abs(v - current))
-        self._scale_box.setCurrentText(f"{int(nearest * 100)} %")
+        self._scale_box.setCurrentText(f"{round(nearest * 100)} %")
         self._scale_box.setFixedHeight(30)
         self._scale_box.setStyleSheet(_dlg_combo_style())
         lo.addWidget(self._scale_box)

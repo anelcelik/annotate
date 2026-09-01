@@ -241,6 +241,7 @@ A single horizontal dock sits at the bottom of the screen. The top row is every 
 - **Capture** — hides overlay, captures all monitors, shows Copy / Save PNG / Discard
 - **Record** — starts recording; the cell turns red and counts up until you stop it
 - **Pause** — hides overlay; resume from tray or hotkey
+- **Minimise** — collapses the dock to the puck in one click (double-clicking the grip still does it too)
 - **Undo / Redo / Clear all**
 - **Settings** — hotkey, OCR hotkey, start on boot, appearance, help reference
 
@@ -259,7 +260,7 @@ Open via the **Settings** button in the toolbar.
 | OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+T`) |
 | Recording | Area, frame rate, quality, cursor, microphone, output folder, shortcut |
 | Start on boot | Adds to Windows startup registry; app launches hidden in the tray |
-| Dock size | 100 / 90 / 80 / 70 / 60 % — for displays the dock runs off the edge of. Applies next launch |
+| Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies next launch |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
 
 Settings are saved to:
