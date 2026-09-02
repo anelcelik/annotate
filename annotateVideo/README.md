@@ -317,7 +317,7 @@ The Store version is signed by Microsoft and updates automatically.
 
 1. **What happened** — describe the problem and what you expected instead
 2. **Steps to reproduce** — the exact sequence of actions that triggers it
-3. **Version** — shown in Settings, bottom-right (e.g. `Version 4.0.0`)
+3. **Version** — shown in Settings, bottom-right (e.g. `Version 5.0.0`)
 4. **OS and display setup** — e.g. Windows 11, single 4K monitor; or Ubuntu 24.04 Wayland, dual monitors
 5. **Error message or crash log** (if any) — on Windows, check `%APPDATA%\ScreenAnnotatorPro\` for any log files; on Linux run `python annotate.py` from terminal to see console output
 6. **Screenshot or screen recording** (if visual) — helps a lot for rendering or layout bugs
