@@ -43,7 +43,7 @@ from PyQt6.QtGui import (
 
 from video_recorder import (
     FFMPEG_HELP, QUALITY_PRESETS, RecordConfig, ScreenRecorder,
-    default_output_dir,
+    can_exclude_from_capture, default_output_dir, exclude_from_capture,
     ffmpeg_version, find_ffmpeg,
     format_elapsed, list_audio_devices, pick_region_natively,
     screen_under_cursor, virtual_desktop_rect,
@@ -140,6 +140,13 @@ _DEFAULT_SETTINGS: dict = {
     "rec_audio_dev":  "",              # "" = system default input
     "rec_dir":        "",              # "" = Videos/ScreenAnnotatorPro
     "rec_chrome_notice_seen": False,   # the "dock hides while recording" note
+    # On by default: this is how recording behaved before cd4b855 reverted to
+    # always hiding/parking the dock. WDA_EXCLUDEFROMCAPTURE was reported
+    # unreliable at the time, but per-window it either takes or it doesn't
+    # (see RecordingController._clear_chrome) — when it doesn't, recording
+    # falls back to the old hide/park behavior automatically. Turn this off
+    # if you ever catch the dock in a finished recording despite it.
+    "rec_keep_dock_live": True,
 }
 
 def _settings_path() -> Path:
@@ -2075,6 +2082,8 @@ class RecordingController(QObject):
         self._duration = 0.0
         self._dock_hidden = False
         self._dock_parked = False
+        self._dock_excluded = False    # WDA_EXCLUDEFROMCAPTURE path
+        self._dock_excluded_windows: list = []
 
         self.recorder = ScreenRecorder(self)
         self.recorder.tick.connect(self._on_tick)
@@ -2157,6 +2166,20 @@ class RecordingController(QObject):
         room left. There is no HUD in this mode — the dock's own Record cell
         turns red, counts up and stops the recording, so a second timer would
         only be one more thing to keep out of frame."""
+        if self._settings.get("rec_keep_dock_live") and can_exclude_from_capture():
+            windows = self.overlay.toolbar.chrome_windows()
+            excluded = [w for w in windows if exclude_from_capture(w, True)]
+            if len(excluded) == len(windows):
+                # Every dock window took the flag — leave it exactly where it
+                # is and trust the compositor to keep it out of the frame.
+                self._dock_excluded_windows = excluded
+                self._dock_excluded = True
+                return
+            # Didn't fully take (the thing this setting is a gamble on, per
+            # the module docstring in video_recorder.py) — undo whatever did
+            # apply and fall back to the guaranteed-correct path below.
+            for w in excluded:
+                exclude_from_capture(w, False)
         if self.overlay.toolbar.clear_of(rect):   # global coords now
             self._dock_parked = True
             return
@@ -2226,6 +2249,11 @@ class RecordingController(QObject):
         collapsed to its puck, or the overlay hidden with Esc, and neither
         should be undone by a recording ending. The result panel is a child
         of the overlay, though, so that much has to come back."""
+        if self._dock_excluded:
+            for w in self._dock_excluded_windows:
+                exclude_from_capture(w, False)
+            self._dock_excluded_windows = []
+            self._dock_excluded = False
         if self._dock_hidden:
             self.overlay.toolbar.set_chrome_visible(True)
             self._dock_hidden = False
@@ -2996,7 +3024,30 @@ class SettingsDialog(QDialog):
             self._rec_audio_cb.toggled.connect(self._rec_dev.setEnabled)
             lo.addWidget(self._rec_dev)
 
+        # On by default — see the comment on rec_keep_dock_live in
+        # _DEFAULT_SETTINGS.
+        self._rec_keep_live_cb = None
+        if can_exclude_from_capture():
+            self._rec_keep_live_cb = QCheckBox(
+                "Keep the dock visible while recording")
+            self._rec_keep_live_cb.setChecked(bool(g("rec_keep_dock_live")))
+            self._rec_keep_live_cb.setStyleSheet(_dlg_checkbox_style())
+            self._rec_keep_live_cb.setToolTip(
+                "Asks Windows to leave the dock out of the capture instead of "
+                "moving or hiding it, so it stays exactly where it is and "
+                "stays usable — hotkeys included. If a finished recording "
+                "ever shows the dock anyway, turn this off; recording falls "
+                "back to moving/hiding it whenever Windows refuses the "
+                "request outright, but a silent partial failure on the "
+                "compositor's end is the one thing this can't detect for you.")
+            lo.addWidget(self._rec_keep_live_cb)
+
         note = QLabel("A screen capture includes every visible window, so "
+                      "the dock moves out of the recorded area — or hides, "
+                      "if you are recording the whole screen — unless the "
+                      "option above is on and takes on this machine."
+                      if self._rec_keep_live_cb is not None else
+                      "A screen capture includes every visible window, so "
                       "the dock moves out of the recorded area — or hides, "
                       "if you are recording the whole screen.")
         note.setWordWrap(True)
@@ -3095,6 +3146,9 @@ class SettingsDialog(QDialog):
         if self._rec_dev is not None:
             self._settings.set("rec_audio_dev", self._rec_dev.currentText())
         self._settings.set("rec_dir", self._rec_dir)
+        if self._rec_keep_live_cb is not None:
+            self._settings.set("rec_keep_dock_live",
+                               self._rec_keep_live_cb.isChecked())
 
         self._settings.set("dock_scale",
                            self._scale_values[self._scale_box.currentIndex()])
