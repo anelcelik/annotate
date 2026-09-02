@@ -12,10 +12,17 @@ name: Build single-file Windows EXE (video)
 on:
   push:
     branches: [main, video-recording]
-    paths:
-      - 'annotateVideo/**'
-      - '.github/workflows/build-video.yml'
+    tags: ['v*']
+    # No `paths:` filter here on purpose: GitHub applies one `paths` list to
+    # the whole push trigger, branches and tags alike, and there's no
+    # well-defined "previous ref" to diff a new tag against — a v* push can
+    # silently build nothing if paths is set. main is annotateVideo/ almost
+    # entirely now, so an occasional rebuild on an unrelated root-level
+    # commit is a small price for a release tag that reliably fires.
   workflow_dispatch:
+
+permissions:
+  contents: write   # needed to publish/attach to GitHub Releases on tag push
 
 jobs:
   build:
@@ -272,3 +279,12 @@ jobs:
             annotateVideo/dist/ScreenAnnotatorProVideo.cer
             annotateVideo/dist/INSTALL-MSIX.txt
           retention-days: 30
+
+      - name: Attach to the release on a tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            annotateVideo/dist/ScreenAnnotatorProVideo.msix
+            annotateVideo/dist/ScreenAnnotatorProVideo.cer
+            annotateVideo/dist/INSTALL-MSIX.txt
