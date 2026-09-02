@@ -50,6 +50,7 @@ a = Analysis(
     binaries=_easyocr_b + _dt_b + _torch_b + _tv_b,
     datas=[
         ('icons/tray.ico', 'icons'),
+        ('icons/annotate.ico', 'icons'),
         ('installer/app.manifest', '.'),
     ] + _FFMPEG + _easyocr_d + _dt_d + _torch_d + _tv_d,
     hiddenimports=[

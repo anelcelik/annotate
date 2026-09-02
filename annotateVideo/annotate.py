@@ -43,7 +43,7 @@ from PyQt6.QtGui import (
 
 from video_recorder import (
     FFMPEG_HELP, QUALITY_PRESETS, RecordConfig, ScreenRecorder,
-    can_exclude_from_capture, default_output_dir, exclude_from_capture,
+    default_output_dir,
     ffmpeg_version, find_ffmpeg,
     format_elapsed, list_audio_devices, pick_region_natively,
     screen_under_cursor, virtual_desktop_rect,
@@ -2132,29 +2132,19 @@ class RecordingController(QObject):
         self._begin(cfg, region)
 
     def _begin(self, cfg: RecordConfig, region):
-        # On Windows the app's own windows are excluded from the capture, so
-        # the dock and the HUD can stay exactly where they are. Everywhere
-        # else, anything on screen lands in the file — so the chrome has to get
-        # out of the frame *before* the first one is grabbed.
-        in_frame = not can_exclude_from_capture()
+        # WDA_EXCLUDEFROMCAPTURE exists on Windows 10 2004+, but it does not
+        # reliably keep a window out of Qt's grabWindow() in practice — the
+        # dock was landing in recordings anyway. Rather than trust it, the
+        # dock always gets moved or hidden before the first frame is grabbed,
+        # the same way every other platform already has to.
         rect = region if region and region.isValid() else virtual_desktop_rect()
+        self._clear_chrome(rect)
 
-        # The dock is a separate top-level window since click-through landed,
-        # so excluding the overlay no longer covers it.
-        exclude = [self.overlay] + self.overlay.toolbar.chrome_windows()
-        if in_frame:
-            self._clear_chrome(rect)
-        else:
-            hud = RecordingHUD(self)
-            hud.place()
-            hud.allow_pause(not cfg.audio)
-            hud.show()
-            hud.raise_()
-            self._hud = hud
-            exclude.append(hud)
-
+        # The overlay's own ink is still worth excluding where the platform
+        # honours it: that lets the recorder draw the shapes itself at full
+        # output resolution instead of capturing them pre-resampled.
         ok = self.recorder.start(self.overlay.canvas, self.overlay, cfg, region,
-                                 exclude=tuple(exclude))
+                                 exclude=(self.overlay,))
         if not ok:
             self._teardown_hud()
             self._restore_chrome()
@@ -3006,15 +2996,13 @@ class SettingsDialog(QDialog):
             self._rec_audio_cb.toggled.connect(self._rec_dev.setEnabled)
             lo.addWidget(self._rec_dev)
 
-        if not can_exclude_from_capture():
-            note = QLabel("On this platform a screen capture includes every "
-                          "visible window, so the dock moves out of the "
-                          "recorded area — or hides, if you are recording the "
-                          "whole screen.")
-            note.setWordWrap(True)
-            note.setStyleSheet(
-                f"color:{DLG_MUTED};font-size:10px;background:transparent;")
-            lo.addWidget(note)
+        note = QLabel("A screen capture includes every visible window, so "
+                      "the dock moves out of the recorded area — or hides, "
+                      "if you are recording the whole screen.")
+        note.setWordWrap(True)
+        note.setStyleSheet(
+            f"color:{DLG_MUTED};font-size:10px;background:transparent;")
+        lo.addWidget(note)
 
         self._rec_dir = g("rec_dir") or default_output_dir()
         dir_row = QHBoxLayout()
@@ -4141,10 +4129,21 @@ def main():
     app.setApplicationName("Screen Annotator Pro")
     app.setQuitOnLastWindowClosed(False)
 
+    # The icon assets are generated, not committed (see create_icons.py),
+    # so a fresh checkout run from source has none yet. Render them once,
+    # silently, rather than making the user run a script by hand before the
+    # app looks right — a packaged build ships them already and skips this.
+    ico_path = _resource(os.path.join('icons', 'annotate.ico'))
+    if not os.path.exists(ico_path) and not hasattr(sys, '_MEIPASS'):
+        try:
+            import create_icons
+            create_icons.main(quiet=True)
+        except Exception:
+            pass  # best effort — worst case the app runs with default icons
+
     # App-wide icon — every window (Settings, Help, the OCR result window's
     # real title bar, Alt-Tab/taskbar entries) picks this up unless it sets
     # its own. The system tray icon is set separately in _setup_tray().
-    ico_path = _resource(os.path.join('icons', 'annotate.ico'))
     if os.path.exists(ico_path):
         app.setWindowIcon(QIcon(ico_path))
 

@@ -321,10 +321,24 @@ def pix_to_pil(pix: QPixmap):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
-    app = QApplication(sys.argv)
+def main(quiet: bool = False):
+    """Render every icon asset into OUT.
+
+    Safe to call from inside an already-running app (annotate.py does this
+    on startup when the icons are missing) as well as standalone from the
+    CLI: it reuses the current QApplication instance rather than creating a
+    second one, which PyQt raises on.
+    """
+    app = QApplication.instance() or QApplication(sys.argv)
     OUT.mkdir(exist_ok=True)
 
+    # Shadowed for the rest of this function so every `print(...)` below
+    # stays silent when called as an on-startup auto-generation step.
+    # (`__builtins__.print` is not reliable here: it's the real `builtins`
+    # module when this file runs as __main__, but a plain dict without a
+    # `print` attribute when it's imported as a module.)
+    import builtins
+    print = (lambda *a, **k: None) if quiet else builtins.print
     print("Generating Microsoft Store icon assets…\n")
 
     # Dispatch table: which draw function to use per stem

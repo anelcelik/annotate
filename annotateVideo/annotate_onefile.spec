@@ -50,7 +50,7 @@ else:
 
 # ── Optional bits: present in the repo, absent in a bare copy of the folder ──
 _datas = list(_FFMPEG)
-for _src, _dst in (('icons/tray.ico', 'icons'),):
+for _src, _dst in (('icons/tray.ico', 'icons'), ('icons/annotate.ico', 'icons')):
     if _os.path.isfile(_src):
         _datas.append((_src, _dst))
 
