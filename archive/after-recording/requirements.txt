@@ -1,0 +1,12 @@
+PyQt6>=6.4.0
+Pillow>=9.0.0
+pynput>=1.7.0
+easyocr>=1.7.0
+deep-translator>=1.11.0
+
+# Recording is done by ffmpeg, a separate binary rather than a Python package:
+#   Windows   winget install Gyan.FFmpeg   (or drop ffmpeg.exe in vendor/)
+#   Arch      sudo pacman -S ffmpeg
+#   Debian    sudo apt install ffmpeg
+# On a wlroots Wayland compositor (Hyprland, Sway) screen capture also needs
+# grim:  sudo pacman -S grim

@@ -1,33 +1,42 @@
 # Versions
 
-This repo's root (`annotate.py`, `dock_toolbar.py`, `installer/`, `annotate.spec`,
-`.github/workflows/`, …) is the **live copy** — the one that actually builds,
-ships, and gets committed to git. It always matches the newest snapshot below.
+**[`annotateVideo/`](../annotateVideo/) is the live copy** — the one that actually
+builds, ships, and gets committed to. Screen recording is a feature of it, not
+a separate app; its own [`AppxManifest.xml`](../annotateVideo/installer/AppxManifest.xml)
+carries the real Store identity (`Casultra.ScreenAnnotatorPro`), and
+[`build-video.yml`](../.github/workflows/build-video.yml) is what builds and
+releases it.
 
-The folders in here are **frozen snapshots**, one per toolbar redesign, kept
-so you can always tell what changed and open an old one directly without
-touching git.
+The folders in here are **frozen snapshots**, kept so you can always tell what
+changed and open an old one directly without touching git.
 
 | Folder | What it is |
 | --- | --- |
-| [`v1-vertical-toolbar/`](v1-vertical-toolbar/) | The original app — vertical `Toolbar` panel (31 controls, ~940px tall), dark rounded Settings/Help dialogs. Matches commit `a992110` (v3.0.1), the last Store build before the redesign. |
-| [`v2-dock-toolbar/`](v2-dock-toolbar/) | Current state — horizontal dock at the bottom (`dock_toolbar.py`), flat light Settings/Help dialogs to match. Includes `redesign-notes/` with the original proposal (REDESIGN.md, before/after screenshots, the design mockup). |
+| [`before-recording/`](before-recording/) | The app immediately before recording was added — no `video_recorder.py`, no Record button. Was "MS Store version/" at the repo root; last built as v4.0.0. |
+| [`after-recording/`](after-recording/) | A snapshot of `annotateVideo/` taken right as recording landed. `annotateVideo/` itself keeps moving past this point — this folder won't. |
 
-## Adding a V3
+Earlier toolbar-redesign snapshots (vertical panel → horizontal dock) were
+removed from here since they predate recording and weren't worth carrying
+forward — they're still in git history (`git log --oneline -- archive/`) if
+ever needed.
 
-When the next redesign starts:
+## Adding the next snapshot
 
-1. Finish and verify the change at the **root** first (that's still the only
-   copy that's actually wired into the build).
-2. Snapshot root into a new folder before you keep going:
+When a change to `annotateVideo/` is worth freezing (a redesign, a feature
+milestone):
+
+1. Finish and verify the change in `annotateVideo/` first — that's still the
+   only copy actually wired into the build.
+2. Copy the *tracked* files into a new, clearly-named folder here — skip
+   `.git`, `__pycache__`, `dist/`, and generated `icons/`:
    ```
-   mkdir archive/v3-<short-name>
-   git archive HEAD | tar -x -C archive/v3-<short-name>   # if committed, or just `cp -r`
+   mkdir archive/<short-name>
+   git ls-files annotateVideo | while read f; do
+     mkdir -p "archive/<short-name>/$(dirname "${f#annotateVideo/}")"
+     cp "$f" "archive/<short-name>/${f#annotateVideo/}"
+   done
+   git add archive/<short-name>
    ```
-   Note: `git archive HEAD` only captures what's committed. If root has
-   uncommitted changes you want in the snapshot, copy the working tree
-   instead (`cp -r` the tracked files, skipping `.git`, `__pycache__`, and
-   the `archive/` folder itself).
 3. Update the table above.
 
 ## Why not just git tags?

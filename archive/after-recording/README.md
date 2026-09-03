@@ -1,15 +1,14 @@
-# Screen Annotator Pro
+# Screen Annotator Pro — Video
 
 > Draw, highlight, annotate, redact and OCR anything on your screen — live, in
 > real time — and **record the whole thing to an MP4** with every mark baked in.
 
-A fullscreen transparent overlay, plus a screen recorder that captures the
-desktop with your annotations composited into each frame. Everything runs
-locally — no cloud, no account, no upload.
+This is the recording branch of Screen Annotator Pro: the same fullscreen
+transparent overlay, plus a screen recorder that captures the desktop with your
+annotations composited into each frame. Everything runs locally — no cloud, no
+account, no upload.
 
-This folder is the live source for the whole app — see the
-[repo root README](../README.md) for how it fits together with `archive/` and
-`docs/`.
+Based on **version 4.0.0** · recording is the new feature in this tree
 
 ---
 
@@ -88,9 +87,9 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 ## Recording
 
-Press **Record** on the dock (or `Ctrl+Shift+R`, or the tray menu) — its own
-Record cell turns red and counts up; press it again (or `Ctrl+Shift+R`, or the
-tray menu) to stop. The file is already on disk — a panel offers **Play**,
+Press **Record** on the dock (or `Ctrl+Shift+R`, or the tray menu). A small
+red HUD appears with the elapsed time and Pause / Stop; drag it anywhere.
+Press Stop and the file is already on disk — a panel offers **Play**,
 **Show in folder**, **Save as…** and **Delete**.
 
 Files go to `Videos/ScreenAnnotatorPro/annotation_YYYYMMDD_HHMMSS.mp4`
@@ -128,38 +127,33 @@ painted into each frame at full resolution, so it comes out crisp rather than
 resampled. The dock, the HUD and the selection outline around a selected shape
 are *not* recorded: they are controls, not annotations.
 
-On Windows 10 2004+, by default, this is exact. The app asks the compositor to
-leave its own windows out of any screen capture (`WDA_EXCLUDEFROMCAPTURE`) —
-the overlay always, and the dock (full bar and collapsed puck both) when
-**Settings → Recording → Keep the dock visible while recording** is on, which
-it is out of the box. It only trusts this if *every* dock window actually
-takes the flag; if even one refuses, whatever did apply is undone and the dock
-falls back to the same move-aside/hide behavior below, automatically, for that
-recording. The overlay's own exclusion is what lets the app composite the
-shapes itself at full resolution instead of capturing them pre-resampled.
+On Windows 10 2004+ this is exact. The app asks the compositor to leave its own
+windows out of any screen capture (`WDA_EXCLUDEFROMCAPTURE`) — you still see the
+overlay and the dock, the recording doesn't — and then composites the shapes
+itself.
 
-No other platform can exclude a window from capture at all. Wayland's
-screencopy hands over the composited output with no per-window opt-out, and
-X11 has nothing either, so anything visible is in the file — and that's also
-where Windows lands whenever the exclusion above doesn't take. Either way, the
-app moves its own chrome out of the frame instead, automatically:
+No other platform can do that. Wayland's screencopy hands over the composited
+output with no per-window opt-out, and X11 has nothing either, so anything
+visible is in the file. There the app moves its own chrome out of the frame
+instead, automatically:
 
 - **Recording an area** — the dock slides just outside the recorded rectangle
   and stays fully usable. Nothing is lost.
 - **Recording everything** — there is no outside, so the dock hides for the
   duration and comes back when you stop. Tool shortcuts still work; stop with
   `Ctrl+Shift+R` or the tray icon.
+- **No separate HUD** on these platforms — the dock's own Record cell turns
+  red, counts up and stops the recording, so there is no second window to keep
+  out of the way.
 
-The recorder also skips its own compositing wherever the overlay wasn't
-actually excluded, since the grab already contains it and drawing the shapes
-again would double them up.
+The recorder also skips its own compositing here, since the grab already
+contains the overlay and drawing the shapes again would double them up.
 
 ### Settings
 
 | Setting | Choices | Notes |
 |---|---|---|
 | Area | All monitors · Monitor in use · Pick an area | "Monitor in use" means the one the cursor is on when you hit Record |
-| Keep the dock visible while recording | on / off | Windows 10 2004+ only. On by default; see [What ends up in the frame](#what-ends-up-in-the-frame) |
 | Frame rate | 15 · 24 · 30 · 60 fps | 30 is the sensible default |
 | Quality | High (CRF 18) · Balanced (23) · Small file (28) | x264, `veryfast` preset |
 | Show the cursor | on / off | A drawn pointer on Windows; the real one on wlroots |
@@ -189,7 +183,7 @@ sudo apt install ffmpeg           # Debian/Ubuntu
 
 | Platform | Capture path | Notes |
 |---|---|---|
-| Windows | `QScreen.grabWindow` + our own compositing | The real target. Overlay always excluded; dock excluded too by default, falls back to moving/hiding if that doesn't take |
+| Windows | `QScreen.grabWindow` + our own compositing | The real target. Overlay excluded from capture, dock stays put |
 | Linux / X11 | `QScreen.grabWindow` | WYSIWYG — the overlay is in the grab, so the dock moves aside |
 | Linux / Wayland (wlroots) | `grim`, one frame at a time, off the GUI thread | Hyprland, Sway. Needs `grim` installed. ~15 fps ceiling |
 | Linux / Wayland (GNOME, KDE) | none | Run under XWayland: `QT_QPA_PLATFORM=xcb python annotate.py` |
@@ -294,7 +288,7 @@ Settings are saved to:
 
 ## Installation
 
-### Test builds
+### Test builds (this branch)
 
 CI publishes three artifacts per run, under Actions → *Build single-file
 Windows EXE (video)*:
@@ -304,14 +298,11 @@ Windows EXE (video)*:
 | `…Video-lite` | One ~95 MB .exe, everything but OCR | Run it. SmartScreen → More info → Run anyway |
 | `…Video-full` | Same plus Snip & Read (~334 MB) | As above, slower to start |
 | `…Video-msix` | A real installed package | Trust the bundled .cer, then install — see `INSTALL-MSIX.txt` |
-| `ScreenAnnotatorPro-StoreSubmission` | Unsigned MSIX for Partner Center | Not for installing — upload it to Partner Center for an actual Store submission |
 
-The MSIX now carries the **same package identity as the Store app**
-(`Casultra.ScreenAnnotatorPro`) — recording is a feature of the one app, not a
-separate package — so it will conflict with an existing Store install on the
-same machine rather than sit alongside it; uninstall one to test the other. It
-is signed with a throwaway CI certificate, which Windows will not trust until
-you import the included `.cer` into `LocalMachine\TrustedPeople` from an admin
+The MSIX uses a **different package identity** from the Store app, so it
+installs alongside it and cannot disturb the version you actually use. It is
+signed with a throwaway CI certificate, which Windows will not trust until you
+import the included `.cer` into `LocalMachine\TrustedPeople` from an admin
 shell. If that is more ceremony than you want, the .exe needs none of it.
 
 ### Microsoft Store
@@ -349,7 +340,7 @@ Open an issue with a clear description of the use case. What are you trying to d
 - **Recording needs ffmpeg** — bundled in a shipped Windows build, otherwise installed once by the user
 - **Wayland (Linux):** Global hotkeys are not available — use the tray icon to toggle the overlay
 - **Wayland recording:** wlroots compositors (Hyprland, Sway) record through `grim` at roughly 15 fps. GNOME and KDE Wayland need XWayland
-- **Only Windows can show the dock on screen without it landing in the video**, and even there it isn't guaranteed — everywhere else, and whenever it fails on Windows too, the dock is moved aside or hidden while recording instead
+- **Only Windows can show the dock on screen without it landing in the video** — everywhere else it is moved aside, or hidden while recording the whole screen
 - **Pause + microphone:** Pause is disabled while the mic is recording — a paused video track and a running audio device drift apart
 - **System audio** is not captured, only the microphone
 - **macOS:** Not officially supported; the app runs from source but no packaged build is provided
@@ -360,13 +351,13 @@ Open an issue with a clear description of the use case. What are you trying to d
 
 ## Repo layout
 
-Everything in *this* folder is the live app — what actually builds and ships:
+Everything at root is the live app — what actually builds and ships:
 
 ```
 annotate.py, dock_toolbar.py   the app
 video_recorder.py              screen recording: ffmpeg pipe + capture sources
-annotate.spec, annotate_onefile.spec, requirements.txt   build
-installer/                     MSIX packaging (Windows)
+annotate.spec, requirements.txt, .github/   build + CI
+installer/                     Windows (MSIX) + Linux (.desktop) packaging
 ```
 
 `video_recorder.py` is deliberately split in half. `FFmpegEncoder` and
@@ -375,20 +366,20 @@ installer/                     MSIX packaging (Windows)
 and hands over the bytes. The capture mechanism behind it is a `DesktopSource`,
 one per platform.
 
-CI (`.github/workflows/build-video.yml`) and everything not specific to the
-app itself — Store listing text, frozen historical snapshots — live one level
-up, at the repo root; see the [root README](../README.md) and
-[`../archive/README.md`](../archive/README.md).
+Everything else is grouped out of the way:
+
+```
+docs/       Store listing text, marketing screenshots, screenshot generator
+archive/    frozen snapshots of past toolbar redesigns (see archive/README.md)
+```
 
 ---
 
 ## License
 
-MIT License — see
-[`../archive/before-recording/installer/License.rtf`](../archive/before-recording/installer/License.rtf)
-for the full text.
+MIT License — see [installer/License.rtf](installer/License.rtf) for the full text.
 
-Copyright © 2025–2026 Anel Celik / Casultra
+Copyright © 2025 Anel Celik / Casultra
 
 ---
 
