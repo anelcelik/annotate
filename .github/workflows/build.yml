@@ -1,15 +1,12 @@
 name: Build Windows Installers
 
 on:
-  push:
-    branches: [main]
-    # No tags: trigger — annotateVideo/ is "the" app now (video recording
-    # folded in as a feature, not a fork), and build-video.yml owns the v*
-    # release channel. This workflow still builds "MS Store version/" (the
-    # pre-recording code line) on every push to main so it doesn't rot
-    # unnoticed, it just no longer piggybacks its installer onto a video
-    # release. Run it manually (workflow_dispatch) if that build is ever
-    # needed on demand.
+  # No push trigger — annotateVideo/ is "the" app now (video recording
+  # folded in as a feature, not a fork); this build is for the older
+  # "MS Store version/" code line, which isn't changing day to day, so
+  # running it on every push to main was burning Actions minutes for no
+  # reason. workflow_dispatch keeps it available on demand — before an
+  # actual Store submission, say.
   workflow_dispatch:
 
 permissions:
