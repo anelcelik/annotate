@@ -213,18 +213,30 @@ jobs:
           & "${{ steps.sdk.outputs.makeappx }}" pack /d msix_staging `
             /p dist\ScreenAnnotatorProVideo.msix /nv
 
-      # Windows will not install an unsigned MSIX, so CI makes a throwaway
-      # certificate. Its subject must match Publisher in AppxManifest.xml
-      # exactly or the package is rejected as tampered with.
-      - name: Sign it with a self-signed certificate
+      # Keep an unsigned copy before CI's throwaway cert touches it — this is
+      # the one to upload to Partner Center for an actual Store submission;
+      # it re-signs with the real Casultra cert itself and will reject
+      # anything pre-signed with something else.
+      - name: Set aside an unsigned copy for Partner Center
+        shell: pwsh
+        working-directory: annotateVideo
+        run: Copy-Item dist\ScreenAnnotatorProVideo.msix dist\ScreenAnnotatorPro-StoreSubmission.msix
+
+      # Windows will not sideload-install an unsigned MSIX, so CI signs this
+      # copy with a throwaway certificate for local testing. Its subject has
+      # to match Identity/Publisher in AppxManifest.xml exactly — which is now
+      # the real Store publisher CN, so this sideload build shares identity
+      # with the Store app. Installing it alongside an existing Store install
+      # will conflict (different signer, same package); uninstall one first.
+      - name: Sign a sideload copy with a self-signed certificate
         shell: pwsh
         working-directory: annotateVideo
         run: |
           $cert = New-SelfSignedCertificate `
             -Type Custom `
-            -Subject "CN=Casultra-Video-Dev" `
+            -Subject "CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C" `
             -KeyUsage DigitalSignature `
-            -FriendlyName "Screen Annotator Pro Video — sideload test cert" `
+            -FriendlyName "Screen Annotator Pro — sideload test cert" `
             -CertStoreLocation "Cert:\CurrentUser\My" `
             -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
           $pwd = ConvertTo-SecureString "SAPVideoDev!" -Force -AsPlainText
@@ -241,11 +253,13 @@ jobs:
         working-directory: annotateVideo
         run: |
           @'
-          Screen Annotator Pro — Video  (MSIX, sideload build)
-          ====================================================
+          Screen Annotator Pro  (MSIX, sideload build)
+          =============================================
 
-          This installs ALONGSIDE the Store version — different package
-          identity, so it will not touch or replace the app you already use.
+          This now shares its package identity with the real Store app (video
+          recording is a feature of the one app, not a separate package), so
+          it will CONFLICT with an existing Store install on this machine —
+          uninstall one before installing the other to test.
 
           Windows refuses to install an MSIX whose signer it does not trust,
           and this one is signed with a throwaway certificate made by CI, so
@@ -259,7 +273,7 @@ jobs:
           (or: Add-AppxPackage .\ScreenAnnotatorProVideo.msix).
 
           To remove everything afterwards:
-            Get-AppxPackage *ScreenAnnotatorProVideo* | Remove-AppxPackage
+            Get-AppxPackage *ScreenAnnotatorPro* | Remove-AppxPackage
           and delete the certificate from certlm.msc under Trusted People.
 
           If you would rather not touch the certificate store at all, use the
@@ -268,6 +282,11 @@ jobs:
 
           This is the LITE build: no Snip & Read / OCR. Everything else —
           annotation, click-through, recording, GIF and WebM export — is here.
+
+          SUBMITTING TO THE STORE INSTEAD? Do not upload this file — it is
+          signed with the throwaway sideload cert above. Use
+          ScreenAnnotatorPro-StoreSubmission.msix from the same build's
+          artifacts (unsigned; Partner Center signs it itself).
           '@ | Set-Content dist\INSTALL-MSIX.txt -Encoding UTF8
 
       - name: Upload the MSIX
@@ -278,6 +297,15 @@ jobs:
             annotateVideo/dist/ScreenAnnotatorProVideo.msix
             annotateVideo/dist/ScreenAnnotatorProVideo.cer
             annotateVideo/dist/INSTALL-MSIX.txt
+          retention-days: 30
+
+      # Not attached to the public release — an unsigned package installs
+      # nowhere on its own, it exists only for you to hand to Partner Center.
+      - name: Upload the unsigned Store-submission MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenAnnotatorPro-StoreSubmission
+          path: annotateVideo/dist/ScreenAnnotatorPro-StoreSubmission.msix
           retention-days: 30
 
       - name: Attach to the release on a tag
