@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QGraphicsBlurEffect, QGraphicsScene, QGraphicsPixmapItem,
     QFrame, QSystemTrayIcon, QMenu, QFileDialog,
     QDialog, QCheckBox, QTextEdit, QComboBox, QScrollArea, QProgressBar,
-    QLineEdit,
+    QLineEdit, QTabWidget,
 )
 from PyQt6.QtCore import (
     Qt, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
@@ -2536,6 +2536,23 @@ def _dlg_button_style(primary: bool) -> str:
     )
 
 
+def _dlg_tab_style() -> str:
+    """Flat rectangular tabs, matching the rest of the dialog chrome — no
+    radius, 2px ink rules. The pane's top border sits under the tab bar's
+    bottom border (top:-2px) so the two don't double up into a 4px line."""
+    return (
+        f"QTabWidget::pane{{background:{DLG_GROUND};"
+        f"border:2px solid {DLG_INK};border-top:none;top:-2px;}}"
+        "QTabBar{background:transparent;}"
+        f"QTabBar::tab{{background:{DLG_SURFACE};color:{DLG_MUTED};"
+        f"border:2px solid {DLG_INK};border-bottom:none;"
+        f"font-family:'{DLG_FONT}';font-size:11px;font-weight:700;"
+        "padding:7px 16px;margin-right:4px;}"
+        f"QTabBar::tab:selected{{background:{DLG_GROUND};color:{DLG_INK};}}"
+        f"QTabBar::tab:!selected:hover{{color:{DLG_INK};}}"
+    )
+
+
 # ── Text tool input ───────────────────────────────────────────────────────────
 class TextInputDialog(QDialog):
     """Flat replacement for QInputDialog.getText() — the native version was
@@ -2824,91 +2841,17 @@ class SettingsDialog(QDialog):
         lo.addWidget(title)
         lo.addWidget(_dlg_sep())
 
-        # ── Hotkey ─────────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Draw / click-through shortcut"))
-
-        self._hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(self._settings.get("hotkey")))
-        )
-        self._hk_edit.setFixedHeight(36)
-        self._hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._hk_edit)
-
-        hint = QLabel("Switches between drawing on the screen and using your "
-                      "computer normally. Click the box and press a new key "
-                      "combination.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(hint)
-        lo.addSpacing(6)
-
-        # ── Show / hide ────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Show / hide the overlay"))
-
-        self._vis_hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(self._settings.get("visibility_hotkey")))
-        )
-        self._vis_hk_edit.setFixedHeight(36)
-        self._vis_hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._vis_hk_edit)
-
-        hint2 = QLabel("Takes the overlay off the screen entirely, marks and "
-                       "all. The tray icon does the same.")
-        hint2.setWordWrap(True)
-        hint2.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(hint2)
-        lo.addSpacing(6)
-
-        # ── OCR shortcut ───────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("OCR shortcut  (Snip & Read)"))
-
-        self._ocr_hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(self._settings.get("ocr_hotkey")))
-        )
-        self._ocr_hk_edit.setFixedHeight(36)
-        self._ocr_hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._ocr_hk_edit)
-        lo.addSpacing(6)
-
-        self._build_recording(lo)
-
-        # ── Boot ───────────────────────────────────────────────────────────────
-        self._boot_cb = QCheckBox("Start on boot  (Windows only)")
-        self._boot_cb.setChecked(_is_startup_enabled())
-        self._boot_cb.setEnabled(IS_WIN)
-        self._boot_cb.setStyleSheet(_dlg_checkbox_style())
-        lo.addWidget(self._boot_cb)
-        lo.addSpacing(6)
-
-        # ── Dock size ──────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Dock size"))
-        self._scale_values = [1.0, 0.9, 0.78, 0.7, 0.6]
-        self._scale_box = QComboBox()
-        self._scale_box.addItems([f"{round(v * 100)} %" for v in self._scale_values])
-        current = float(self._settings.get("dock_scale") or 1.0)
-        nearest = min(self._scale_values, key=lambda v: abs(v - current))
-        self._scale_box.setCurrentText(f"{round(nearest * 100)} %")
-        self._scale_box.setFixedHeight(30)
-        self._scale_box.setStyleSheet(_dlg_combo_style())
-        lo.addWidget(self._scale_box)
-        scale_hint = QLabel("Applies next time the app starts.")
-        scale_hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(scale_hint)
-        lo.addSpacing(6)
-
-        # ── Appearance ─────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Appearance"))
-        appearance_row = QHBoxLayout()
-        appearance_row.setSpacing(8)
-        current_theme = self._settings.get("theme")
-        for label, key in [("Light", "light"), ("Dark", "dark")]:
-            btn = QPushButton(label)
-            btn.setFixedHeight(32)
-            btn.setCursor(Cursor.PointingHandCursor)
-            btn.setStyleSheet(_dlg_button_style(primary=(key == current_theme)))
-            btn.clicked.connect(lambda _c, k=key: self._set_theme(k))
-            appearance_row.addWidget(btn)
-        lo.addLayout(appearance_row)
+        # ── Tabs ───────────────────────────────────────────────────────────────
+        # Two tabs rather than one long stack: each one only has to be as tall
+        # as its own content, and the dialog resizes to match on every switch
+        # (see the currentChanged connection below) instead of always paying
+        # for the height of everything combined.
+        tabs = QTabWidget()
+        tabs.setStyleSheet(_dlg_tab_style())
+        tabs.addTab(self._build_general_tab(), "General")
+        tabs.addTab(self._build_recording_tab(), "Recording")
+        tabs.currentChanged.connect(lambda _i: self.adjustSize())
+        lo.addWidget(tabs)
 
         lo.addSpacing(6)
         lo.addWidget(_dlg_sep())
@@ -2960,6 +2903,108 @@ class SettingsDialog(QDialog):
             btn.clicked.connect(slot)
             btn_row.addWidget(btn)
         lo.addLayout(btn_row)
+
+    def _build_general_tab(self) -> QWidget:
+        page = QWidget()
+        lo = QVBoxLayout(page)
+        lo.setContentsMargins(0, 12, 0, 2)
+        lo.setSpacing(10)
+
+        # ── Hotkey ─────────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Draw / click-through shortcut"))
+
+        self._hk_edit = ShortcutCapture(
+            QKeySequence(_pynput_to_ks(self._settings.get("hotkey")))
+        )
+        self._hk_edit.setFixedHeight(36)
+        self._hk_edit.setStyleSheet(self._input_style())
+        lo.addWidget(self._hk_edit)
+
+        hint = QLabel("Switches between drawing on the screen and using your "
+                      "computer normally. Click the box and press a new key "
+                      "combination.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        lo.addWidget(hint)
+        lo.addSpacing(6)
+
+        # ── Show / hide ────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Show / hide the overlay"))
+
+        self._vis_hk_edit = ShortcutCapture(
+            QKeySequence(_pynput_to_ks(self._settings.get("visibility_hotkey")))
+        )
+        self._vis_hk_edit.setFixedHeight(36)
+        self._vis_hk_edit.setStyleSheet(self._input_style())
+        lo.addWidget(self._vis_hk_edit)
+
+        hint2 = QLabel("Takes the overlay off the screen entirely, marks and "
+                       "all. The tray icon does the same.")
+        hint2.setWordWrap(True)
+        hint2.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        lo.addWidget(hint2)
+        lo.addSpacing(6)
+
+        # ── OCR shortcut ───────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("OCR shortcut  (Snip & Read)"))
+
+        self._ocr_hk_edit = ShortcutCapture(
+            QKeySequence(_pynput_to_ks(self._settings.get("ocr_hotkey")))
+        )
+        self._ocr_hk_edit.setFixedHeight(36)
+        self._ocr_hk_edit.setStyleSheet(self._input_style())
+        lo.addWidget(self._ocr_hk_edit)
+        lo.addSpacing(6)
+
+        # ── Boot ───────────────────────────────────────────────────────────────
+        self._boot_cb = QCheckBox("Start on boot  (Windows only)")
+        self._boot_cb.setChecked(_is_startup_enabled())
+        self._boot_cb.setEnabled(IS_WIN)
+        self._boot_cb.setStyleSheet(_dlg_checkbox_style())
+        lo.addWidget(self._boot_cb)
+        lo.addSpacing(6)
+
+        # ── Dock size ──────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Dock size"))
+        self._scale_values = [1.0, 0.9, 0.78, 0.7, 0.6]
+        self._scale_box = QComboBox()
+        self._scale_box.addItems([f"{round(v * 100)} %" for v in self._scale_values])
+        current = float(self._settings.get("dock_scale") or 1.0)
+        nearest = min(self._scale_values, key=lambda v: abs(v - current))
+        self._scale_box.setCurrentText(f"{round(nearest * 100)} %")
+        self._scale_box.setFixedHeight(30)
+        self._scale_box.setStyleSheet(_dlg_combo_style())
+        lo.addWidget(self._scale_box)
+        scale_hint = QLabel("Applies next time the app starts.")
+        scale_hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        lo.addWidget(scale_hint)
+        lo.addSpacing(6)
+
+        # ── Appearance ─────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Appearance"))
+        appearance_row = QHBoxLayout()
+        appearance_row.setSpacing(8)
+        current_theme = self._settings.get("theme")
+        for label, key in [("Light", "light"), ("Dark", "dark")]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(32)
+            btn.setCursor(Cursor.PointingHandCursor)
+            btn.setStyleSheet(_dlg_button_style(primary=(key == current_theme)))
+            btn.clicked.connect(lambda _c, k=key: self._set_theme(k))
+            appearance_row.addWidget(btn)
+        lo.addLayout(appearance_row)
+
+        lo.addStretch()
+        return page
+
+    def _build_recording_tab(self) -> QWidget:
+        page = QWidget()
+        lo = QVBoxLayout(page)
+        lo.setContentsMargins(0, 12, 0, 2)
+        lo.setSpacing(10)
+        self._build_recording(lo)
+        lo.addStretch()
+        return page
 
     # ── Recording ──────────────────────────────────────────────────────────────
     def _build_recording(self, lo: QVBoxLayout):
