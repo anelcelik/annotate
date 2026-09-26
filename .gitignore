@@ -28,6 +28,8 @@ icons/
 
 # Recordings, in case anyone points the output folder at the repo
 *.mp4
+# ...except the promo video the README links to
+!docs/media/*.mp4
 
 # IDE / OS
 .vscode/
