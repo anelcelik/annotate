@@ -7,6 +7,7 @@
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10_%7C_11-ec3013?style=for-the-badge&labelColor=201e1d">
   <img alt="Records to MP4" src="https://img.shields.io/badge/records_to-MP4-f3f2f2?style=for-the-badge&labelColor=201e1d">
   <img alt="No account needed" src="https://img.shields.io/badge/account-not_needed-32D74B?style=for-the-badge&labelColor=201e1d">
+  <a href="https://annotator.pro/"><img alt="Website: annotator.pro" src="https://img.shields.io/badge/website-annotator.pro-0A84FF?style=for-the-badge&labelColor=201e1d"></a>
 </p>
 
 # Screen Annotator Pro
@@ -18,7 +19,7 @@ screen — live, in real time, without interrupting what's behind it.
   <img src="docs/media/demo.webp" alt="Drawing an arrow, a label, a circle, a highlight and numbered callouts on a dashboard, sweeping the laser pointer, switching to click-through to change the page underneath while the marks stay, then recording it to MP4" width="100%">
 </p>
 
-<p align="center"><a href="docs/media/screen-annotator-pro-promo.mp4"><b>▶ Watch the full video (1080p MP4)</b></a> · <a href="https://apps.microsoft.com/detail/9NS87MQB29C7"><b>Get it on the Microsoft Store</b></a></p>
+<p align="center"><a href="docs/media/screen-annotator-pro-promo.mp4"><b>▶ Watch the full video (1080p MP4)</b></a> · <a href="https://apps.microsoft.com/detail/9NS87MQB29C7"><b>Get it on the Microsoft Store</b></a> · <a href="https://annotator.pro/"><b>annotator.pro</b></a></p>
 
 ## One dock, 17 tools
 
@@ -32,12 +33,14 @@ tool in your hand actually uses, and every tool has a one-key shortcut.
 **Click-through mode** is the part that makes it usable live: your marks stay
 on screen while the mouse goes back to the app underneath, so you can keep
 demoing without the overlay holding your desktop hostage. `Ctrl+Shift+A`
-flips between drawing and click-through.
+flips between drawing and click-through. Step-by-step:
+[how to draw on your screen in Windows 10 and 11](https://annotator.pro/guides/draw-on-screen-windows).
 
 ## Redact in one drag
 
 Blur, pixelate or black-box anything before it ends up in a screenshot, a
-meeting or a recording.
+meeting or a recording — see
+[how to blur sensitive info while screen sharing](https://annotator.pro/guides/blur-screen-while-screen-sharing).
 
 <p align="center">
   <img src="docs/media/redact.webp" alt="Blurring an email address and phone number, pixelating an IBAN and blacking out a live API key on an account settings page" width="100%">
