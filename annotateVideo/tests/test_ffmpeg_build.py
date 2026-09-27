@@ -40,8 +40,9 @@ def test_encoders():
 
 
 def test_decoders():
+    # wrapped_avframe: what lavfi (the tests' test pictures) hands on.
     assert not missing("-decoders", ["h264", "aac", "pcm_s16le", "png", "rawvideo",
-                                     "vp9", "opus", "gif", "mjpeg"])
+                                     "vp9", "opus", "gif", "mjpeg", "wrapped_avframe"])
 
 
 def test_filters():
