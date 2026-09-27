@@ -14,6 +14,9 @@
 # still works, the file is a fraction of the size and it starts far faster.
 
 import os as _os
+import sys as _sys
+_sys.path.insert(0, SPECPATH)
+import build_filters as _bf   # shared, tested drop rules
 
 LITE = _os.environ.get("ANNOTATE_LITE", "") not in ("", "0", "false", "False")
 print(f"spec: building the {'LITE (no OCR)' if LITE else 'FULL'} single-file exe")
@@ -50,7 +53,10 @@ else:
 
 # ── Optional bits: present in the repo, absent in a bare copy of the folder ──
 _datas = list(_FFMPEG)
-for _src, _dst in (('icons/tray.ico', 'icons'), ('icons/annotate.ico', 'icons')):
+for _src, _dst in (('icons/tray.ico', 'icons'), ('icons/annotate.ico', 'icons'),
+                   ('THIRD_PARTY_NOTICES.txt', 'licenses'),
+                   ('vendor/ffmpeg-LICENSE.txt', 'licenses'),
+                   ('vendor/ffmpeg-README.txt', 'licenses')):
     if _os.path.isfile(_src):
         _datas.append((_src, _dst))
 
@@ -59,10 +65,8 @@ _manifest = next((m for m in ('installer/app.manifest',
                   if _os.path.isfile(m)), None)
 _icon = 'icons/annotate.ico' if _os.path.isfile('icons/annotate.ico') else None
 
-_lite_excludes = [
-    'easyocr', 'torch', 'torchvision', 'scipy', 'skimage', 'cv2',
-    'numpy', 'deep_translator', 'matplotlib', 'pandas',
-] if LITE else ['torch.cuda', 'torch.backends.cudnn']
+_lite_excludes = (list(_bf.LITE_EXCLUDES) if LITE
+                  else ['torch.cuda', 'torch.backends.cudnn'])
 
 a = Analysis(
     ['annotate.py'],
@@ -71,7 +75,10 @@ a = Analysis(
     datas=_datas + _ocr_d,
     hiddenimports=[
         'PyQt6.sip',
-        'video_recorder',
+        'video_recorder', 'hotkeys', 'platform_win',
+        'winrt.windows.foundation', 'winrt.windows.applicationmodel',
+        'winrt.windows.applicationmodel.activation',
+        'winrt.windows.services.store', 'winrt.runtime.interop',
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
     ] + ([] if LITE else [
@@ -109,18 +116,9 @@ a = Analysis(
     noarchive=False,
 )
 
-_QT_DROP = {
-    'Qt6Network', 'Qt6Sql', 'Qt6Test', 'Qt6Xml', 'Qt6Bluetooth', 'Qt6DBus',
-    'Qt6Multimedia', 'Qt6MultimediaWidgets', 'Qt6Positioning',
-    'Qt6PrintSupport', 'Qt6Qml', 'Qt6Quick', 'Qt6QuickWidgets',
-    'Qt6RemoteObjects', 'Qt6Sensors', 'Qt6SerialPort', 'Qt6Svg',
-    'Qt6SvgWidgets', 'Qt6WebChannel', 'Qt6WebSockets', 'Qt6WebEngineCore',
-    'Qt6WebEngineWidgets', 'Qt63DCore', 'Qt63DRender', 'Qt63DAnimation',
-    'Qt63DExtras', 'Qt63DInput', 'Qt63DLogic',
-    'qsqlite', 'qsqlodbc', 'qsqlpsql', 'qtvirtualkeyboard',
-}
-a.binaries = TOC([b for b in a.binaries
-                  if not any(drop in b[0] for drop in _QT_DROP)])
+# ── Strip what the app never loads — see build_filters.py ──────────────────
+a.binaries = TOC(_bf.filter_toc(a.binaries, _bf.keep_binary))
+a.datas = TOC(_bf.filter_toc(a.datas, _bf.keep_data))
 
 pyz = PYZ(a.pure, a.zipped_data)
 

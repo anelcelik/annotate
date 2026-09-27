@@ -1,0 +1,47 @@
+Screen Annotator Pro — open-source components
+=============================================
+
+Screen Annotator Pro is built on the open-source software below. Each
+component is distributed under its own license; the full license texts are
+available at the links given, and FFmpeg's is included next to this file
+(ffmpeg-LICENSE.txt).
+
+
+FFmpeg                      GNU General Public License v3
+  The recorder runs ffmpeg.exe as a separate program. This copy is the
+  "essentials" build from www.gyan.dev; its exact version, build
+  configuration and a link to the corresponding source code are in
+  ffmpeg-README.txt next to this file.
+  https://ffmpeg.org/legal.html
+  Source: https://github.com/FFmpeg/FFmpeg
+  Build:  https://www.gyan.dev/ffmpeg/builds/
+
+Qt 6                        GNU Lesser General Public License v3
+  https://www.qt.io/licensing/open-source-lgpl-obligations
+  Source: https://download.qt.io/official_releases/qt/
+
+PyQt6                       GNU General Public License v3
+  Riverbank Computing Limited
+  https://www.riverbankcomputing.com/software/pyqt/
+
+Python 3.12                 Python Software Foundation License
+  https://docs.python.org/3/license.html
+
+pynput                      GNU Lesser General Public License v3
+  https://github.com/moses-palmer/pynput
+
+Python/WinRT (winrt-*)      MIT License
+  https://github.com/pywinrt/pywinrt
+
+
+Only in builds that include Snip & Read (OCR):
+
+EasyOCR                     Apache License 2.0
+  https://github.com/JaidedAI/EasyOCR
+PyTorch, torchvision        BSD 3-Clause License
+  https://github.com/pytorch/pytorch
+NumPy, SciPy, scikit-image  BSD 3-Clause License
+OpenCV                      Apache License 2.0
+Pillow                      MIT-CMU License
+deep-translator             Apache License 2.0
+  https://github.com/nidhaloff/deep-translator
