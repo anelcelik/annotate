@@ -79,6 +79,14 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 5.5 — Edit your marks after drawing them**
+
+- Select a mark to move it, reshape it with its handles, or change its colour, thickness and opacity
+- Select several marks at once; copy, paste and duplicate them (Ctrl+C / Ctrl+V / Ctrl+D)
+- Show the shortcuts you press on screen, great for tutorials (plain typing never shows)
+- Hover hints on every button, and you can switch them off in Settings
+
+
 **Version 5.4 — Recording on the graphics chip, and zoom**
 
 - Zoom: press M to magnify the screen around your cursor; the mouse wheel zooms up to 8×
