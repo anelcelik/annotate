@@ -69,11 +69,22 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install PyQt6 pynput pytest ${{ env.WINRT_PACKAGES }}
+      # The recording tests (GPU command, exports) need the same ffmpeg the
+      # app ships.
+      - name: Fetch the pinned ffmpeg.exe
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
+          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:FFMPEG_SHA256) { throw "ffmpeg.zip checksum mismatch" }
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
+          $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          "SCREEN_ANNOTATOR_FFMPEG=$($exe.FullName)" >> $env:GITHUB_ENV
       - name: Run the tests
         working-directory: annotateVideo
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests -v
+        run: python -m pytest tests -v -rs
 
   build:
     runs-on: windows-latest
