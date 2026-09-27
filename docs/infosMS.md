@@ -2,48 +2,56 @@
 
 ---
 
-## For the 5.1 submission — paste these into Partner Center
+## For the 5.2 submission — paste these into Partner Center
 
 Why these changed (2026-09-27 review of the live listing):
 
 - The description began with the bare URL `https://annotator.pro/` — the
   first line is what search results and the listing preview show. It now
   leads with what the app does.
-- **Snip & Read (OCR) and Translate are not in the Store package** (it is the
-  lite build) but the features list sold both. They are out of the copy below
-  until OCR is back in the Store build; the app itself now hides the tool.
+- **Snip & Read is back in the Store package** (5.2 uses the text
+  recognition built into Windows instead of the EasyOCR bundle the Store
+  build never carried), so the copy can promise it again — worded to match
+  what it does: reading is on-device, translation opens Google Translate.
 - Recording was only mentioned as "New:" in the middle; it is one of the two
   things people search for, so it is in the first sentence.
+- Search terms: no other product's name (the Store's policies don't allow
+  using another app's trademark as a keyword).
+- Other languages: `docs/store-listing/` has this listing translated.
 
 ### Description
 
 **Draw on your screen, blur what's private, and record it all — right on top of any app.**
 
-Screen Annotator Pro puts a transparent drawing layer over your whole desktop. Circle a button, drop numbered steps, blur an email address before anyone sees it, point with a laser dot — then hit Record and every mark goes into the video at full resolution. No second app, no editing afterwards: stop, and the MP4 is already on disk, with one-click export to GIF or WebM.
+Screen Annotator Pro puts a transparent drawing layer over your whole desktop. Circle a button, drop numbered steps, type a label right where it belongs, blur an email address before anyone sees it, point with a laser dot — then hit Record and every mark goes into the video at full resolution. No second app, no editing afterwards: stop, and the MP4 is already on disk, with one-click export to GIF or WebM.
 
 Click-through mode keeps your marks on screen while your mouse goes back to the app underneath, so you can keep demoing, typing and switching windows without the overlay getting in the way.
+
+Snip & Read copies text out of anything on screen — a video, an image, a shared screen — using the text recognition built into Windows, so it works offline. Screenshot any area with your marks in it and copy or save it in a click.
 
 Made for presentations, remote meetings, tutorials, teaching, support calls and bug reports. Works across all your monitors, at every display scaling from 100 % to 400 %. No account, no cloud, no upload — everything stays on your PC.
 
 ### Product features (one per line in Partner Center)
 
-- Draw on top of any app, on every monitor — pen, line, arrow, rectangle, circle, highlighter and a pixel ruler
+- Draw on top of any app, on every monitor — pen, line, arrow, rectangle, circle, highlighter and a ruler in real screen pixels
 - Record your screen to MP4 with every annotation baked in, then export to GIF or WebM in one click
 - Click-through mode: your marks stay on screen while your mouse and keyboard go back to the app underneath
 - Blur, pixelate or black-box passwords, emails and faces before you share your screen or a screenshot
+- Snip & Read: drag over any text on screen and copy it out — works offline, in every language installed in Windows
+- Translate what you snipped in one click (opens Google Translate)
+- Screenshot an area or a whole screen with your annotations, then copy or save it
+- Type labels right on the screen, with an optional background box so they stay readable
 - Auto-numbered callouts and step markers for tutorials, walkthroughs and bug reports
 - Laser pointer that leaves no marks — perfect for presenting
-- Screenshot all monitors with your annotations, then copy or save as PNG
-- Undo and redo for everything, including Clear all
+- Undo and redo for everything, including Clear all; an eraser that removes whole marks
 - One-key shortcuts for every tool, and global hotkeys you can change
 - Record a whole screen, all monitors, or just the area you pick — with optional microphone audio
-- Light and dark theme, and a dock that collapses to a single icon
-- Starts with Windows if you want it to, hidden in the tray
+- Light and dark theme, a dock that collapses to a single icon, and a size you can change
 - Fully offline: no account, no cloud, no upload
 
 ### Short description (if the field is shown)
 
-Draw on your screen, blur private info, and record it all to MP4 — on top of any app.
+Draw on your screen, blur private info, copy text off any image, and record it all to MP4.
 
 ### Search terms (Partner Center allows 7)
 
@@ -52,7 +60,7 @@ Draw on your screen, blur private info, and record it all to MP4 — on top of a
 3. screen recorder
 4. blur screen
 5. presentation pen
-6. zoomit alternative
+6. copy text from screen
 7. screen marker
 
 ---
@@ -70,6 +78,21 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 ---
 
 ## What's New in This Version
+
+**Version 5.2 — Snip & Read is back, and drawing got easier**
+
+- Snip & Read: copy text from anything on screen, using the text recognition built into Windows — offline, in every language you have installed, and instant
+- Translate snipped text in one click (opens Google Translate)
+- Screenshot just an area (or click for the whole screen) — with its own shortcut, Ctrl+PrtSc — and save to your Screenshots folder
+- Type text right where you click, over several lines, with an optional background box; click a label to edit it
+- The eraser now removes whole marks with one touch (the old rub-out eraser is still there)
+- Pixelate now really pixelates what's underneath
+- Callouts and steps follow the size slider; the ruler measures in real screen pixels
+- Selecting picks the mark under your pointer, not a box around it
+- Changing the dock size applies right away
+- Drawing and the laser pointer use far less CPU on large and multiple screens
+- A three-step welcome for first-time users
+
 
 **Version 5.1.1 — Fixes that matter, and a lighter app**
 

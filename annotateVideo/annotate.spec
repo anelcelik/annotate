@@ -64,7 +64,10 @@ a = Analysis(
     ] + _FFMPEG + _LICENSES + _easyocr_d + _dt_d + _torch_d + _tv_d,
     hiddenimports=[
         'PyQt6.sip',
-        'video_recorder', 'hotkeys', 'platform_win',
+        'video_recorder', 'hotkeys', 'platform_win', 'ocr_win',
+        'winrt.windows.media.ocr', 'winrt.windows.graphics.imaging',
+        'winrt.windows.storage.streams', 'winrt.windows.globalization',
+        'winrt.windows.foundation.collections',
         'winrt.windows.foundation', 'winrt.windows.applicationmodel',
         'winrt.windows.applicationmodel.activation',
         'winrt.windows.services.store', 'winrt.runtime.interop',
