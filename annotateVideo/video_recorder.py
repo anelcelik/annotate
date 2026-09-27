@@ -1015,6 +1015,200 @@ def format_elapsed(seconds: float) -> str:
         else f"{s // 60:02d}:{s % 60:02d}"
 
 
+# ── Recording on the graphics chip ───────────────────────────────────────────
+#
+# The CPU recorder grabs every frame with GDI on the GUI thread, paints the
+# marks on in Python, pipes raw BGRA (1 GB/s at 4K) into ffmpeg and encodes
+# with x264: at 4K that is ~29 ms of the 33 ms frame budget on the UI thread
+# before encoding, and x264 alone keeps ~4 cores busy.
+#
+# Here ffmpeg does all of it on the GPU instead: ddagrab (Desktop
+# Duplication) captures the screen as a D3D11 texture, scale_d3d11 converts
+# it to NV12 on the GPU, and Media Foundation's hardware H.264 encoder takes
+# the texture as is. Every Windows laptop has such an encoder in its
+# integrated graphics (Intel Quick Sync, AMD VCN, NVIDIA NVENC). Python only
+# starts and stops the process. The overlay is captured as it is on screen
+# (not excluded), so the marks are in the video; the dock is still excluded
+# with WDA_EXCLUDEFROMCAPTURE, which Desktop Duplication honours.
+#
+# First version, deliberately narrow: one screen (ddagrab's output_idx and
+# Qt's screen order can disagree on multi-monitor setups), no pause. If
+# ffmpeg gives up in the first seconds — no hardware encoder, no desktop
+# duplication — the controller falls back to the CPU recorder.
+
+GPU_QUALITY_BPP = {"high": 0.12, "balanced": 0.07, "small": 0.04}   # bits/pixel/frame
+
+
+def gpu_bitrate(width: int, height: int, fps: int, quality: str) -> int:
+    bpp = GPU_QUALITY_BPP.get(quality, GPU_QUALITY_BPP["balanced"])
+    return max(1_000_000, int(width * height * fps * bpp))
+
+
+def gpu_record_command(ffmpeg: str, path: str, fps: int, *, size: tuple,
+                       crop: tuple | None = None, cursor: bool = True,
+                       quality: str = "balanced", audio_device: str | None = None,
+                       hardware: bool = True) -> list[str]:
+    """The ffmpeg command for a GPU recording. `size` is the output (w, h) in
+    physical pixels; `crop` is (x, y) of that area inside the screen, or None
+    for the whole screen. Split out so it can be read and tested."""
+    w, h = _even(size[0]), _even(size[1])
+    grab = f"ddagrab=output_idx=0:framerate={fps}:draw_mouse={1 if cursor else 0}"
+    if crop is not None:
+        grab += f":video_size={w}x{h}:offset_x={crop[0]}:offset_y={crop[1]}"
+    chain = grab + ",scale_d3d11=format=nv12"
+    if not hardware:                   # software MFT wants frames in memory
+        chain += ",hwdownload,format=nv12"
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if audio_device is not None:
+        cmd += ["-f", "dshow", "-thread_queue_size", "1024",
+                "-i", f"audio={audio_device}"]
+    cmd += ["-filter_complex", chain + "[v]", "-map", "[v]"]
+    if audio_device is not None:
+        cmd += ["-map", "0:a"]
+    cmd += ["-c:v", "h264_mf", "-b:v", str(gpu_bitrate(w, h, fps, quality))]
+    if hardware:
+        cmd += ["-hw_encoding", "1"]
+    if audio_device is not None:
+        cmd += ["-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000"]
+    cmd += ["-movflags", "+faststart", path]
+    return cmd
+
+
+def gpu_recording_possible(screen_count: int) -> bool:
+    return IS_WIN and screen_count == 1 and bool(find_ffmpeg())
+
+
+class HardwareRecorder(QObject):
+    """ffmpeg capturing and encoding on the GPU by itself. Same signals as
+    ScreenRecorder, plus `fell_back` when it can't run on this machine."""
+
+    started   = pyqtSignal(str)
+    tick      = pyqtSignal(float)
+    finishing = pyqtSignal()
+    finished  = pyqtSignal(str)
+    failed    = pyqtSignal(str)
+    fell_back = pyqtSignal(str)        # gave up early: use the CPU recorder
+
+    EARLY_MS = 2000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._proc: subprocess.Popen | None = None
+        self._err: list[str] = []
+        self._path = ""
+        self._t0 = 0.0
+        self.active = False
+        self.paused = False
+        self._clock = QTimer(self)
+        self._clock.setInterval(200)
+        self._clock.timeout.connect(self._on_clock)
+        self._watchdog = QTimer(self)
+        self._watchdog.setSingleShot(True)
+        self._watchdog.timeout.connect(self._check_early)
+
+    def start(self, config: "RecordConfig", size: tuple, crop: tuple | None,
+              audio_device: str | None) -> bool:
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg or self.active:
+            return False
+        try:
+            self._path = config.new_path()
+        except OSError as e:
+            self.failed.emit(f"Recordings cannot be written to {config.out_dir}\n\n{e}")
+            return False
+        cmd = gpu_record_command(ffmpeg, self._path, config.fps, size=size,
+                                 crop=crop, cursor=config.cursor,
+                                 quality=config.quality, audio_device=audio_device)
+        try:
+            self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                          stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.PIPE,
+                                          creationflags=_NO_WINDOW)
+        except OSError as e:
+            self.fell_back.emit(str(e))
+            return False
+        self._err = []
+        threading.Thread(target=self._drain, daemon=True,
+                         name="gpu-rec-stderr").start()
+        self._t0 = time.perf_counter()
+        self.active = True
+        self._clock.start()
+        self._watchdog.start(self.EARLY_MS)
+        self.started.emit(self._path)
+        return True
+
+    def _drain(self):
+        proc = self._proc
+        for raw in iter(proc.stderr.readline, b""):
+            self._err.append(raw.decode("utf-8", "replace").rstrip())
+            del self._err[:-20]
+
+    def _died(self) -> bool:
+        return self._proc is not None and self._proc.poll() is not None
+
+    def _check_early(self):
+        if self.active and self._died():
+            self._shut(delete=True)
+            self.fell_back.emit("\n".join(self._err[-5:]) or "ffmpeg stopped")
+
+    def _on_clock(self):
+        self.tick.emit(self.elapsed())
+        if self.active and self._died() and not self._watchdog.isActive():
+            err = "\n".join(self._err[-5:]) or "ffmpeg stopped unexpectedly"
+            self._shut(delete=False)
+            self.failed.emit(f"The recording stopped: {err}")
+
+    def _shut(self, delete: bool):
+        self.active = False
+        self._clock.stop()
+        self._watchdog.stop()
+        if delete:
+            try:
+                if self._path and os.path.exists(self._path):
+                    os.remove(self._path)
+            except OSError:
+                pass
+
+    def elapsed(self) -> float:
+        return max(0.0, time.perf_counter() - self._t0) if self._t0 else 0.0
+
+    def pause(self, on: bool):
+        pass                            # not in this first version
+
+    def stop(self):
+        if not self.active:
+            return
+        self.active = False
+        self._clock.stop()
+        self._watchdog.stop()
+        self.finishing.emit()
+        proc, path = self._proc, self._path
+
+        def close_out():
+            try:
+                proc.stdin.write(b"q")          # ffmpeg's own "finish up" key
+                proc.stdin.flush()
+                proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                rc = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                rc = -1
+            ok = rc == 0 and os.path.exists(path) and os.path.getsize(path) > 0
+            try:
+                if ok:
+                    self.finished.emit(path)
+                else:
+                    self.failed.emit("\n".join(self._err[-5:]) or
+                                     f"ffmpeg exited with {rc}")
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=close_out, daemon=True, name="gpu-rec-finish").start()
+
+
 # ── Exporting a finished recording ────────────────────────────────────────────
 #
 # Recording always produces an MP4: H.264 encodes in real time, which is the

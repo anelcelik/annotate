@@ -327,6 +327,12 @@ def _paint_icon(p: QPainter, tid: str, size: float, color: QColor):
                                (19.1, 4.9, 17, 7), (7, 17, 4.9, 19.1)):
             line(x1, y1, x2, y2)
 
+    elif tid == "zoom":
+        p.drawEllipse(QPointF(10, 10), 6.5, 6.5)
+        line(15, 15, 21, 21)
+        line(7, 10, 13, 10)
+        line(10, 7, 10, 13)
+
     elif tid == "board":
         p.drawRect(QRectF(3, 4, 18, 13))
         line(8, 21, 12, 17)
@@ -914,6 +920,10 @@ class Toolbar(QWidget):
         self._rec_btn = RecordButton()
         self._rec_btn.clicked.connect(self._toggle_recording)
         row1.addWidget(self._rec_btn)
+
+        zm = ActionButton("zoom", "Zoom — M  (mouse wheel zooms · Esc leaves)")
+        zm.clicked.connect(self.overlay.toggle_zoom)
+        row1.addWidget(zm)
 
         bd = ActionButton("board", "Whiteboard — W  (again for a blackboard · "
                                    "PgDn/PgUp pages · Esc leaves)")

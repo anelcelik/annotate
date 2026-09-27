@@ -79,6 +79,12 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 5.4 — Recording on the graphics chip, and zoom**
+
+- Recording now runs on your PC's graphics chip: far less CPU, heat and battery, smooth 4K — and it falls back by itself where it can't
+- Zoom: press M to magnify the screen around your cursor; the mouse wheel zooms up to 8×
+
+
 **Version 5.3 — For presenters**
 
 - Whiteboard and blackboard with pages: press W, draw on a clean board, and your desktop annotations come back when you leave
