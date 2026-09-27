@@ -79,6 +79,11 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 6.1 — About 90 MB smaller**
+
+- A much smaller download and install: the video engine now contains only what the app uses
+
+
 **Version 6.0 — Graphics-chip recording everywhere**
 
 - Recording on the graphics chip (beta) now works on any screen, area or window, and can be paused

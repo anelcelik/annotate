@@ -406,7 +406,7 @@ Open an issue with a clear description of the use case. What are you trying to d
 
 ### Known limitations
 
-- **Recording needs ffmpeg** — bundled in a shipped Windows build (a pinned, checksummed ffmpeg 9.0.2 "essentials" build from gyan.dev, GPLv3 — its license ships beside it, see Settings → Licenses), otherwise installed once by the user
+- **Recording needs ffmpeg** — bundled in a shipped Windows build: a 13 MB ffmpeg 9.0.2 built from source for this app by `ffmpeg/build-ffmpeg.sh` (only the encoders, filters and formats the app calls; x264, libvpx, Opus; every source pinned; GPLv3 — its license and source list ship beside it, see Settings → Licenses). `tests/test_ffmpeg_build.py` checks the shipped exe has every part the app uses. From source, ffmpeg is installed once by the user
 - **Wayland (Linux):** Global hotkeys are not available — use the tray icon to toggle the overlay
 - **Wayland recording:** wlroots compositors (Hyprland, Sway) record through `grim` at roughly 15 fps. GNOME and KDE Wayland need XWayland
 - **Only Windows can show the dock on screen without it landing in the video**, and even there it isn't guaranteed — everywhere else, and whenever it fails on Windows too, the dock is moved aside or hidden while recording instead
