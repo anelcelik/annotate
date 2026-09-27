@@ -100,8 +100,9 @@ Everything else at the repo root is support material, not app source:
 ## Releases
 
 Tagging `vX.Y.Z` on `main` builds and publishes a GitHub Release with the
-single-file `.exe` (full and lite), the sideload `.msix`, and an unsigned
-`.msix` for Partner Center — see
+single-file `.exe` (full and lite), the `.msi` installer, the sideload
+`.msix`, and an unsigned `.msix` for Partner Center, with the notes from
+[`docs/release-notes/`](docs/release-notes/) — see
 [`annotateVideo/README.md`](annotateVideo/README.md#installation) for
 details. The Microsoft Store listing itself is a manual Partner Center
 submission using that unsigned `.msix`.
