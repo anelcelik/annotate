@@ -58,7 +58,7 @@ from PySide6.QtGui import (
 
 from video_recorder import (
     FFMPEG_HELP, QUALITY_PRESETS, RecordConfig, ScreenRecorder,
-    HardwareRecorder, gpu_recording_possible, resolve_audio_device,
+    HardwareRecorder, gpu_recording_possible, gpu_target, resolve_audio_device,
     can_exclude_from_capture, default_output_dir, exclude_from_capture,
     ffmpeg_version, find_ffmpeg,
     format_elapsed, list_audio_devices, pick_region_natively,
@@ -132,7 +132,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.9.0"
+VERSION = "6.0.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -4810,27 +4810,21 @@ class RecordingController(QObject):
 
     def gpu_eligible(self) -> bool:
         return (bool(self._settings.get("rec_hardware")) and not self._gpu_broken
-                and gpu_recording_possible(len(QApplication.screens())))
+                and gpu_recording_possible())
 
     def _start_on_gpu(self, cfg: RecordConfig, region) -> bool:
         if not self.gpu_eligible():
             return False
-        scr = QApplication.primaryScreen()
-        g, dpr = scr.geometry(), scr.devicePixelRatio()
-        crop = None
-        size = (round(g.width() * dpr), round(g.height() * dpr))
-        if region is not None and region.isValid() and region != g:
-            r = region.intersected(g)
-            crop = (round((r.x() - g.x()) * dpr) // 2 * 2,
-                    round((r.y() - g.y()) * dpr) // 2 * 2)
-            size = (round(r.width() * dpr), round(r.height() * dpr))
+        target = gpu_target(region)
+        if target is None:
+            return False                # spans screens: the normal recorder
         audio = None
         if cfg.audio:
             audio = resolve_audio_device(cfg.audio_device)
             if audio is None:
                 return False            # the CPU path explains the missing mic
         self._pending = (cfg, region)
-        if not self._gpu.start(cfg, size, crop, audio):
+        if not self._gpu.start(cfg, target, audio):
             return False
         self.recorder = self._gpu
         return True
@@ -6079,9 +6073,10 @@ class SettingsDialog(QDialog):
             self._rec_gpu_cb.setStyleSheet(_dlg_checkbox_style())
             self._rec_gpu_cb.setToolTip(
                 "Captures and encodes on the GPU — a fraction of the CPU, so "
-                "less heat, fan and battery, and smooth 4K. One screen for "
-                "now; if this PC can't, recording switches to the normal "
-                "recorder by itself. No pause while it's on.")
+                "less heat, fan and battery, and smooth 4K. Works on any one "
+                "screen, an area or a window, pause included; “All monitors” "
+                "on several screens uses the normal recorder. If this PC "
+                "can't, recording switches to the normal recorder by itself.")
             lo.addWidget(self._rec_gpu_cb)
 
         note = QLabel("A screen capture includes every visible window, so "

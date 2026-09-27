@@ -39,16 +39,17 @@ def test_gpu_bitrate_scales_with_size_and_quality():
     assert VR.gpu_bitrate(100, 100, 15, "small") == 1_000_000       # a floor
 
 
-def test_gpu_only_for_one_screen(monkeypatch):
+def test_gpu_needs_windows_and_ffmpeg(monkeypatch):
     monkeypatch.setattr(VR, "IS_WIN", True)
     monkeypatch.setattr(VR, "find_ffmpeg", lambda refresh=False: "ffmpeg.exe")
-    assert VR.gpu_recording_possible(1)
-    assert not VR.gpu_recording_possible(2)
+    assert VR.gpu_recording_possible()
+    monkeypatch.setattr(VR, "IS_WIN", False)
+    assert not VR.gpu_recording_possible()
 
 
 def test_falls_back_to_cpu_when_the_gpu_path_gives_up(A, overlay, monkeypatch):
     rc = overlay.recording
-    monkeypatch.setattr(A, "gpu_recording_possible", lambda n: True)
+    monkeypatch.setattr(A, "gpu_recording_possible", lambda: True)
     overlay.settings.set("rec_hardware", True)
     started = []
     monkeypatch.setattr(rc._gpu, "start", lambda *a: started.append("gpu") or True)
@@ -61,7 +62,7 @@ def test_falls_back_to_cpu_when_the_gpu_path_gives_up(A, overlay, monkeypatch):
 
 
 def test_gpu_recording_is_opt_in_for_now(A, overlay, monkeypatch):
-    monkeypatch.setattr(A, "gpu_recording_possible", lambda n: True)
+    monkeypatch.setattr(A, "gpu_recording_possible", lambda: True)
     assert not overlay.recording.gpu_eligible()          # off by default (beta)
     overlay.settings.set("rec_hardware", True)
     assert overlay.recording.gpu_eligible()

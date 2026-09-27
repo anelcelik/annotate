@@ -79,6 +79,11 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 6.0 — Graphics-chip recording everywhere**
+
+- Recording on the graphics chip (beta) now works on any screen, area or window, and can be paused
+
+
 **Version 5.9 — Your PC's sound, and you on camera**
 
 - Record what your PC plays (videos, calls, the app you're showing), mixed with your microphone

@@ -1368,18 +1368,23 @@ def gpu_bitrate(width: int, height: int, fps: int, quality: str) -> int:
 def gpu_record_command(ffmpeg: str, path: str, fps: int, *, size: tuple,
                        crop: tuple | None = None, cursor: bool = True,
                        quality: str = "balanced", audio_device: str | None = None,
-                       hardware: bool = True) -> list[str]:
+                       hardware: bool = True, adapter: int = 0,
+                       output: int = 0) -> list[str]:
     """The ffmpeg command for a GPU recording. `size` is the output (w, h) in
     physical pixels; `crop` is (x, y) of that area inside the screen, or None
-    for the whole screen. Split out so it can be read and tested."""
+    for the whole screen. `adapter`/`output` pick the graphics chip and the
+    screen on it (see gpu_target). Split out so it can be read and tested."""
     w, h = _even(size[0]), _even(size[1])
-    grab = f"ddagrab=output_idx=0:framerate={fps}:draw_mouse={1 if cursor else 0}"
+    grab = (f"ddagrab=output_idx={output}:framerate={fps}"
+            f":draw_mouse={1 if cursor else 0}")
     if crop is not None:
         grab += f":video_size={w}x{h}:offset_x={crop[0]}:offset_y={crop[1]}"
     chain = grab + ",scale_d3d11=format=nv12"
     if not hardware:                   # software MFT wants frames in memory
         chain += ",hwdownload,format=nv12"
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if adapter:                        # a screen on the second graphics chip
+        cmd += ["-init_hw_device", f"d3d11va=dda:{adapter}", "-filter_hw_device", "dda"]
     if audio_device is not None:
         cmd += ["-f", "dshow", "-thread_queue_size", "1024",
                 "-i", f"audio={audio_device}"]
@@ -1395,13 +1400,114 @@ def gpu_record_command(ffmpeg: str, path: str, fps: int, *, size: tuple,
     return cmd
 
 
-def gpu_recording_possible(screen_count: int) -> bool:
-    return IS_WIN and screen_count == 1 and bool(find_ffmpeg())
+def gpu_recording_possible() -> bool:
+    return IS_WIN and bool(find_ffmpeg())
+
+
+def dxgi_outputs() -> list[dict]:
+    """Every screen as Desktop Duplication numbers it: which graphics chip
+    (adapter) and which of its outputs, with its desktop rectangle in
+    physical pixels. Qt counts screens its own way, so this is how a Qt
+    screen is found again for ddagrab. Windows only; [] elsewhere."""
+    if not IS_WIN:
+        return []
+    import ctypes
+    from ctypes import POINTER, byref, c_uint, c_ulong, c_long, c_void_p, wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", c_ulong), ("b", ctypes.c_ushort), ("c", ctypes.c_ushort),
+                    ("d", ctypes.c_ubyte * 8)]
+
+    class OUTPUT_DESC(ctypes.Structure):
+        _fields_ = [("DeviceName", wintypes.WCHAR * 32), ("Desktop", wintypes.RECT),
+                    ("Attached", wintypes.BOOL), ("Rotation", c_uint),
+                    ("Monitor", wintypes.HMONITOR)]
+
+    def call(obj, index, restype, argtypes=(), *args):
+        vtbl = ctypes.cast(obj, POINTER(POINTER(c_void_p))).contents
+        proto = ctypes.WINFUNCTYPE(restype, c_void_p, *argtypes)
+        return proto(vtbl[index])(obj, *args)
+
+    OUT_PTR = (c_uint, POINTER(c_void_p))
+
+    iid = GUID(0x770AAE78, 0xF26F, 0x4DBA,
+               (ctypes.c_ubyte * 8)(0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87))
+    factory = c_void_p()
+    try:
+        if ctypes.windll.dxgi.CreateDXGIFactory1(byref(iid), byref(factory)) != 0:
+            return []
+    except (OSError, AttributeError):
+        return []
+    found = []
+    try:
+        a = 0
+        while True:
+            adapter = c_void_p()        # IDXGIFactory1::EnumAdapters1 = 12
+            if call(factory, 12, c_long, OUT_PTR, a, byref(adapter)) != 0:
+                break
+            o = 0
+            while True:
+                out = c_void_p()        # IDXGIAdapter::EnumOutputs = 7
+                if call(adapter, 7, c_long, OUT_PTR, o, byref(out)) != 0:
+                    break
+                desc = OUTPUT_DESC()    # IDXGIOutput::GetDesc = 7
+                if call(out, 7, c_long, (POINTER(OUTPUT_DESC),), byref(desc)) == 0 \
+                        and desc.Attached:
+                    r = desc.Desktop
+                    found.append({"name": desc.DeviceName, "adapter": a, "output": o,
+                                  "rect": QRect(r.left, r.top, r.right - r.left,
+                                                r.bottom - r.top)})
+                call(out, 2, c_ulong)   # Release
+                o += 1
+            call(adapter, 2, c_ulong)
+            a += 1
+    except Exception:               # never let this stop a recording: the
+        found = []                  # caller falls back to the normal recorder
+    finally:
+        call(factory, 2, c_ulong)
+    return found
+
+
+def gpu_target(region: QRect | None, outputs: list[dict] | None = None):
+    """What a GPU recording of `region` (Qt coordinates; None = everything)
+    captures: (adapter, output, size, crop) in physical pixels. None when the
+    area spans screens — one Desktop Duplication stream is one screen, so the
+    normal recorder takes those."""
+    screens = QApplication.screens()
+    if region is None or not region.isValid():
+        if len(screens) != 1:
+            return None
+        region = screens[0].geometry()
+    scr = next((s for s in screens if s.geometry().contains(region)), None)
+    if scr is None:
+        return None
+    g, dpr = scr.geometry(), scr.devicePixelRatio()
+    outputs = dxgi_outputs() if outputs is None else outputs
+    match = (next((o for o in outputs if o["name"] == scr.name()), None)
+             or next((o for o in outputs if o["rect"].topLeft() == g.topLeft()), None))
+    if match is None and len(screens) > 1:
+        return None
+    adapter, output = (match["adapter"], match["output"]) if match else (0, 0)
+    size, crop = (round(g.width() * dpr), round(g.height() * dpr)), None
+    if region != g:
+        crop = (round((region.x() - g.x()) * dpr) // 2 * 2,
+                round((region.y() - g.y()) * dpr) // 2 * 2)
+        size = (round(region.width() * dpr), round(region.height() * dpr))
+    return adapter, output, size, crop
+
+
+def concat_command(ffmpeg: str, list_file: str, dst: str) -> list[str]:
+    """Paused GPU recordings come in pieces: join them, copying the streams."""
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat",
+            "-safe", "0", "-i", list_file, "-c", "copy", "-movflags", "+faststart", dst]
 
 
 class HardwareRecorder(QObject):
     """ffmpeg capturing and encoding on the GPU by itself. Same signals as
-    ScreenRecorder, plus `fell_back` when it can't run on this machine."""
+    ScreenRecorder, plus `fell_back` when it can't run on this machine.
+
+    ffmpeg can't pause a capture, so pausing ends the current piece and
+    resuming starts the next; stopping joins the pieces (streams copied)."""
 
     started   = Signal(str)
     tick      = Signal(float)
@@ -1417,7 +1523,11 @@ class HardwareRecorder(QObject):
         self._proc: subprocess.Popen | None = None
         self._err: list[str] = []
         self._path = ""
+        self._pieces: list[str] = []
+        self._closing: list[threading.Thread] = []
+        self._args: tuple = ()
         self._t0 = 0.0
+        self._banked = 0.0              # seconds recorded before the last pause
         self.active = False
         self.paused = False
         self._clock = QTimer(self)
@@ -1427,7 +1537,7 @@ class HardwareRecorder(QObject):
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._check_early)
 
-    def start(self, config: "RecordConfig", size: tuple, crop: tuple | None,
+    def start(self, config: "RecordConfig", target: tuple,
               audio_device: str | None) -> bool:
         ffmpeg = find_ffmpeg()
         if not ffmpeg or self.active:
@@ -1437,32 +1547,53 @@ class HardwareRecorder(QObject):
         except OSError as e:
             self.failed.emit(f"Recordings cannot be written to {config.out_dir}\n\n{e}")
             return False
-        cmd = gpu_record_command(ffmpeg, self._path, config.fps, size=size,
-                                 crop=crop, cursor=config.cursor,
-                                 quality=config.quality, audio_device=audio_device)
-        try:
-            self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                          stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.PIPE,
-                                          creationflags=_NO_WINDOW)
-        except OSError as e:
-            self.fell_back.emit(str(e))
+        adapter, output, size, crop = target
+        self._args = (ffmpeg, config.fps, dict(
+            size=size, crop=crop, cursor=config.cursor, quality=config.quality,
+            audio_device=audio_device, adapter=adapter, output=output))
+        self._pieces, self._closing = [], []
+        self._banked, self.paused = 0.0, False
+        if not self._launch():
             return False
-        self._err = []
-        threading.Thread(target=self._drain, daemon=True,
-                         name="gpu-rec-stderr").start()
-        self._t0 = time.perf_counter()
         self.active = True
         self._clock.start()
         self._watchdog.start(self.EARLY_MS)
         self.started.emit(self._path)
         return True
 
-    def _drain(self):
-        proc = self._proc
+    def _command(self, path: str) -> list[str]:
+        ffmpeg, fps, kw = self._args
+        return gpu_record_command(ffmpeg, path, fps, **kw)
+
+    def _launch(self) -> bool:
+        base = os.path.splitext(self._path)[0]
+        piece = f"{base}.part{len(self._pieces)}.mp4"
+        try:
+            self._proc = subprocess.Popen(self._command(piece), stdin=subprocess.PIPE,
+                                          stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.PIPE,
+                                          creationflags=_NO_WINDOW)
+        except OSError as e:
+            if not self._pieces:
+                self.fell_back.emit(str(e))
+            else:
+                self.failed.emit(f"The recording couldn't carry on: {e}")
+            return False
+        self._pieces.append(piece)
+        self._err = []
+        threading.Thread(target=self._drain, args=(self._proc,), daemon=True,
+                         name="gpu-rec-stderr").start()
+        self._t0 = time.perf_counter()
+        return True
+
+    def _drain(self, proc):
         for raw in iter(proc.stderr.readline, b""):
             self._err.append(raw.decode("utf-8", "replace").rstrip())
             del self._err[:-20]
+        try:
+            proc.stderr.close()
+        except OSError:
+            pass
 
     def _died(self) -> bool:
         return self._proc is not None and self._proc.poll() is not None
@@ -1484,17 +1615,48 @@ class HardwareRecorder(QObject):
         self._clock.stop()
         self._watchdog.stop()
         if delete:
-            try:
-                if self._path and os.path.exists(self._path):
-                    os.remove(self._path)
-            except OSError:
-                pass
+            for piece in self._pieces:
+                try:
+                    os.remove(piece)
+                except OSError:
+                    pass
 
     def elapsed(self) -> float:
-        return max(0.0, time.perf_counter() - self._t0) if self._t0 else 0.0
+        if not self._t0:
+            return 0.0
+        running = 0.0 if self.paused else time.perf_counter() - self._t0
+        return max(0.0, self._banked + running)
+
+    @staticmethod
+    def _quit(proc) -> int:
+        try:
+            proc.stdin.write(b"q")              # ffmpeg's own "finish up" key
+            proc.stdin.flush()
+            proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            return proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return -1
 
     def pause(self, on: bool):
-        pass                            # not in this first version
+        if not self.active or on == self.paused:
+            return
+        if on:
+            self._banked += time.perf_counter() - self._t0
+            self.paused = True
+            self._watchdog.stop()
+            proc, self._proc = self._proc, None
+            th = threading.Thread(target=self._quit, args=(proc,), daemon=True,
+                                  name="gpu-rec-piece")
+            th.start()
+            self._closing.append(th)
+        else:
+            self.paused = False
+            if not self._launch():
+                self._shut(delete=False)
 
     def stop(self):
         if not self.active:
@@ -1502,28 +1664,49 @@ class HardwareRecorder(QObject):
         self.active = False
         self._clock.stop()
         self._watchdog.stop()
+        if not self.paused:
+            self._banked += time.perf_counter() - self._t0
+        self.paused = True                      # the clock stands still now
         self.finishing.emit()
-        proc, path = self._proc, self._path
+        proc, self._proc = self._proc, None
+        pieces, closing, path = list(self._pieces), list(self._closing), self._path
+        ffmpeg = self._args[0]
 
         def close_out():
+            rc = self._quit(proc) if proc is not None else 0
+            for th in closing:
+                th.join(timeout=35)
+            done = [p for p in pieces if os.path.exists(p) and os.path.getsize(p) > 0]
+            error = "" if done else ("\n".join(self._err[-5:]) or f"ffmpeg exited with {rc}")
+            if len(done) == 1:
+                try:
+                    os.replace(done[0], path)
+                except OSError as e:
+                    error = str(e)
+            elif done:
+                listing = os.path.splitext(path)[0] + ".parts.txt"
+                with open(listing, "w", encoding="utf-8") as f:
+                    for piece in done:
+                        f.write("file '" + piece.replace("'", "'\\''") + "'\n")
+                try:
+                    out = subprocess.run(concat_command(ffmpeg, listing, path),
+                                         capture_output=True, text=True, timeout=300,
+                                         creationflags=_NO_WINDOW)
+                    if out.returncode != 0:
+                        error = (out.stderr or "").strip()[-300:] or "joining failed"
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    error = str(e)
+                for leftover in done + [listing]:
+                    if not error or leftover == listing:
+                        try:
+                            os.remove(leftover)
+                        except OSError:
+                            pass
             try:
-                proc.stdin.write(b"q")          # ffmpeg's own "finish up" key
-                proc.stdin.flush()
-                proc.stdin.close()
-            except OSError:
-                pass
-            try:
-                rc = proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                rc = -1
-            ok = rc == 0 and os.path.exists(path) and os.path.getsize(path) > 0
-            try:
-                if ok:
+                if not error:
                     self.finished.emit(path)
                 else:
-                    self.failed.emit("\n".join(self._err[-5:]) or
-                                     f"ffmpeg exited with {rc}")
+                    self.failed.emit(error)
             except RuntimeError:
                 pass
 

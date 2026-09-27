@@ -308,6 +308,7 @@ def test_build_filters_on_the_pyside6_layout():
     _internal/shiboken6/shiboken6.abi3.dll
     _internal/PySide6/plugins/platforms/qwindows.dll
     _internal/PySide6/plugins/platforms/qminimal.dll
+    _internal/PySide6/plugins/platforms/qdirect2d.dll
     _internal/PySide6/plugins/imageformats/qico.dll
     _internal/PySide6/plugins/imageformats/qjpeg.dll
     _internal/PySide6/translations/qtbase_de.qm
