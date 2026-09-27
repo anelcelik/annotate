@@ -173,3 +173,28 @@ def test_screenshot_marks_land_right_at_125_percent(A, monkeypatch):
     img = cv.capture_annotated().toImage()
     assert img.pixelColor(130, 130).name() == "#000000"
     assert img.pixelColor(150, 150).name() == "#ffffff"   # 1.5625× would cover it
+
+
+def _max_alpha(shape, w=300, h=200):
+    img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    p = QPainter(img)
+    shape.draw(p)
+    p.end()
+    return max(img.pixelColor(x, y).alpha() for x in range(w) for y in range(h)), img
+
+
+def test_translucent_arrow_is_painted_once(A):
+    """Shaft, head fill and head outline overlapped and blended two or three
+    times: a 35 % arrow peaked at 73 % with the shaft showing through."""
+    arrow = A.ArrowShape(QPointF(20, 180), QPointF(250, 30),
+                         A._with_alpha("#32D74B", 90), 12)
+    peak, _ = _max_alpha(arrow)
+    assert peak <= 91                                     # was 186
+
+
+def test_translucent_ruler_ends_are_painted_once(A):
+    ruler = A.RulerShape(QPointF(20, 100), QPointF(250, 100),
+                         A._with_alpha("#32D74B", 90), 8)
+    _, img = _max_alpha(ruler)
+    assert abs(img.pixelColor(20, 100).alpha() - img.pixelColor(80, 100).alpha()) <= 2

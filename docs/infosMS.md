@@ -71,7 +71,7 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
-**Version 5.1 — Fixes that matter, and a lighter app**
+**Version 5.1.1 — Fixes that matter, and a lighter app**
 
 - Annotations now land exactly where you drew them in screenshots and recordings at 125 % and 150 % display scaling
 - Recording with the microphone works again, and picks your microphone automatically
@@ -82,6 +82,7 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 - Clear all, deleting a shape and moving a shape can all be undone — and a deleted recording goes to the Recycle Bin
 - The app asks before exiting when you'd lose your marks, and finishes saving a running recording first
 - Numbered callouts keep counting correctly after an undo
+- See-through arrows and rulers are evenly transparent — no more shaft showing through the arrowhead
 - Dark mode now applies to every window
 - Smaller download and lower memory use when the overlay is idle
 
