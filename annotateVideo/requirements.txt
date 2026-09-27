@@ -16,6 +16,8 @@ winrt-Windows.Media.Ocr>=3.2; sys_platform == "win32"
 winrt-Windows.Graphics.Imaging>=3.2; sys_platform == "win32"
 winrt-Windows.Storage.Streams>=3.2; sys_platform == "win32"
 winrt-Windows.Globalization>=3.2; sys_platform == "win32"
+# Windows only: recording what the PC plays (WASAPI loopback)
+PyAudioWPatch>=0.2.12; sys_platform == "win32"
 
 # Recording is done by ffmpeg, a separate binary rather than a Python package:
 #   Windows   winget install Gyan.FFmpeg   (or drop ffmpeg.exe in vendor/)

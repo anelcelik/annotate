@@ -1052,6 +1052,10 @@ class Toolbar(QWidget):
             act.setCheckable(True)
             act.setChecked(getattr(cv, name))
             act.toggled.connect(lambda on, n=name: self.overlay.set_effect(n, on))
+        cam = menu.addAction("Webcam bubble")
+        cam.setCheckable(True)
+        cam.setChecked(getattr(self.overlay, "_webcam", None) is not None)
+        cam.toggled.connect(lambda _on: self.overlay.toggle_webcam())
         menu.exec(button.mapToGlobal(button.rect().topLeft())
                   - QPoint(0, menu.sizeHint().height()))
 

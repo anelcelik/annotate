@@ -76,6 +76,7 @@ a = Analysis(
     hiddenimports=[
         'shiboken6',
         'video_recorder', 'hotkeys', 'platform_win', 'ocr_win',
+        'pyaudiowpatch',
         'winrt.windows.media.ocr', 'winrt.windows.graphics.imaging',
         'winrt.windows.storage.streams', 'winrt.windows.globalization',
         'winrt.windows.foundation.collections',

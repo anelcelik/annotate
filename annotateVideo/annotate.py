@@ -66,6 +66,8 @@ from video_recorder import (
     EXPORT_FORMATS, GIF_RATES, GIF_WIDTHS, MediaConverter, export_path,
     probe_duration, frame_at, trimmed_path,
     list_windows, bring_to_front,
+    SystemAudioCapture, system_audio_available, mix_audio_command, has_audio_stream,
+    CameraFeed, camera_command, list_video_devices,
 )
 
 # ── Resource path helper (dev + PyInstaller bundle) ───────────────────────────
@@ -130,7 +132,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.8.0"
+VERSION = "5.9.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -151,6 +153,12 @@ _DEFAULT_SETTINGS: dict = {
     "arrow_heads":    1,               # Arrow: 1 or 2 heads
     "stamp_kind":     "check",         # Stamp: check, cross, excl, quest, star
     "rec_countdown":  True,            # 3-2-1 before a recording starts
+    "rec_sys_audio":  False,           # also record what the PC plays (Windows)
+    "cam_device":     "",              # webcam bubble: "" = the first camera
+    "cam_size":       220,
+    "cam_pos":        None,            # [x, y] where the bubble was left
+    "cam_mirror":     True,
+    "cam_shape":      "circle",        # "circle" or "rounded"
     "hold_to_draw":   "off",           # "off", "rctrl", "rshift": hold to draw
     "marks_dir":      "",              # where marks were last saved / opened
     "fade_ink":       False,           # marks disappear after a few seconds
@@ -4450,6 +4458,156 @@ class TrimDialog(QDialog):
         _dlg_frame_paint(self)
 
 
+class WebcamBubble(QWidget):
+    """You, in a circle, on top of everything: there for the room while you
+    present, and in the recording because it's a real window on screen."""
+
+    closed = Signal()
+    SIDE = 480                      # captured square; painted at any size
+
+    def __init__(self, settings, command: list[str] | None = None):
+        super().__init__(None, WType.FramelessWindowHint |
+                         WType.WindowStaysOnTopHint | WType.Tool)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setAttribute(WAtt.WA_ShowWithoutActivating)
+        self._settings, self._command = settings, command
+        self._img: QImage | None = None
+        self._drag: QPoint | None = None
+        self.error = ""
+        side = max(120, min(480, int(settings.get("cam_size") or 220)))
+        self.setFixedSize(side, side)       # only the wheel changes its size
+        pos = settings.get("cam_pos")
+        if pos:
+            self.move(QPoint(int(pos[0]), int(pos[1])))
+        else:
+            scr = QApplication.primaryScreen().availableGeometry()
+            self.move(scr.right() - side - 40, scr.bottom() - side - 60)
+        self.setCursor(Cursor.OpenHandCursor)
+        self.setToolTip("Drag to move · mouse wheel to resize · right-click for options")
+        self._feed = CameraFeed(self.SIDE, self)
+        self._feed.frame.connect(self._on_frame)
+        self._feed.ended.connect(self._on_ended)
+
+    def start(self) -> bool:
+        cmd = self._command
+        if cmd is None:
+            ffmpeg = find_ffmpeg()
+            cams = list_video_devices()
+            want = self._settings.get("cam_device")
+            cam = want if want in cams else (cams[0] if cams else "")
+            if not ffmpeg or not cam:
+                self.error = "No camera found."
+                return False
+            cmd = camera_command(ffmpeg, cam, self.SIDE)
+        if not self._feed.start(cmd):
+            self.error = "The camera couldn't be started."
+            return False
+        self.show()
+        return True
+
+    def close_bubble(self):
+        self._feed.stop()
+        self._settings.set("cam_pos", [self.x(), self.y()])
+        self._settings.set("cam_size", self.width())
+        self._settings.save()
+        self.hide()
+        self.closed.emit()
+        self.deleteLater()
+
+    def _on_frame(self, img: QImage):
+        self._img = img
+        self.update()
+
+    def _on_ended(self, reason: str):
+        if reason:                  # unplugged, or taken by another app
+            self.error = reason
+            self._img = None
+            self.update()
+
+    # ── move, size, options ───────────────────────────────────────────────────
+    def mousePressEvent(self, e):
+        if e.button() == MB.LeftButton:
+            self._drag = e.globalPosition().toPoint() - self.pos()
+            self.setCursor(Cursor.ClosedHandCursor)
+        elif e.button() == MB.RightButton:
+            self._menu(e.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None:
+            self.move(e.globalPosition().toPoint() - self._drag)
+
+    def mouseReleaseEvent(self, _e):
+        if self._drag is not None:
+            self._drag = None
+            self.setCursor(Cursor.OpenHandCursor)
+            self._settings.set("cam_pos", [self.x(), self.y()])
+
+    def wheelEvent(self, e):
+        step = 20 if e.angleDelta().y() > 0 else -20
+        side = max(120, min(480, self.width() + step))
+        c = self.geometry().center()
+        self.setFixedSize(side, side)
+        self.move(c.x() - side // 2, c.y() - side // 2)
+        self._settings.set("cam_size", side)
+
+    def _menu(self, at: QPoint):
+        menu = QMenu(self)
+        mirror = menu.addAction("Mirror")
+        mirror.setCheckable(True)
+        mirror.setChecked(bool(self._settings.get("cam_mirror")))
+        rounded = menu.addAction("Rounded square")
+        rounded.setCheckable(True)
+        rounded.setChecked(self._settings.get("cam_shape") == "rounded")
+        menu.addSeparator()
+        close = menu.addAction("Close the webcam")
+        chosen = menu.exec(at)
+        if chosen is mirror:
+            self._settings.set("cam_mirror", mirror.isChecked())
+        elif chosen is rounded:
+            self._settings.set("cam_shape", "rounded" if rounded.isChecked() else "circle")
+        elif chosen is close:
+            self.close_bubble()
+            return
+        self._settings.save()
+        self.update()
+
+    def shape_path(self) -> QPainterPath:
+        r = QRectF(self.rect()).adjusted(3, 3, -3, -3)
+        path = QPainterPath()
+        if self._settings.get("cam_shape") == "rounded":
+            path.addRoundedRect(r, r.width() * 0.12, r.width() * 0.12)
+        else:
+            path.addEllipse(r)
+        return path
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(RHint.Antialiasing)
+        p.setRenderHint(RHint.SmoothPixmapTransform)
+        path = self.shape_path()
+        r = path.boundingRect()
+        p.setClipPath(path)
+        if self._img is not None:
+            if self._settings.get("cam_mirror"):
+                p.translate(r.center().x() * 2, 0)
+                p.scale(-1, 1)
+            p.drawImage(r, self._img)
+            p.resetTransform()
+        else:
+            p.fillRect(r, QColor("#1C1C1E"))
+            p.setPen(QColor("#FFFFFF"))
+            p.setFont(QFont(DLG_FONT, 9))
+            p.drawText(r.adjusted(16, 0, -16, 0), int(AA.AlignCenter | Qt.TextFlag.TextWordWrap),
+                       self.error or "Starting the camera…")
+        p.setClipping(False)
+        p.setBrush(BS.NoBrush)
+        p.setPen(QPen(QColor(0, 0, 0, 90), 5))
+        p.drawPath(path)
+        p.setPen(QPen(QColor("#FFFFFF"), 3))
+        p.drawPath(path)
+        p.end()
+
+
 class Countdown(QWidget):
     """3-2-1 in the middle of what's about to be recorded. It is gone before
     the first frame is taken, so it is never in the video."""
@@ -4531,6 +4689,7 @@ class RecordingController(QObject):
         self._cpu = ScreenRecorder(self)
         self._gpu = HardwareRecorder(self)
         for rec in (self._cpu, self._gpu):
+            rec.started.connect(self._on_started)
             rec.tick.connect(self._on_tick)
             rec.finishing.connect(self._on_finishing)
             rec.finished.connect(self._on_finished)
@@ -4539,6 +4698,9 @@ class RecordingController(QObject):
         self._gpu_broken = ""           # why the GPU path failed this session
         self._pending: tuple | None = None
         self._countdown: Countdown | None = None
+        self._sys_audio: SystemAudioCapture | None = None
+        self._video_started = 0.0
+        self._mixer: MediaConverter | None = None
         self._picker: QWidget | None = None
         self.recorder = self._cpu
 
@@ -4744,8 +4906,56 @@ class RecordingController(QObject):
 
     def pause(self, on: bool):
         self.recorder.pause(on)
+        if self._sys_audio is not None:
+            self._sys_audio.pause(self.recorder.paused)
         if self._hud:
             self._hud.set_paused(self.recorder.paused)
+
+    # ── the PC's own sound ────────────────────────────────────────────────────
+    def _make_sys_audio(self, path: str) -> SystemAudioCapture:
+        return SystemAudioCapture(os.path.splitext(path)[0] + ".pc-sound.wav")
+
+    def _on_started(self, path: str):
+        self._video_started = time.monotonic()
+        self._sys_audio = None
+        if not (self._settings.get("rec_sys_audio") and system_audio_available()):
+            return
+        cap = self._make_sys_audio(path)
+        if cap.start():
+            self._sys_audio = cap
+        else:
+            self.overlay.toast.show_message(
+                f"Recording without the PC's sound — {cap.error}",
+                anchor=self.overlay.toolbar)
+
+    def _mix_in(self, path: str, cap: SystemAudioCapture):
+        """Put the PC's sound into the finished file; the picture is copied."""
+        tmp = os.path.splitext(path)[0] + ".mixing.mp4"
+        cmd = mix_audio_command(find_ffmpeg(), path, cap.path, tmp,
+                                offset=cap.started_at - self._video_started,
+                                has_mic=has_audio_stream(path))
+        self._mixer = MediaConverter(self)
+        self._mixer.done.connect(lambda _p: self._mixed(path, tmp, cap.path, ""))
+        self._mixer.failed.connect(lambda msg: self._mixed(path, tmp, cap.path, msg))
+        self._mixer.run(cmd, tmp, self._duration)
+
+    def _mixed(self, path: str, tmp: str, wav: str, error: str):
+        if not error:
+            try:
+                os.replace(tmp, path)
+            except OSError as e:
+                error = str(e)
+        for leftover in (wav, tmp):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+        self._mixer = None
+        self._finish(path)
+        if error:
+            self.overlay.toast.show_message(
+                "The recording is saved, but the PC's sound couldn't be added.",
+                anchor=self.overlay.toolbar)
 
     # ── recorder callbacks ────────────────────────────────────────────────────
     def _on_tick(self, seconds: float):
@@ -4754,6 +4964,8 @@ class RecordingController(QObject):
         self.ticked.emit(seconds)
 
     def _on_finishing(self):
+        if self._sys_audio is not None:
+            self._sys_audio.stop()
         if self._hud:
             self._hud.set_finishing()
         else:
@@ -4761,6 +4973,19 @@ class RecordingController(QObject):
         self.state_changed.emit(False)
 
     def _on_finished(self, path: str):
+        cap, self._sys_audio = self._sys_audio, None
+        if cap is not None:
+            cap.stop()
+            if cap.seconds > 0.2 and find_ffmpeg():
+                self._mix_in(path, cap)     # the HUD stays on "finishing"
+                return
+            try:
+                os.remove(cap.path)
+            except OSError:
+                pass
+        self._finish(path)
+
+    def _finish(self, path: str):
         self._teardown_hud()
         self._restore_chrome()
         if self._quit_when_done:
@@ -5805,6 +6030,30 @@ class SettingsDialog(QDialog):
             self._rec_audio_cb.toggled.connect(self._rec_dev.setEnabled)
             lo.addWidget(self._rec_dev)
 
+        more = QHBoxLayout()
+        more.setSpacing(16)
+        self._rec_sys_cb = QCheckBox("Record the PC's sound")
+        self._rec_sys_cb.setChecked(bool(g("rec_sys_audio")))
+        self._rec_sys_cb.setEnabled(system_audio_available())
+        self._rec_sys_cb.setStyleSheet(_dlg_checkbox_style())
+        self._rec_sys_cb.setToolTip(
+            "Whatever plays through your speakers — a video, a call, the app "
+            "you're demoing — mixed with the microphone if that's on too.")
+        more.addWidget(self._rec_sys_cb)
+        self._cam_box = None
+        cams = list_video_devices()
+        if cams:
+            cam_lbl = QLabel("Webcam bubble camera")
+            cam_lbl.setStyleSheet(f"color:{DLG_INK};background:transparent;"
+                                  f"font-size:12px;font-family:'{DLG_FONT}';")
+            more.addWidget(cam_lbl)
+            self._cam_box = combo(cams, g("cam_device") if g("cam_device") in cams
+                                  else cams[0])
+            more.addWidget(self._cam_box, 1)
+        else:
+            more.addStretch()
+        lo.addLayout(more)
+
         # On by default — see the comment on rec_keep_dock_live in
         # _DEFAULT_SETTINGS.
         self._rec_keep_live_cb = None
@@ -5977,6 +6226,9 @@ class SettingsDialog(QDialog):
         self._settings.set("rec_cursor", self._rec_cursor_cb.isChecked())
         self._settings.set("rec_audio", self._rec_audio_cb.isChecked())
         self._settings.set("rec_countdown", self._rec_countdown_cb.isChecked())
+        self._settings.set("rec_sys_audio", self._rec_sys_cb.isChecked())
+        if self._cam_box is not None:
+            self._settings.set("cam_device", self._cam_box.currentText())
         if self._rec_dev is not None:
             self._settings.set("rec_audio_dev", self._rec_dev.currentText())
         self._settings.set("rec_dir", self._rec_dir)
@@ -6781,6 +7033,7 @@ class AnnotationOverlay(QWidget):
         kind = settings_mgr.get("stamp_kind")
         self.canvas.stamp_kind = kind if kind in STAMPS else "check"
         self._held, self._hold_prev = False, 0
+        self._webcam: WebcamBubble | None = None
         self._hold_timer = QTimer(self)
         self._hold_timer.setInterval(30)
         self._hold_timer.timeout.connect(self._poll_hold)
@@ -6982,6 +7235,19 @@ class AnnotationOverlay(QWidget):
     @Slot()
     def toggle_recording(self):
         self.recording.toggle()
+
+    @Slot()
+    def toggle_webcam(self):
+        if self._webcam is not None:
+            self._webcam.close_bubble()
+            return
+        bubble = WebcamBubble(self.settings)
+        if not bubble.start():
+            self.toast.show_message(bubble.error, anchor=self.toolbar)
+            bubble.deleteLater()
+            return
+        self._webcam = bubble
+        bubble.closed.connect(lambda: setattr(self, "_webcam", None))
 
     # ── marks to a file and back ──────────────────────────────────────────────
     @Slot()
@@ -7394,6 +7660,9 @@ def _self_test(overlay, settings_mgr, hotkey_mgr) -> int:
     check("startup", platform_win.startup_status)
     check("hotkeys", lambda: f"{hotkey_mgr.available} {hotkey_mgr.failures()}")
     check("ocr", ocr_available)
+    if IS_WIN:      # PyAudioWPatch bundled: the PC's sound can be recorded
+        check("system audio", lambda: system_audio_available()
+              and __import__("pyaudiowpatch").get_portaudio_version_text() or 1 / 0)
 
     def read_text():
         # Proves the frozen build carries every WinRT module OCR needs.

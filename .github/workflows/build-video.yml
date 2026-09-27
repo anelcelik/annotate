@@ -50,6 +50,7 @@ env:
     winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections
     winrt-Windows.ApplicationModel winrt-Windows.ApplicationModel.Activation
     winrt-Windows.Services.Store winrt-Windows.Media.Ocr
+    PyAudioWPatch
     winrt-Windows.Graphics.Imaging winrt-Windows.Storage.Streams
     winrt-Windows.Globalization
 

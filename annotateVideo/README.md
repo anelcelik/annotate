@@ -62,6 +62,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Whiteboard | `W` | Opens / closes a board over the current screen — white or dark per Settings → General · the dock moves onto it and back · `PgDn`/`PgUp` pages (own undo each) · `Esc` leaves · desktop marks come back afterwards |
 | Spotlight | `F` | Dims everything but the cursor's surroundings · mouse wheel sizes it · also Presenter menu on the dock |
 | Cursor halo · Show clicks | dock → Presenter | Highlight around the cursor, ripple on every click — work in click-through mode and are recorded |
+| Webcam bubble | dock → Presenter | Your camera in a circle on top of everything — a real window, so it is in recordings · drag to move, wheel to size, right-click: mirror / rounded square / close · camera picked in Settings → Recording |
 | Show pressed shortcuts | Settings → General or dock → Presenter | A pill near the bottom of the screen shows shortcuts and special keys as you press them (`Ctrl + Shift + Z`, `F5`, `Enter`…) — never plain typing, so passwords stay out of recordings · off by default · recorded |
 | Fading ink | FADE on the drawing tools | Marks disappear after ~3 s (fade over 1 s); blur, pixelate and black boxes never fade |
 | Magnifier | `M` | A round loupe beside the cursor, Greenshot-style — crosshair on the pixel under the cursor, sharp pixels from 4× · wheel 2×–16× · shows a still taken when you press M, marks included · `Esc`, `M` or right-click leaves · optional global shortcut |
@@ -335,7 +336,7 @@ Open via the **Settings** button in the toolbar.
 | Show / hide the overlay | Global hotkey to put it away entirely (default `Ctrl+Shift+H`) |
 | OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+Alt+T`) |
 | Screenshot shortcut | Global hotkey for Capture (default `Ctrl+PrtSc`) |
-| Recording | Area, frame rate, quality, cursor, microphone, output folder, shortcut |
+| Recording | Area (incl. one window), frame rate, quality, cursor, microphone, **the PC's sound** (WASAPI loopback, mixed in when you stop), 3-2-1 countdown, webcam-bubble camera, output folder, shortcut |
 | Start with Windows | App launches hidden in the tray at sign-in. The Store package uses a manifest startup task (the only kind a package can have — its Run-key writes are invisible to Windows); the portable .exe uses the Run key. Also switchable in Windows Settings → Apps → Startup |
 | Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies immediately |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
