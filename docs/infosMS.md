@@ -79,6 +79,12 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 5.9 — Your PC's sound, and you on camera**
+
+- Record what your PC plays (videos, calls, the app you're showing), mixed with your microphone
+- Webcam bubble: your camera in a circle on top of everything, in your recordings too
+
+
 **Version 5.8 — Pen pressure, trimming, and window recording**
 
 - Pen pressure: lines get thicker the harder you press, and the eraser end of the pen erases

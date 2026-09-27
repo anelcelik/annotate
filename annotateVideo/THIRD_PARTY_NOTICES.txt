@@ -36,6 +36,11 @@ pynput                      GNU Lesser General Public License v3
 Python/WinRT (winrt-*)      MIT License
   https://github.com/pywinrt/pywinrt
 
+PyAudioWPatch, PortAudio    MIT License
+  Records what the PC plays (WASAPI loopback).
+  https://github.com/s0d3s/PyAudioWPatch
+  https://www.portaudio.com/license.html
+
 
 Only in builds that include Snip & Read (OCR):
 

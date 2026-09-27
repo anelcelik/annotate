@@ -32,6 +32,7 @@ skip our own compositing to avoid drawing everything twice.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import platform
 import queue
@@ -155,7 +156,7 @@ def list_audio_devices(ffmpeg: str | None = None,
 _DSHOW_DEVICE = re.compile(r'"([^"]+)"\s*\(([^)]*)\)\s*$')
 
 
-def parse_dshow_devices(listing: str) -> list[str]:
+def parse_dshow_devices(listing: str, kind: str = "audio") -> list[str]:
     """Audio input names out of `ffmpeg -list_devices true -f dshow`.
 
     ffmpeg 5 changed this listing: there are no "DirectShow audio devices"
@@ -165,27 +166,67 @@ def parse_dshow_devices(listing: str) -> list[str]:
     the microphone list was always empty and recording fell back to a device
     called "default" — which DirectShow does not have. Both formats are read.
     """
-    names, in_audio = [], False
+    names, in_section = [], False
     for line in listing.splitlines():
         if "DirectShow audio devices" in line:          # ffmpeg 4 and older
-            in_audio = True
+            in_section = kind == "audio"
             continue
         if "DirectShow video devices" in line:
-            in_audio = False
+            in_section = kind == "video"
             continue
         if "Alternative name" in line:
             continue
         m = _DSHOW_DEVICE.search(line)                  # ffmpeg 5 and newer
         if m:
             kinds = [k.strip() for k in m.group(2).split(",")]
-            if "audio" in kinds and m.group(1) not in names:
+            if kind in kinds and m.group(1) not in names:
                 names.append(m.group(1))
             continue
-        if in_audio and '"' in line:
+        if in_section and '"' in line:
             name = line.split('"')[1]
             if name not in names:
                 names.append(name)
     return names
+
+
+_video_devices_cache: list[str] | None = None
+
+
+def list_video_devices(ffmpeg: str | None = None, refresh: bool = False) -> list[str]:
+    """Cameras ffmpeg can open: DirectShow names on Windows, /dev/video* on
+    Linux."""
+    global _video_devices_cache
+    if _video_devices_cache is not None and not refresh:
+        return _video_devices_cache
+    if not IS_WIN:
+        _video_devices_cache = sorted(str(p) for p in Path("/dev").glob("video*"))
+        return _video_devices_cache
+    ffmpeg = ffmpeg or find_ffmpeg()
+    if not ffmpeg:
+        return []
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-list_devices", "true", "-f", "dshow",
+             "-i", "dummy"],
+            capture_output=True, text=True, timeout=15, creationflags=_NO_WINDOW)
+    except Exception:
+        return []
+    _video_devices_cache = parse_dshow_devices(proc.stderr or "", "video")
+    return _video_devices_cache
+
+
+def camera_command(ffmpeg: str, device: str, side: int = 480, fps: int = 30) -> list[str]:
+    """A camera as square BGRA frames on stdout — for the webcam bubble."""
+    if IS_WIN:
+        source = ["-f", "dshow", "-rtbufsize", "64M", "-i", f"video={device}"]
+    elif IS_MAC:
+        source = ["-f", "avfoundation", "-framerate", str(fps), "-i", device or "0"]
+    else:
+        source = ["-f", "v4l2", "-i", device or "/dev/video0"]
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", *source,
+            "-vf", f"scale={side}:{side}:force_original_aspect_ratio=increase,"
+                   f"crop={side}:{side},fps={fps}",
+            "-f", "rawvideo", "-pix_fmt", "bgra", "pipe:1"]
 
 
 def resolve_audio_device(wanted: str) -> str | None:
@@ -198,6 +239,207 @@ def resolve_audio_device(wanted: str) -> str | None:
     if wanted and wanted in devices:
         return wanted
     return devices[0] if devices else None
+
+
+# ── The PC's own sound (Windows, WASAPI loopback) ───────────────────────────────
+
+def _wasapi_loopback():
+    """(rate, channels, open(callback) -> close) for the default speakers'
+    loopback, or None where there is no such thing (not Windows, no
+    PyAudioWPatch, no output device)."""
+    if not IS_WIN:
+        return None
+    try:
+        import pyaudiowpatch as pa
+    except Exception:
+        return None
+    try:
+        audio = pa.PyAudio()
+        info = audio.get_host_api_info_by_type(pa.paWASAPI)
+        speakers = audio.get_device_info_by_index(info["defaultOutputDevice"])
+        if not speakers.get("isLoopbackDevice"):
+            speakers = next((d for d in audio.get_loopback_device_info_generator()
+                             if speakers["name"] in d["name"]), None)
+        if speakers is None:
+            audio.terminate()
+            return None
+    except Exception:
+        return None
+    rate = int(speakers["defaultSampleRate"])
+    channels = max(1, min(2, int(speakers["maxInputChannels"])))
+
+    def open_stream(callback):
+        def cb(data, frames, _time, _status):
+            callback(data)
+            return (None, pa.paContinue)
+        stream = audio.open(format=pa.paInt16, channels=channels, rate=rate,
+                            input=True, input_device_index=speakers["index"],
+                            frames_per_buffer=rate // 20, stream_callback=cb)
+        stream.start_stream()
+
+        def close():
+            try:
+                stream.stop_stream()
+                stream.close()
+            finally:
+                audio.terminate()
+        return close
+    return rate, channels, open_stream
+
+
+def system_audio_available() -> bool:
+    if not IS_WIN:
+        return False
+    return importlib.util.find_spec("pyaudiowpatch") is not None
+
+
+class SystemAudioCapture:
+    """What the PC plays, into a WAV beside the recording; it is mixed in
+    once the video is done.
+
+    WASAPI hands out nothing at all while the PC is silent, so silence is
+    filled in by the clock — otherwise every quiet stretch would pull the
+    rest of the sound earlier and out of step with the picture."""
+
+    def __init__(self, path: str, source=None, clock=time.monotonic):
+        self.path = path
+        self._source = source if source is not None else _wasapi_loopback()
+        self._clock = clock
+        self._wav = None
+        self._close = None
+        self._lock = threading.Lock()
+        self._frames = 0
+        self._paused_at: float | None = None
+        self._paused_total = 0.0
+        self._timer: threading.Timer | None = None
+        self.started_at = 0.0
+        self.error = ""
+
+    @property
+    def seconds(self) -> float:
+        rate = getattr(self, "_rate", 0)
+        return self._frames / rate if rate else 0.0
+
+    def start(self) -> bool:
+        if self._source is None:
+            self.error = "no playback device to listen to"
+            return False
+        import wave
+        self._rate, self._channels, opener = self._source
+        try:
+            self._wav = wave.open(self.path, "wb")
+            self._wav.setnchannels(self._channels)
+            self._wav.setsampwidth(2)
+            self._wav.setframerate(self._rate)
+            self.started_at = self._clock()
+            self._close = opener(self.feed)
+        except Exception as e:
+            self.error = str(e)
+            self._finish_file()
+            return False
+        self._tick()
+        return True
+
+    def _due(self) -> int:
+        """Frames that should exist by now, pauses left out."""
+        now = self._paused_at if self._paused_at is not None else self._clock()
+        return int((now - self.started_at - self._paused_total) * self._rate)
+
+    def feed(self, data: bytes):
+        with self._lock:
+            if self._wav is None or self._paused_at is not None:
+                return
+            n = len(data) // (2 * self._channels)
+            gap = self._due() - n - self._frames
+            if gap > self._rate // 20:                  # more than 50 ms missing
+                self._write_silence(gap)
+            self._wav.writeframesraw(data)
+            self._frames += n
+
+    def _write_silence(self, frames: int):
+        self._wav.writeframesraw(b"\0" * (frames * 2 * self._channels))
+        self._frames += frames
+
+    def _tick(self):
+        """Fill silence while nothing plays; keeps the WAV in step."""
+        with self._lock:
+            if self._wav is None:
+                return
+            if self._paused_at is None:
+                gap = self._due() - self._frames
+                if gap > self._rate // 10:              # 100 ms of nothing
+                    self._write_silence(gap)
+        self._timer = threading.Timer(0.1, self._tick)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def pause(self, on: bool):
+        with self._lock:
+            if on and self._paused_at is None:
+                self._paused_at = self._clock()
+            elif not on and self._paused_at is not None:
+                self._paused_total += self._clock() - self._paused_at
+                self._paused_at = None
+
+    def stop(self):
+        if self._timer is not None:
+            self._timer.cancel()
+        if self._close is not None:
+            try:
+                self._close()
+            except Exception:
+                pass
+            self._close = None
+        with self._lock:
+            if self._wav is not None and self._paused_at is None:
+                gap = self._due() - self._frames
+                if gap > 0:
+                    self._write_silence(gap)
+            self._finish_file()
+
+    def _finish_file(self):
+        if self._wav is not None:
+            try:
+                self._wav.close()
+            except Exception:
+                pass
+            self._wav = None
+
+
+def has_audio_stream(path: str) -> bool:
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg or not os.path.exists(path):
+        return False
+    try:
+        out = subprocess.run([ffmpeg, "-hide_banner", "-i", path],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "Audio:" in (out.stderr or "")
+
+
+def mix_audio_command(ffmpeg: str, video: str, wav: str, dst: str, *,
+                      offset: float = 0.0, has_mic: bool = False) -> list[str]:
+    """The recording with the PC's sound added (and mixed with the microphone
+    when there is one). `offset` is how many seconds after the video's first
+    frame the sound started; the picture is copied, not re-encoded."""
+    if offset >= 0:
+        ms = int(round(offset * 1000))
+        shift = f"adelay={ms}|{ms}," if ms else ""
+    else:
+        shift = f"atrim=start={-offset:.3f},asetpts=PTS-STARTPTS,"
+    if has_mic:
+        graph = (f"[1:a]{shift}aresample=async=1000[s];"
+                 "[0:a][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
+    else:
+        graph = f"[1:a]{shift}aresample=async=1000[a]"
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-progress", "pipe:1", "-nostats",
+            "-i", video, "-i", wav, "-filter_complex", graph,
+            "-map", "0:v", "-map", "[a]", "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "160k", "-shortest",
+            "-movflags", "+faststart", dst]
 
 
 # ── Recording configuration ───────────────────────────────────────────────────
@@ -1483,6 +1725,17 @@ class MediaConverter(QObject):
         self._thread.start()
         return True
 
+    def run(self, cmd: list[str], dst: str, duration: float = 0.0) -> bool:
+        """Any prepared ffmpeg command line, reported like a conversion."""
+        if self.running:
+            return False
+        self._cancelled = False
+        self._thread = threading.Thread(
+            target=self._run, args=(cmd, dst, duration), daemon=True,
+            name="video-convert")
+        self._thread.start()
+        return True
+
     def cancel(self):
         self._cancelled = True
         if self._proc and self._proc.poll() is None:
@@ -1546,3 +1799,63 @@ class MediaConverter(QObject):
             emit(self.failed, tail)
             return
         emit(self.done, dst)
+
+
+class CameraFeed(QObject):
+    """A camera through ffmpeg, as square frames — off the GUI thread."""
+
+    frame = Signal(QImage)
+    ended = Signal(str)            # why it stopped; "" when asked to
+
+    def __init__(self, side: int = 480, parent=None):
+        super().__init__(parent)
+        self.side = side
+        self._proc: subprocess.Popen | None = None
+        self._stopping = False
+
+    def start(self, cmd: list[str]) -> bool:
+        try:
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE,
+                                          creationflags=_NO_WINDOW)
+        except OSError as e:
+            self.error = str(e)
+            return False
+        threading.Thread(target=self._read, daemon=True, name="camera").start()
+        return True
+
+    def _read(self):
+        size, proc = self.side * self.side * 4, self._proc
+        while True:
+            data = proc.stdout.read(size)
+            if not data or len(data) < size:
+                break
+            img = QImage(data, self.side, self.side, self.side * 4,
+                         QImage.Format.Format_ARGB32).copy()
+            try:
+                self.frame.emit(img)
+            except RuntimeError:
+                return
+        reason = ""
+        if not self._stopping:
+            err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
+            reason = err.splitlines()[-1] if err else "the camera stopped"
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+        try:
+            self.ended.emit(reason)
+        except RuntimeError:
+            pass
+
+    def stop(self):
+        self._stopping = True
+        proc, self._proc = self._proc, None
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
