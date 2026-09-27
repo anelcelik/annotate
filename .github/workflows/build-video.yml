@@ -3,18 +3,16 @@ name: Build single-file Windows EXE (video)
 # Produces ONE .exe that runs on a Windows machine with no Python, no Qt and
 # no ffmpeg installed — download it, double-click it, done.
 #
-# Two variants, because "everything included" and "reasonable to download"
-# pull in opposite directions:
-#   lite  — no OCR. Annotation + recording. Small, starts fast.
-#   full  — adds Snip & Read, which drags in EasyOCR and Torch. Several
-#           hundred MB and a slow first launch while it unpacks.
+# One build since 5.2: Snip & Read runs on the OCR engine built into Windows,
+# so the old "full" variant (EasyOCR + Torch, ~300 MB) is gone. ANNOTATE_LITE=1
+# still means "no EasyOCR/Torch/Pillow in the bundle".
 #
 # What gets kept, and where:
 #   every push   builds and self-tests everything, keeps nothing. Artifact
 #                storage has a quota, and one run used to upload ~620 MB —
 #                two pushes in a month were enough to turn CI red.
 #   Run workflow (workflow_dispatch) → every build as an artifact, 5 days
-#   v* tag       → everything on the GitHub Release: the .exe (lite + full),
+#   v* tag       → everything on the GitHub Release: the portable .exe,
 #                  the .msi, the sideload .msix (+ .cer) and the unsigned
 #                  Store-submission .msix. Releases don't count against the
 #                  artifact quota, so a full quota can't block a release.
@@ -46,10 +44,14 @@ env:
   FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
   FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
   # Python/WinRT: start-on-boot for the Store package, the Store's in-app
-  # rating dialog. Imported lazily; the app runs without them.
+  # rating dialog, and Snip & Read's OCR. Imported lazily; the app runs
+  # without them.
   WINRT_PACKAGES: >-
-    winrt-runtime winrt-Windows.Foundation winrt-Windows.ApplicationModel
-    winrt-Windows.ApplicationModel.Activation winrt-Windows.Services.Store
+    winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections
+    winrt-Windows.ApplicationModel winrt-Windows.ApplicationModel.Activation
+    winrt-Windows.Services.Store winrt-Windows.Media.Ocr
+    winrt-Windows.Graphics.Imaging winrt-Windows.Storage.Streams
+    winrt-Windows.Globalization
 
 jobs:
   # ── Tests on real Windows ───────────────────────────────────────────────────
@@ -76,12 +78,6 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        # The full (Torch) build takes the longest and nobody needs it from an
-        # ordinary push: only for a release or a manual run.
-        variant: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["lite","full"]' || '["lite"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -117,16 +113,10 @@ jobs:
           & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       # ── Python dependencies ─────────────────────────────────────────────────
-      # No Pillow here: only the OCR path uses it, and the lite build must not
+      # No Pillow here: only the EasyOCR path uses it, and the build must not
       # carry it (create_icons.py draws with Qt).
       - name: Install core dependencies
         run: pip install PyQt6 pynput pyinstaller ${{ env.WINRT_PACKAGES }}
-
-      - name: Install OCR stack (full build only)
-        if: matrix.variant == 'full'
-        run: |
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install easyocr deep-translator
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Generate icons
@@ -136,7 +126,7 @@ jobs:
       - name: Build the single-file executable
         working-directory: annotateVideo
         env:
-          ANNOTATE_LITE: ${{ matrix.variant == 'lite' && '1' || '' }}
+          ANNOTATE_LITE: '1'
         run: pyinstaller annotate_onefile.spec
 
       - name: Report what came out
@@ -175,9 +165,8 @@ jobs:
 
           FIRST LAUNCH
             The exe unpacks itself into a temp folder each time it starts, so
-            the first run takes a few seconds (longer for the full build,
-            which carries the OCR models' machine-learning stack). Later runs
-            are quicker while the file is still in the disk cache.
+            the first run takes a few seconds. Later runs are quicker while
+            the file is still in the disk cache.
 
           WINDOWS SMARTSCREEN
             This build is not code-signed, so Windows will say "Windows
@@ -192,6 +181,7 @@ jobs:
 
           RECORDING
             Ctrl+Alt+R, the Record button on the dock, or the tray icon.
+            Snip & Read uses the text recognition built into Windows.
             Stop the same way. The dock and the HUD are excluded from the
             capture on Windows, so they never appear in the video.
           '@ | Set-Content dist\READ-ME-FIRST.txt -Encoding UTF8
@@ -201,7 +191,7 @@ jobs:
         continue-on-error: true      # a full artifact quota must not fail the run
         uses: actions/upload-artifact@v4
         with:
-          name: ScreenAnnotatorProVideo-${{ matrix.variant }}
+          name: ScreenAnnotatorPro-Portable
           path: |
             annotateVideo/dist/*.exe
             annotateVideo/dist/READ-ME-FIRST.txt
@@ -433,9 +423,8 @@ jobs:
           the in-app Store rating need the installed package; the .exe falls
           back to the registry and the Store link.)
 
-          This is the LITE build: no Snip & Read / OCR, and the app hides that
-          tool accordingly. Everything else — annotation, click-through,
-          recording, GIF and WebM export — is here.
+          Snip & Read uses the text recognition built into Windows, so it
+          works here too — no separate OCR build any more.
 
           SUBMITTING TO THE STORE INSTEAD? Do not upload this file — it is
           signed with the throwaway sideload cert above. Use
