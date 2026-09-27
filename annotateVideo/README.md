@@ -51,15 +51,15 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Arrow | `A` | Line with arrowhead · **Shift** → 45° snap |
 | Rectangle | `R` | Outline rectangle · **Shift** → perfect square |
 | Circle | `O` | Outline ellipse · **Shift** → perfect circle |
-| Ruler | `U` | Line with pixel measurement label · **Shift** → 45° snap |
-| Eraser | `E` | Freehand erase (width = stroke × 4) |
+| Ruler | `U` | Line labelled with its length in real screen pixels (125 px for 100 logical px at 125 %) · **Shift** → 45° snap |
+| Eraser | `E` | **Shapes** (default): touch a mark to remove it, one undo step per drag · **Pixels**: rub out part of a mark |
 | Laser Pointer | `I` | Real-time glowing dot — no marks left, OS cursor hidden |
 
 ### Annotation Tools
 
 | Tool | Key | Description |
 |---|---|---|
-| Text | `T` | Place a text label (size controlled by the Text size slider) |
+| Text | `T` | Click and type right there — Enter finishes, Shift+Enter adds a line, Esc cancels · **Box** puts a plate behind it · click a label to edit it |
 | Callout | `K` | Auto-numbered filled circles |
 | Steps | `S` | Auto-numbered step squares |
 | Highlight | `H` | Semi-transparent colour band |
@@ -69,14 +69,14 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Tool | Key | Description |
 |---|---|---|
 | Blur | `Z` | Gaussian blur over a selected region |
-| Pixelate | `X` | Mosaic / pixel-art redaction |
+| Pixelate | `X` | A real mosaic of what's underneath (cells of 10 px or more, so small text can't be read back) |
 | Black Box | `D` | Solid opaque black redaction |
 
 ### OCR & Translate
 
 | Tool | Key | Description |
 |---|---|---|
-| Snip & Read | `J` | Drag a region → extract text + translate (full build only — see below) |
+| Snip & Read | `J` | Drag a region → copy its text, or translate it (Windows' built-in OCR — see below) |
 
 ### Recording
 
@@ -204,18 +204,28 @@ plays back at real speed.
 
 ## OCR & Translation
 
-> **Not in the Store build.** The Microsoft Store package is the lite build,
-> which leaves out EasyOCR and Torch; the app hides Snip & Read there rather
-> than offering a tool that can't run. It's in the full `.exe` and when run
-> from source.
+Press `J` (or `Ctrl+Alt+T` by default, configurable in Settings) to activate
+Snip & Read, then drag a rectangle over any text on screen. A resizable window
+appears with:
 
-Press `J` (or `Ctrl+Alt+T` by default, configurable in Settings) to activate Snip & Read, then drag a rectangle over any text on screen. A resizable popup appears with:
+- **Recognized text** — editable, so a misread letter can be fixed before
+  copying, with a **Copy text** button
+- **Read as** — which language to read the snip as, when Windows has more
+  than one recognizer installed
+- **Translate to** + **Open in Google Translate** — hands the text to Google
+  Translate in your browser (very long text goes via the clipboard)
 
-- **Recognized text** — extracted via [EasyOCR](https://github.com/JaidedAI/EasyOCR), runs fully offline with no API key
-- **Translate to** — pick any of 50+ languages and press **Go** to translate via Google Translate
-- **Copy** buttons for both the OCR result and the translation
+On Windows the reading is done by the OCR engine built into Windows 10 and 11
+(`Windows.Media.Ocr`, see `ocr_win.py`): offline, instant, nothing to
+download, and it reads every language whose *Optical character recognition*
+feature is installed — English comes with an English Windows; add others in
+Settings → Time & language → Language & region → a language → Language
+options. Up to 5.1 this was EasyOCR + Torch: ~240 MB more to ship, a 150 MB
+model download on first use, English only, and the Store build couldn't carry
+it at all.
 
-> **First use:** The EasyOCR model (~150 MB) is downloaded once and cached in `%APPDATA%\ScreenAnnotatorPro\ocr_models` (Windows) or `~/.config/ScreenAnnotatorPro/ocr_models` (Linux/macOS). All subsequent uses load instantly from disk.
+Off Windows, Snip & Read uses [EasyOCR](https://github.com/JaidedAI/EasyOCR)
+if it is installed (`pip install easyocr Pillow`) and hides itself if not.
 
 ### Supported translation languages
 
@@ -230,6 +240,7 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 | `Ctrl + Shift + A` | Draw ⇄ click-through (customisable in Settings) |
 | `Ctrl + Shift + H` | Show / hide the overlay entirely (customisable) |
 | `Ctrl + Alt + T` | Activate Snip & Read / OCR (customisable in Settings) |
+| `Ctrl + PrtSc` | Screenshot: drag an area, click for a whole screen, Enter for all screens (customisable) |
 | `Ctrl + Alt + R` | Start / stop recording (customisable in Settings) |
 | `Ctrl + Z` | Undo — drawing, moving, deleting and Clear all |
 | `Ctrl + Y` | Redo (restore undone shape) |
@@ -261,7 +272,7 @@ A single horizontal dock sits at the bottom of the screen. The top row is every 
 
 - **6-colour swatch row** + custom colour picker, when the tool uses colour
 - **Opacity slider** (10–100 %), **Stroke size slider** (1–30 px), **Text size slider** (8–72 pt) — shown only for the tools that use them
-- **Capture** — hides the overlay *and the dock*, captures all monitors, shows Copy / Save PNG / Discard
+- **Capture** — drag an area (or click for that whole screen, Enter for all of them); the marks are in the picture, the dock isn't. Copy / Save PNG / Discard — Save starts in Pictures\Screenshots and then remembers where you saved last
 - **Record** — starts recording; the cell turns red and counts up until you stop it
 - **Pause** — hides overlay; resume from tray or hotkey
 - **Minimise** — collapses the dock to the puck in one click (double-clicking the grip still does it too)
@@ -303,10 +314,11 @@ Open via the **Settings** button in the toolbar.
 |---|---|
 | Draw / click-through | Global hotkey to switch modes (default `Ctrl+Shift+A`) |
 | Show / hide the overlay | Global hotkey to put it away entirely (default `Ctrl+Shift+H`) |
-| OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+Alt+T`; full build only) |
+| OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+Alt+T`) |
+| Screenshot shortcut | Global hotkey for Capture (default `Ctrl+PrtSc`) |
 | Recording | Area, frame rate, quality, cursor, microphone, output folder, shortcut |
 | Start with Windows | App launches hidden in the tray at sign-in. The Store package uses a manifest startup task (the only kind a package can have — its Run-key writes are invisible to Windows); the portable .exe uses the Run key. Also switchable in Windows Settings → Apps → Startup |
-| Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies next launch |
+| Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies immediately |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
 
 Settings are saved to:
@@ -326,8 +338,7 @@ for five days:
 
 | Artifact | What it is | Install |
 |---|---|---|
-| `…Video-lite` | One ~95 MB .exe, everything but OCR | Run it. SmartScreen → More info → Run anyway |
-| `…Video-full` | Same plus Snip & Read (~334 MB) | As above, slower to start |
+| `ScreenAnnotatorPro-Portable` | One ~60 MB .exe, everything included (Snip & Read uses Windows' OCR) | Run it. SmartScreen → More info → Run anyway |
 | `…Video-installers` | The `.msi` installer, the sideload `.msix` + `.cer` (see `INSTALL-MSIX.txt`) and the unsigned Store-submission `.msix` | MSI: double-click. MSIX: trust the .cer first |
 
 A `vX.Y.Z` tag puts all of it on the GitHub Release instead.
@@ -380,7 +391,7 @@ Open an issue with a clear description of the use case. What are you trying to d
 - **System audio** is not captured, only the microphone
 - **macOS:** Not officially supported; the app runs from source but no packaged build is provided
 - **Multiple monitors:** Overlay covers all monitors; per-monitor mode is not currently supported
-- **OCR first-run:** The ~150 MB EasyOCR model downloads on first use; this requires an internet connection once
+- **OCR languages:** Snip & Read reads the languages whose Windows OCR feature is installed (see OCR & Translation)
 
 ---
 
@@ -391,8 +402,13 @@ Everything in *this* folder is the live app — what actually builds and ships:
 ```
 annotate.py, dock_toolbar.py   the app
 video_recorder.py              screen recording: ffmpeg pipe + capture sources
+hotkeys.py                     global shortcuts (RegisterHotKey / pynput)
+platform_win.py                start with Windows, activation, Store rating
+ocr_win.py                     Snip & Read on Windows' built-in OCR
+build_filters.py               what the specs leave out of the bundle
 annotate.spec, annotate_onefile.spec, requirements.txt   build
-installer/                     MSIX packaging (Windows)
+installer/                     MSIX manifest, WiX (MSI) installer
+tests/                         pytest suite (offscreen; CI runs it on Windows)
 ```
 
 `video_recorder.py` is deliberately split in half. `FFmpegEncoder` and

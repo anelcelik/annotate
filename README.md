@@ -49,9 +49,9 @@ meeting or a recording — see
 ## Snip & Read
 
 Drag over text you can't select, like a shared screen in a video call, an
-image or a scanned PDF, and get it back as real text. Copy it, or translate it
-into any of 50 languages from the same window. The OCR runs on your machine;
-translation goes through Google Translate.
+image or a scanned PDF, and get it back as real text. Copy it, or send it to
+Google Translate in one click. Reading uses the text recognition built into
+Windows — offline, instant, in every language you have installed.
 
 <p align="center">
   <img src="docs/media/ocr.webp" alt="Snipping a paragraph off a slide shared in a video call and getting the recognized text in the OCR and Translate window" width="100%">
@@ -100,7 +100,7 @@ Everything else at the repo root is support material, not app source:
 ## Releases
 
 Tagging `vX.Y.Z` on `main` builds and publishes a GitHub Release with the
-single-file `.exe` (full and lite), the `.msi` installer, the sideload
+portable `.exe`, the `.msi` installer, the sideload
 `.msix`, and an unsigned `.msix` for Partner Center, with the notes from
 [`docs/release-notes/`](docs/release-notes/) — see
 [`annotateVideo/README.md`](annotateVideo/README.md#installation) for
