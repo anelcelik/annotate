@@ -64,7 +64,7 @@ a = Analysis(
     ] + _FFMPEG + _LICENSES + _easyocr_d + _dt_d + _torch_d + _tv_d,
     hiddenimports=[
         'shiboken6',
-        'video_recorder', 'hotkeys', 'platform_win', 'ocr_win',
+        'video_recorder', 'hotkeys', 'platform_win', 'ocr_win', 'redact_finder',
         'pyaudiowpatch',
         'winrt.windows.media.ocr', 'winrt.windows.graphics.imaging',
         'winrt.windows.storage.streams', 'winrt.windows.globalization',

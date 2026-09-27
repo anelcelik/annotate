@@ -58,7 +58,9 @@ moment and let go to be back in your app.
 ## Redact in one drag
 
 Blur, pixelate or black-box anything before it ends up in a screenshot, a
-meeting or a recording — see
+meeting or a recording. Or press **B**: every email address, phone number,
+card number, IBAN, API key and password on the screen is found (offline, with
+Windows' own text recognition) and hidden at once — see
 [how to blur sensitive info while screen sharing](https://annotator.pro/guides/blur-screen-while-screen-sharing).
 
 <p align="center">
@@ -94,6 +96,7 @@ your marks included — no second app, no editing afterwards.
 - All monitors, one monitor, an area you drag, or **one window** you click
 - **Your microphone and your PC's sound**, mixed — the video you're showing, the call, the app you're demoing
 - **Trim** it right after (drag the start and end on a timeline), **Make GIF**, or export WebM / a smaller MP4
+- **Copy** the finished video or GIF and paste it straight into Teams, Slack, Discord or an email
 - Pause and resume; the dock stays out of the frame
 - **Recording on the graphics chip** (beta, Settings → Recording): a fraction of the CPU, so less heat, fan and battery, and smooth 4K
 

@@ -84,6 +84,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Blur | `Z` | Gaussian blur over a selected region |
 | Pixelate | `X` | A real mosaic of what's underneath (cells of 10 px or more, so small text can't be read back) |
 | Black Box | `D` | Solid opaque black redaction |
+| Find private info | `B` | Reads the screen under the cursor (Windows OCR) and hides every email, phone number, card number (Luhn-checked), IBAN (mod-97-checked), API key/token and value after "Password:"/"PIN:" — in the active redact tool's style, as one undo step (`redact_finder.py`) |
 
 ### OCR & Translate
 

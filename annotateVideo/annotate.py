@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
 import hotkeys
 import ocr_win
+import redact_finder
 import platform_win
 from PySide6.QtWidgets import (
     QToolTip,
@@ -132,7 +133,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "6.1.0"
+VERSION = "6.2.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -3685,6 +3686,33 @@ class RecordingHUD(QWidget):
         p.end()
 
 
+def copy_file_to_clipboard(path: str):
+    """The file itself on the clipboard, as Explorer copies it — so Ctrl+V
+    in Teams, Slack, Discord, an email or a folder pastes the video or GIF."""
+    from PySide6.QtCore import QMimeData
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(path)])
+    QApplication.clipboard().setMimeData(data)
+
+
+class _WordScan(QObject):
+    """Windows text recognition with word positions, off the GUI thread."""
+
+    done = Signal(object)            # lines of (word, box), or an error string
+
+    def run(self, image: QImage):
+        def work():
+            try:
+                result = ocr_win.recognize_words(image)
+            except Exception as e:  # OcrUnavailable, or WinRT failing
+                result = str(e) or "Text recognition failed."
+            try:
+                self.done.emit(result)
+            except RuntimeError:
+                pass
+        threading.Thread(target=work, daemon=True, name="auto-redact").start()
+
+
 class RecordingBar(QWidget):
     """Shown when a recording lands on disk: play, reveal, save elsewhere, bin."""
 
@@ -3753,6 +3781,7 @@ class RecordingBar(QWidget):
              ("Export…",        self._export,   False)],
             [("Delete",         self._delete,   False),
              None,
+             ("Copy",           self._copy,     False),
              ("Show in folder", self._reveal,   False),
              ("Save as…",       self._save_as,  False),
              ("Close",          self.close,     False)],
@@ -3800,6 +3829,13 @@ class RecordingBar(QWidget):
 
     def _trim(self):
         TrimDialog(self._path, self._duration, self._overlay).exec()
+
+    def _copy(self):
+        copy_file_to_clipboard(self._path)
+        btn = self.sender()
+        if isinstance(btn, QPushButton):
+            btn.setText("Copied ✓")
+            btn.setToolTip("Paste it into a chat, an email or a folder")
 
     def _reveal(self):
         _reveal_in_file_manager(self._path)
@@ -4032,6 +4068,12 @@ class ExportDialog(QDialog):
         except TypeError:
             pass
         self._go_btn.clicked.connect(self._reveal)
+        self._cancel_btn.setText("Copy file")
+        try:
+            self._cancel_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._cancel_btn.clicked.connect(self._copy_out)
         self.adjustSize()
 
     def _on_failed(self, message: str):
@@ -4042,6 +4084,11 @@ class ExportDialog(QDialog):
         self._rate.setEnabled(self._kind() == "gif")
         self._cancel_btn.setText("Close")
         self.adjustSize()
+
+    def _copy_out(self):
+        if self._out:
+            copy_file_to_clipboard(self._out)
+            self._cancel_btn.setText("Copied ✓")
 
     def _reveal(self):
         if self._out:
@@ -4433,6 +4480,12 @@ class TrimDialog(QDialog):
         self._go_btn.setEnabled(True)
         self._go_btn.clicked.disconnect()
         self._go_btn.clicked.connect(self._reveal)
+        self._cancel_btn.setText("Copy file")
+        try:
+            self._cancel_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._cancel_btn.clicked.connect(self._copy_out)
         self.adjustSize()
 
     def _on_failed(self, message: str):
@@ -4443,6 +4496,11 @@ class TrimDialog(QDialog):
         self._go_btn.setEnabled(True)
         self._cancel_btn.setText("Close")
         self.adjustSize()
+
+    def _copy_out(self):
+        if self._out:
+            copy_file_to_clipboard(self._out)
+            self._cancel_btn.setText("Copied ✓")
 
     def _reveal(self):
         if self._out:
@@ -5506,6 +5564,7 @@ class HelpDialog(QDialog):
             ("Delete",    "Remove the selected marks (Select tool)"),
             ("Ctrl + C / V / D", "Copy, paste, duplicate the selection"),
             ("Ctrl + S / Ctrl + O", "Save the marks to a file / open saved marks"),
+            ("B", "Find and hide private info on this screen"),
             ("Ctrl + A",  "Select everything"),
             ("Arrows",    "Nudge the selection (Shift: 10 px)"),
         ]
@@ -7231,6 +7290,78 @@ class AnnotationOverlay(QWidget):
     def toggle_recording(self):
         self.recording.toggle()
 
+    # ── find and hide private info ────────────────────────────────────────────
+    @Slot()
+    def auto_redact(self):
+        """Read the screen under the cursor and cover every email address,
+        phone number, card number, IBAN, key and password on it — with the
+        redaction in hand (blur unless pixelate or black box is chosen), as
+        ordinary marks: movable, and one Ctrl+Z takes them all away."""
+        if getattr(self, "_scan", None) is not None:
+            return                                  # already reading
+        if not ocr_win.available():
+            self.toast.show_message("Finding private info needs Windows' built-in "
+                                    "text recognition.", anchor=self.toolbar)
+            return
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.geometry()
+        raw = self._grab_screen(g)
+        if raw.isNull():
+            self.toast.show_message("The screen couldn't be read.", anchor=self.toolbar)
+            return
+        self._scan = _WordScan(self)
+        self._scan.done.connect(lambda lines: self._redact_found(lines, raw, g))
+        self.toast.show_message("Looking for private info…", anchor=self.toolbar)
+        self._scan.run(raw.toImage())
+
+    def _grab_screen(self, g: QRect) -> QPixmap:
+        """The desktop under `g` (global), marks and dock out of the way."""
+        with _ChromeHidden(self):
+            return QApplication.primaryScreen().grabWindow(0, g.x(), g.y(),
+                                                           g.width(), g.height())
+
+    def _redact_found(self, lines, raw: QPixmap, g: QRect):
+        self._scan = None
+        if isinstance(lines, str):
+            self.toast.show_message(lines, anchor=self.toolbar)
+            return
+        found = redact_finder.find_private(lines)
+        if not found:
+            self.toast.show_message("Nothing private found on this screen.",
+                                    anchor=self.toolbar)
+            return
+        cv = self.canvas
+        style = cv.tool if cv.tool in ("blur", "pixel", "redact") else "blur"
+        sx = raw.width() / max(1, g.width())
+        radius = int(getattr(cv, "blur_radius", 18))
+        shapes = []
+        for _kind, (x, y, w, h) in found:
+            target = QRect(round(g.x() + x / sx) - 3, round(g.y() + y / sx) - 3,
+                           round(w / sx) + 6, round(h / sx) + 6).intersected(g)
+            p1 = QPointF(cv.mapFromGlobal(target.topLeft()))
+            p2 = QPointF(cv.mapFromGlobal(target.bottomRight() + QPoint(1, 1)))
+            if style == "redact":
+                shapes.append(RedactShape(p1, p2))
+                continue
+            pad = radius * 2 + 4 if style == "blur" else 0
+            padded = target.adjusted(-pad, -pad, pad, pad).intersected(g)
+            crop = raw.copy(QRect(round((padded.x() - g.x()) * sx),
+                                  round((padded.y() - g.y()) * sx),
+                                  max(1, round(padded.width() * sx)),
+                                  max(1, round(padded.height() * sx))))
+            if style == "blur":
+                shapes.append(BlurShape(p1, p2, _blur_region(crop, padded, target, radius)))
+            else:
+                cell = max(PixelShape.MIN_CELL, cv.pixel_size) * sx
+                ps = PixelShape(p1, p2, _mosaic(crop, round(cell)))
+                ps.size = cv.pixel_size
+                shapes.append(ps)
+        self._wanted = True
+        cv.add_marks(shapes)
+        self.sync_window()
+        self.toast.show_message(f"Hid {redact_finder.summary(found)} — Ctrl+Z brings "
+                                "them back", anchor=self.toolbar)
+
     @Slot()
     def toggle_webcam(self):
         if self._webcam is not None:
@@ -7494,6 +7625,8 @@ class AnnotationOverlay(QWidget):
             self.set_passthrough(True)
         elif k == Key.Key_W and not chord:
             self.cycle_board()
+        elif k == Key.Key_B and not chord:
+            self.auto_redact()
         elif k == Key.Key_F and not chord:
             self.set_effect("spotlight", not self.canvas.spotlight)
         elif k in (Key.Key_PageDown, Key.Key_PageUp) and self.canvas.board:

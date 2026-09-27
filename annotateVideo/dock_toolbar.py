@@ -159,9 +159,9 @@ DOCK_TOOLS = [
     ("stamp",     "Stamp",         "G", ["stamp", "color", "size"],         "Click to place it. Right, wrong, look here, unclear, well done."),
     ("highlight", "Highlight",     "H", ["color", "stroke", "opacity"],     "Drag over something to highlight it."),
     # Redact
-    ("blur",      "Blur",          "Z", ["blur"],                           "Drag a region to blur it."),
-    ("pixel",     "Pixelate",      "X", ["pixel"],                          "Drag a region to turn it into large blocks."),
-    ("redact",    "Black box",     "D", [],                                 "Drag a region to cover it completely."),
+    ("blur",      "Blur",          "Z", ["blur", "autoredact"],             "Drag a region to blur it."),
+    ("pixel",     "Pixelate",      "X", ["pixel", "autoredact"],            "Drag a region to turn it into large blocks."),
+    ("redact",    "Black box",     "D", ["autoredact"],                     "Drag a region to cover it completely."),
     # Read
     ("ocr",       "Snip & Read",   "J", [],                                 "Drag over text to extract and translate it."),
 ]
@@ -1281,6 +1281,20 @@ class Toolbar(QWidget):
                 lambda v, l=val: (setattr(self.canvas, "pixel_size", v),
                                   l.setText(f"{v} px")))
             self._props_lo.addWidget(self._cell(_label("CELL"), sld, val))
+            self._props_lo.addWidget(_vrule())
+
+        if "autoredact" in props and not editing:
+            auto = QPushButton("Find private info   B")
+            auto.setFixedHeight(_s(26))
+            auto.setCursor(Qt.CursorShape.PointingHandCursor)
+            auto.setToolTip("<b>Find private info</b> &nbsp;<i>B</i><br>Reads this screen "
+                            "and hides every email, phone number, card number, IBAN, "
+                            "key and password on it — with this tool's style.")
+            auto.setStyleSheet(
+                f"QPushButton{{color:#FFFFFF;background:{ACCENT};border:1px solid {ACCENT};"
+                f"font-family:'{FONT}';font-size:{_fs(9)}pt;padding:0 {_s(12)}px;}}")
+            auto.clicked.connect(self.overlay.auto_redact)
+            self._props_lo.addWidget(self._cell(_label("AUTO"), auto))
             self._props_lo.addWidget(_vrule())
 
         tip_lbl = _label(tip, size=8, bold=False)
