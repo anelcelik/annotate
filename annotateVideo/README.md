@@ -45,7 +45,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 | Tool | Key | Description |
 |---|---|---|
-| Select / Move | `V` | Click and drag any existing shape |
+| Select / Edit | `V` | Click a mark to select it · drag to move · white handles reshape it (arrow tip, box corner…) · the dock's colour / stroke / opacity restyle it · drag across empty space or **Shift**-click to select several · `Ctrl+C` / `Ctrl+V` / `Ctrl+D` / `Ctrl+A` · arrow keys nudge (**Shift** = 10 px) · all undoable |
 | Pen | `P` | Freehand stroke |
 | Line | `L` | Straight line · **Shift** → 45° snap |
 | Arrow | `A` | Line with arrowhead · **Shift** → 45° snap |
@@ -62,6 +62,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Whiteboard | `W` | Opens / closes a board over the current screen — white or dark per Settings → General · the dock moves onto it and back · `PgDn`/`PgUp` pages (own undo each) · `Esc` leaves · desktop marks come back afterwards |
 | Spotlight | `F` | Dims everything but the cursor's surroundings · mouse wheel sizes it · also Presenter menu on the dock |
 | Cursor halo · Show clicks | dock → Presenter | Highlight around the cursor, ripple on every click — work in click-through mode and are recorded |
+| Show pressed shortcuts | Settings → General or dock → Presenter | A pill near the bottom of the screen shows shortcuts and special keys as you press them (`Ctrl + Shift + Z`, `F5`, `Enter`…) — never plain typing, so passwords stay out of recordings · off by default · recorded |
 | Fading ink | FADE on the drawing tools | Marks disappear after ~3 s (fade over 1 s); blur, pixelate and black boxes never fade |
 | Zoom | `M` | Magnifies the current screen around the cursor (a still, marks included) · wheel 1.25×–8× · `Esc`, `M` or right-click leaves · optional global shortcut |
 
@@ -267,7 +268,10 @@ another program already owns a combination the app says so (a tray message
 at launch, a note in Settings) instead of the shortcut silently doing
 nothing. A combination has to include Ctrl, Alt or Win (function keys may
 stand alone), so a shortcut can never swallow ordinary typing.
-| `Delete` | Remove selected shape (Select tool) |
+| `Delete` | Remove the selected marks (Select tool) |
+| `Ctrl + C` / `Ctrl + V` / `Ctrl + D` | Copy / paste / duplicate the selected marks |
+| `Ctrl + A` | Select every mark |
+| Arrow keys | Nudge the selection 1 px (`Shift` = 10 px) |
 | **Hold Shift** | 45° snap for lines / perfect square / perfect circle |
 
 ---
@@ -331,6 +335,8 @@ Open via the **Settings** button in the toolbar.
 | Start with Windows | App launches hidden in the tray at sign-in. The Store package uses a manifest startup task (the only kind a package can have — its Run-key writes are invisible to Windows); the portable .exe uses the Run key. Also switchable in Windows Settings → Apps → Startup |
 | Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies immediately |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
+| Show a hint when hovering over a button | Hover hints with what a button does and its key — on by default, also shown in click-through mode |
+| Show pressed shortcuts on screen | See *Presenting* — off by default |
 
 Settings are saved to:
 - **Windows:** `%APPDATA%\ScreenAnnotatorPro\settings.json`

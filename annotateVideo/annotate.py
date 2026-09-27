@@ -128,7 +128,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.4.0"
+VERSION = "5.5.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -148,6 +148,8 @@ _DEFAULT_SETTINGS: dict = {
     "fade_ink":       False,           # marks disappear after a few seconds
     "fx_halo":        False,           # highlight around the cursor
     "fx_ripples":     False,           # ripple on every click
+    "fx_keys":        False,           # show pressed shortcuts on screen
+    "show_hints":     True,            # hover hints on buttons
     "eraser_mode":    "shapes",        # shapes | pixels
     "start_on_boot":  False,
     "theme":          "light",
@@ -942,6 +944,82 @@ class EraserShape(Shape):
                       max(ys) - min(ys) + self.width)
 
 
+# ── Pressed keys (presenter effect) ───────────────────────────────────────────
+# Polled with GetAsyncKeyState rather than hooked: nothing runs inside
+# Windows' keyboard path (no typing lag anywhere, nothing for antivirus to
+# flag), and it only runs while the effect is on.
+
+_VK_NAMES = {0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x1B: "Esc",
+             0x20: "Space", 0x21: "PgUp", 0x22: "PgDn", 0x23: "End",
+             0x24: "Home", 0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓",
+             0x2C: "PrtSc", 0x2D: "Ins", 0x2E: "Del"}
+_VK_SPECIAL = {0x08, 0x09, 0x0D, 0x1B, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+               0x27, 0x28, 0x2C, 0x2D, 0x2E} | set(range(0x70, 0x88))   # + F1-F24
+_VK_WATCH = sorted(_VK_SPECIAL | {0x20} | set(range(0x30, 0x3A)) | set(range(0x41, 0x5B))
+                   | set(range(0xBA, 0xC1)) | set(range(0xDB, 0xE0)))
+
+
+def _vk_label(vk: int) -> str:
+    if vk in _VK_NAMES:
+        return _VK_NAMES[vk]
+    if 0x70 <= vk <= 0x87:
+        return f"F{vk - 0x6F}"
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    try:
+        import ctypes
+        ch = ctypes.windll.user32.MapVirtualKeyW(vk, 2) & 0xFFFF   # VK → char
+        return chr(ch).upper() if ch else f"#{vk}"
+    except Exception:
+        return f"#{vk}"
+
+
+def keys_pressed(down: set, key_state=None) -> str:
+    """The shortcut just pressed ("Ctrl + Shift + S", "Enter"), or "".
+    `down` carries the keys already held between calls (updated here);
+    `key_state(vk) -> bool` is GetAsyncKeyState, injectable for tests.
+    Plain typing — letters, digits, space, with or without Shift — is
+    never reported."""
+    if key_state is None:
+        if not IS_WIN:
+            return ""
+        import ctypes
+        get = ctypes.windll.user32.GetAsyncKeyState
+        key_state = lambda vk: bool(get(vk) & 0x8000)
+    ctrl, alt = key_state(0x11), key_state(0x12)
+    win = key_state(0x5B) or key_state(0x5C)
+    shift = key_state(0x10)
+    fresh = None
+    for vk in _VK_WATCH:
+        if key_state(vk):
+            if vk not in down:
+                down.add(vk)
+                fresh = vk
+        else:
+            down.discard(vk)
+    if fresh is None:
+        return ""
+    if not (ctrl or alt or win) and fresh not in _VK_SPECIAL:
+        return ""                                   # typing, not a shortcut
+    parts = [n for on, n in ((ctrl, "Ctrl"), (win, "Win"), (alt, "Alt"),
+                             (shift, "Shift")) if on]
+    return " + ".join(parts + [_vk_label(fresh)])
+
+
+class HintSwitch(QObject):
+    """Settings → General → "Show hints": swallows hover tooltips app-wide
+    while it is off."""
+
+    def __init__(self, settings):
+        super().__init__()
+        self._settings = settings
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ToolTip and not self._settings.get("show_hints"):
+            return True
+        return False
+
+
 # ── Canvas ─────────────────────────────────────────────────────────────────────
 def _global_desktop_rect() -> QRect:
     rect = QRect()
@@ -978,9 +1056,50 @@ def _blur_region(raw: QPixmap, padded: QRect, target: QRect, radius: int) -> QPi
     return out
 
 
+def _snap(shape) -> dict:
+    """A shape's state, copied — for undoing a reshape or restyle."""
+    out = {}
+    for k, v in shape.__dict__.items():
+        if k.startswith("_outline"):
+            continue
+        if isinstance(v, QPointF):
+            out[k] = QPointF(v)
+        elif k == "pts":
+            out[k] = [QPointF(pt) for pt in v]
+        else:
+            out[k] = v
+    return out
+
+
+def _restore(shape, state: dict):
+    for k, v in state.items():
+        if isinstance(v, QPointF):
+            v = QPointF(v)
+        elif k == "pts":
+            v = [QPointF(pt) for pt in v]
+        setattr(shape, k, v)
+
+
+def _clone(shape):
+    """An independent copy of a shape (pixmaps shared — they never change)."""
+    import copy
+    twin = copy.copy(shape)
+    _restore(twin, _snap(shape))
+    for k in [k for k in twin.__dict__ if k.startswith("_outline")]:
+        delattr(twin, k)
+    return twin
+
+
+LINE_SHAPES = ("LineShape", "ArrowShape", "RulerShape")
+BOX_SHAPES = ("RectShape", "CircleShape", "HighlightShape", "RedactShape",
+              "BlurShape", "PixelShape")
+
+
 class Canvas(QWidget):
     # Anything that changes which marks exist: add, undo, redo, clear, delete.
     shapes_changed = pyqtSignal()
+    # The Select tool's selection changed (the dock shows its style).
+    selection_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1007,7 +1126,14 @@ class Canvas(QWidget):
         # ("move", s, dx, dy) · ("edit", s, old_text, new_text)
         self._undo:        list[tuple] = []
         self._redo:        list[tuple] = []
-        self._selected:    Shape | None = None
+        self._selection:   list[Shape] = []
+        self._handle: str | None = None         # handle being dragged
+        self._handle_anchor = QPointF()
+        self._handle_before: dict | None = None
+        self._band: QRectF | None = None        # rubber-band selection
+        self._clip: list[Shape] = []
+        self._paste_offset = 0
+        self._last_restyle = 0.0
         self._drag_last    = QPointF()
         self._move_from    = QPointF()
 
@@ -1050,6 +1176,10 @@ class Canvas(QWidget):
         self.halo = False
         self.ripples = False
         self.spot_radius = 140
+        self.keys = False
+        self._keys_down: set[int] = set()
+        self._key_text = ""
+        self._key_time = 0.0
         self._fx_pos: QPointF | None = None
         self._ripple_list: list[tuple] = []     # (pos, started)
         self._button_down = False
@@ -1065,6 +1195,126 @@ class Canvas(QWidget):
 
     def has_marks(self) -> bool:
         return bool(self._shapes)
+
+    # ── selection ──────────────────────────────────────────────────────────
+    @property
+    def _selected(self):
+        return self._selection[0] if self._selection else None
+
+    @_selected.setter
+    def _selected(self, shape):
+        self._set_selection([shape] if shape is not None else [])
+
+    def _set_selection(self, shapes: list):
+        shapes = [sh for sh in shapes if sh is not None]
+        if shapes != self._selection:
+            self._selection = shapes
+            self.update()
+            self.selection_changed.emit()
+
+    def select_all(self):
+        self._set_selection(list(self._shapes))
+
+    def _handles(self, sh) -> dict:
+        name = type(sh).__name__
+        if name in LINE_SHAPES:
+            return {"p1": sh.p1, "p2": sh.p2}
+        if name in BOX_SHAPES:
+            r = _norm(sh.p1, sh.p2)
+            return {"tl": r.topLeft(), "tr": r.topRight(),
+                    "bl": r.bottomLeft(), "br": r.bottomRight()}
+        return {}
+
+    def _handle_at(self, pos: QPointF) -> str | None:
+        if len(self._selection) != 1:
+            return None
+        for name, pt in self._handles(self._selection[0]).items():
+            if abs(pt.x() - pos.x()) <= 8 and abs(pt.y() - pos.y()) <= 8:
+                return name
+        return None
+
+    def _selection_area(self) -> QRectF:
+        area = QRectF()
+        for sh in self._selection:
+            m = 40 + getattr(sh, "width", 0)
+            area = area.united(sh.bounding_rect().adjusted(-m, -m, m, m))
+        return area
+
+    def move_selection(self, dx: float, dy: float, record: bool = True):
+        if not self._selection or not (dx or dy):
+            return
+        before = self._selection_area()
+        for sh in self._selection:
+            sh.move(dx, dy)
+        self._update_area(before, self._selection_area())
+        if record:
+            self._record(("move_many", list(self._selection), dx, dy))
+
+    def restyle_selected(self, *, color: str | None = None, alpha: int | None = None,
+                         width: int | None = None, size: int | None = None) -> bool:
+        """Apply the dock's colour / opacity / stroke / size to the selection.
+        A slider dragged across many values is one undo step."""
+        changes = []
+        for sh in self._selection:
+            if isinstance(sh, (BlurShape, PixelShape, RedactShape, EraserShape)):
+                continue
+            before = _snap(sh)
+            if color is not None and hasattr(sh, "color"):
+                c = QColor(color)
+                c.setAlpha(QColor(sh.color).alpha())
+                sh.color = c.name(QColor.NameFormat.HexArgb)
+            if alpha is not None and hasattr(sh, "color"):
+                c = QColor(sh.color)
+                c.setAlpha(alpha)
+                sh.color = c.name(QColor.NameFormat.HexArgb)
+            if width is not None and hasattr(sh, "width"):
+                sh.width = width
+            if size is not None:
+                if isinstance(sh, TextShape):
+                    sh.size = size
+                elif isinstance(sh, (CalloutShape, StepShape)):
+                    sh.r = _marker_radius(size)
+            after = _snap(sh)
+            if after != before:
+                changes.append((sh, before, after))
+        if not changes:
+            return False
+        now = time.monotonic()
+        last = self._undo[-1] if self._undo else None
+        if (last is not None and last[0] == "states" and now - self._last_restyle < 1.0
+                and [c[0] for c in last[1]] == [c[0] for c in changes]):
+            merged = [(sh, old[1], new[2]) for old, new, sh in
+                      zip(last[1], changes, [c[0] for c in changes])]
+            self._undo[-1] = ("states", merged)
+            self._redo.clear()
+            self._changed()
+        else:
+            self._record(("states", changes))
+        self._last_restyle = now
+        return True
+
+    def copy_selection(self) -> int:
+        self._clip = [_clone(sh) for sh in self._selection]
+        self._paste_offset = 0
+        return len(self._clip)
+
+    def paste(self) -> int:
+        if not self._clip:
+            return 0
+        self._paste_offset += 20
+        pasted = [_clone(sh) for sh in self._clip]
+        for sh in pasted:
+            sh.move(self._paste_offset, self._paste_offset)
+        self._shapes.extend(pasted)
+        self._record(("add_many", pasted))
+        self._set_selection(pasted)
+        return len(pasted)
+
+    def duplicate(self) -> int:
+        if not self._selection:
+            return 0
+        self.copy_selection()
+        return self.paste()
 
     def _eraser_radius(self) -> float:
         if self.eraser_mode == "pixels":
@@ -1105,12 +1355,30 @@ class Canvas(QWidget):
             self.update(); return
 
         if self.tool == "select":
-            self._selected = None
-            for s in reversed(self._shapes):
-                if s.hit(pos, 6):
-                    self._selected = s
-                    self._drag_last = self._move_from = pos
-                    break
+            shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            handle = self._handle_at(pos)
+            if handle is not None:              # reshape the selected mark
+                sh = self._selection[0]
+                self._handle = handle
+                self._handle_before = _snap(sh)
+                if handle in ("tl", "tr", "bl", "br"):
+                    r = _norm(sh.p1, sh.p2)
+                    self._handle_anchor = {"tl": r.bottomRight(), "tr": r.bottomLeft(),
+                                           "bl": r.topRight(), "br": r.topLeft()}[handle]
+                return
+            hit = next((sh for sh in reversed(self._shapes) if sh.hit(pos, 6)), None)
+            if hit is not None:
+                if shift:
+                    sel = list(self._selection)
+                    sel.remove(hit) if hit in sel else sel.append(hit)
+                    self._set_selection(sel)
+                elif hit not in self._selection:
+                    self._set_selection([hit])
+                self._drag_last = self._move_from = pos
+            else:                               # empty spot: rubber band
+                if not shift:
+                    self._set_selection([])
+                self._band = QRectF(pos, pos)
             self.update(); return
 
         if self.tool == "pen":
@@ -1189,12 +1457,24 @@ class Canvas(QWidget):
         last = self._cur
         self._cur = pos
 
-        if self.tool == "select" and self._selected:
-            m = 40 + getattr(self._selected, "width", 0)
-            old = self._selected.bounding_rect().adjusted(-m, -m, m, m)
-            self._selected.move(pos.x()-self._drag_last.x(), pos.y()-self._drag_last.y())
+        if self.tool == "select" and self._handle is not None:
+            sh = self._selection[0]
+            before = self._selection_area()
+            if self._handle in ("p1", "p2"):
+                setattr(sh, self._handle, QPointF(pos))
+            else:
+                sh.p1, sh.p2 = QPointF(self._handle_anchor), QPointF(pos)
+            self._update_area(before, self._selection_area())
+            return
+        if self.tool == "select" and self._band is not None:
+            old = QRectF(self._band)
+            self._band = QRectF(self._band.topLeft(), pos)
+            self._update_area(old.normalized(), self._band.normalized(), margin=4)
+            return
+        if self.tool == "select" and self._selection:
+            self.move_selection(pos.x() - self._drag_last.x(),
+                                pos.y() - self._drag_last.y(), record=False)
             self._drag_last = pos
-            self._update_area(old, self._selected.bounding_rect().adjusted(-m, -m, m, m))
             return
 
         if self.tool == "pen" and self._pen_shape:
@@ -1221,11 +1501,26 @@ class Canvas(QWidget):
             return  # laser never commits shapes
 
         if self.tool == "select":
-            if self._selected is not None:
+            if self._handle is not None:
+                sh = self._selection[0]
+                if _snap(sh) != self._handle_before:
+                    self._record(("states", [(sh, self._handle_before, _snap(sh))]))
+                self._handle = None
+            elif self._band is not None:
+                band, self._band = self._band.normalized(), None
+                picked = [sh for sh in self._shapes
+                          if not isinstance(sh, EraserShape)
+                          and band.intersects(sh.bounding_rect())]
+                if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    picked = self._selection + [sh for sh in picked
+                                                if sh not in self._selection]
+                self._set_selection(picked)
+                self.update()
+            elif self._selection:
                 dx = pos.x() - self._move_from.x()
                 dy = pos.y() - self._move_from.y()
                 if dx or dy:
-                    self._record(("move", self._selected, dx, dy))
+                    self._record(("move_many", list(self._selection), dx, dy))
             return
 
         if self.tool == "pen" and self._pen_shape:
@@ -1574,7 +1869,49 @@ class Canvas(QWidget):
 
     # ── presenter effects ──────────────────────────────────────────────────
     def effects_on(self) -> bool:
-        return self.spotlight or self.halo or self.ripples
+        return self.spotlight or self.halo or self.ripples or self.keys
+
+    # ── pressed keys ───────────────────────────────────────────────────────
+    KEY_SHOW_SECONDS = 1.6
+
+    def _key_area(self) -> QRectF:
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.geometry()
+        tl = QPointF(self.mapFromGlobal(g.topLeft()))
+        return QRectF(tl.x() + g.width() / 2 - 300, tl.y() + g.height() - 190, 600, 90)
+
+    def _poll_keys(self):
+        """Shortcuts and special keys only — never plain typing, so a
+        password typed during a recording never shows up in it."""
+        combo = keys_pressed(self._keys_down)
+        if combo:
+            self._key_text = combo
+            self._key_time = time.monotonic()
+            self._update_area(self._key_area())
+        elif self._key_text and time.monotonic() - self._key_time > self.KEY_SHOW_SECONDS:
+            self._key_text = ""
+            self._update_area(self._key_area())
+
+    def _paint_keys(self, p: QPainter):
+        if not self._key_text:
+            return
+        age = time.monotonic() - self._key_time
+        fade = 1.0 if age < self.KEY_SHOW_SECONDS - 0.4 else \
+            max(0.0, (self.KEY_SHOW_SECONDS - age) / 0.4)
+        area = self._key_area()
+        font = QFont("Segoe UI", 22, QFont.Weight.Bold)
+        fm = QFontMetricsF(font)
+        w = fm.horizontalAdvance(self._key_text) + 44
+        box = QRectF(area.center().x() - w / 2, area.top() + 14, w, 58)
+        p.save()
+        p.setOpacity(fade)
+        p.setPen(PS.NoPen)
+        p.setBrush(QColor(20, 20, 22, 215))
+        p.drawRoundedRect(box, 12, 12)
+        p.setPen(QColor("#FFFFFF"))
+        p.setFont(font)
+        p.drawText(box, int(AA.AlignCenter), self._key_text)
+        p.restore()
 
     def set_effect(self, name: str, on: bool):
         setattr(self, name, on)
@@ -1608,6 +1945,8 @@ class Canvas(QWidget):
             old, self._fx_pos = self._fx_pos, pos
             self._update_area(self._fx_area(old), self._fx_area(pos))
         now = time.monotonic()
+        if self.keys:
+            self._poll_keys()
         if self.ripples:
             # Polled, not hooked: works while clicks go to the app underneath.
             down = self._left_button_down()
@@ -1621,6 +1960,8 @@ class Canvas(QWidget):
             self._fx_timer.stop()
 
     def _paint_effects(self, p: QPainter):
+        if self.keys:
+            self._paint_keys(p)
         pos = self._fx_pos
         if pos is not None and self.spotlight:
             path = QPainterPath()
@@ -1645,8 +1986,8 @@ class Canvas(QWidget):
         self._changed()
 
     def _changed(self):
-        if self._selected is not None and self._selected not in self._shapes:
-            self._selected = None
+        if any(sh not in self._shapes for sh in self._selection):
+            self._set_selection([sh for sh in self._selection if sh in self._shapes])
         self.update()
         self.shapes_changed.emit()
 
@@ -1669,6 +2010,16 @@ class Canvas(QWidget):
             shape.move(-action[2], -action[3])
         elif kind == "edit":
             shape.text = action[2]
+        elif kind == "move_many":
+            for sh in shape:
+                sh.move(-action[2], -action[3])
+        elif kind == "states":
+            for sh, before, _after in shape:
+                _restore(sh, before)
+        elif kind == "add_many":
+            for sh in shape:
+                if sh in self._shapes:
+                    self._shapes.remove(sh)
         self._redo.append(action)
         self._changed()
         return True
@@ -1693,6 +2044,14 @@ class Canvas(QWidget):
             shape.move(action[2], action[3])
         elif kind == "edit":
             shape.text = action[3]
+        elif kind == "move_many":
+            for sh in shape:
+                sh.move(action[2], action[3])
+        elif kind == "states":
+            for sh, _before, after in shape:
+                _restore(sh, after)
+        elif kind == "add_many":
+            self._shapes.extend(shape)
         self._undo.append(action)
         self._changed()
         return True
@@ -1715,13 +2074,23 @@ class Canvas(QWidget):
         return False
 
     def delete_selected(self) -> bool:
-        s = self._selected
-        if s is None or s not in self._shapes:
+        chosen = [sh for sh in self._selection if sh in self._shapes]
+        if not chosen:
             return False
-        index = self._shapes.index(s)
-        self._shapes.remove(s)
-        self._selected = None
-        self._record(("delete", s, index))
+        if len(chosen) == 1:
+            s = chosen[0]
+            index = self._shapes.index(s)
+            self._shapes.remove(s)
+            self._set_selection([])
+            self._record(("delete", s, index))
+            return True
+        removed = []
+        for i in range(len(self._shapes) - 1, -1, -1):
+            if self._shapes[i] in chosen:
+                removed.append((self._shapes[i], i))
+                del self._shapes[i]
+        self._set_selection([])
+        self._record(("delete_many", removed))
         return True
 
     # ── blur ───────────────────────────────────────────────────────────────
@@ -1886,10 +2255,20 @@ class Canvas(QWidget):
         if self._drawing and self.tool in DRAG_TOOLS:
             preview = self._make_drag(self._start, self._cur)
             if preview: preview.draw(p)
-        if selection and self._selected:
+        if selection and self._selection:
             p.setPen(QPen(QColor("#0A84FF"), 1, PS.DashLine))
             p.setBrush(BS.NoBrush)
-            p.drawRect(self._selected.bounding_rect().adjusted(-3,-3,3,3))
+            for sh in self._selection:
+                p.drawRect(sh.bounding_rect().adjusted(-3, -3, 3, 3))
+            if len(self._selection) == 1:
+                p.setPen(QPen(QColor("#0A84FF"), 1.5))
+                p.setBrush(QColor("#FFFFFF"))
+                for pt in self._handles(self._selection[0]).values():
+                    p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
+        if selection and self._band is not None:
+            p.setPen(QPen(QColor("#0A84FF"), 1, PS.DashLine))
+            p.setBrush(QColor(10, 132, 255, 25))
+            p.drawRect(self._band.normalized())
 
         self._paint_effects(p)
 
@@ -3962,7 +4341,10 @@ class HelpDialog(QDialog):
             ("C",         "Clear all marks (Ctrl + Z brings them back)"),
             ("Esc",       "Click-through: the marks stay, your clicks go to "
                           "the app underneath"),
-            ("Delete",    "Remove the selected shape (Select tool)"),
+            ("Delete",    "Remove the selected marks (Select tool)"),
+            ("Ctrl + C / V / D", "Copy, paste, duplicate the selection"),
+            ("Ctrl + A",  "Select everything"),
+            ("Arrows",    "Nudge the selection (Shift: 10 px)"),
         ]
         return rows
 
@@ -4335,6 +4717,22 @@ class SettingsDialog(QDialog):
         lo.addWidget(self._scale_box)
         lo.addSpacing(6)
 
+        # ── Hints / presenting ─────────────────────────────────────────────────
+        self._hints_cb = QCheckBox("Show a hint when hovering over a button")
+        self._hints_cb.setChecked(bool(self._settings.get("show_hints")))
+        self._hints_cb.setStyleSheet(_dlg_checkbox_style())
+        lo.addWidget(self._hints_cb)
+        self._keys_cb = QCheckBox("Show pressed shortcuts on screen")
+        self._keys_cb.setChecked(bool(self._settings.get("fx_keys")))
+        self._keys_cb.setEnabled(IS_WIN)
+        self._keys_cb.setStyleSheet(_dlg_checkbox_style())
+        self._keys_cb.setToolTip(
+            "Shows shortcuts like Ctrl+S and keys like Enter or the arrows, "
+            "big, at the bottom of the screen — and in recordings. Ordinary "
+            "typing is never shown, so passwords stay private.")
+        lo.addWidget(self._keys_cb)
+        lo.addSpacing(6)
+
         # ── Whiteboard ─────────────────────────────────────────────────────────
         lo.addWidget(_dlg_section_lbl("Whiteboard style  (W)"))
         self._board_box = QComboBox()
@@ -4616,6 +5014,10 @@ class SettingsDialog(QDialog):
 
         self._settings.set("board_style",
                            "black" if self._board_box.currentIndex() == 1 else "white")
+        self._settings.set("show_hints", self._hints_cb.isChecked())
+        if overlay is not None and hasattr(overlay, "set_effect") \
+                and self._keys_cb.isChecked() != bool(self._settings.get("fx_keys")):
+            overlay.set_effect("keys", self._keys_cb.isChecked())
         new_scale = self._scale_values[self._scale_box.currentIndex()]
         if abs(new_scale - float(self._settings.get("dock_scale") or 1.0)) > 1e-3 \
                 and overlay is not None and hasattr(overlay, "toolbar"):
@@ -5408,7 +5810,7 @@ class AnnotationOverlay(QWidget):
         self.recording.state_changed.connect(self.toolbar.set_recording)
         self.recording.ticked.connect(self.toolbar.set_record_elapsed)
         self.canvas.shapes_changed.connect(self.sync_window)
-        for fx in ("halo", "ripples"):
+        for fx in ("halo", "ripples", "keys"):
             if settings_mgr.get(f"fx_{fx}"):
                 self.canvas.set_effect(fx, True)
 
@@ -5686,7 +6088,7 @@ class AnnotationOverlay(QWidget):
 
     def set_effect(self, name: str, on: bool):
         self.canvas.set_effect(name, on)
-        if name in ("halo", "ripples"):
+        if name in ("halo", "ripples", "keys"):
             self.settings.set(f"fx_{name}", on)
             self.settings.save()
         self.sync_window()
@@ -5768,6 +6170,21 @@ class AnnotationOverlay(QWidget):
             self.set_effect("spotlight", not self.canvas.spotlight)
         elif k in (Key.Key_PageDown, Key.Key_PageUp) and self.canvas.board:
             self.turn_page(1 if k == Key.Key_PageDown else -1)
+        elif ctrl and k in (Key.Key_C, Key.Key_V, Key.Key_D, Key.Key_A):
+            cv = self.canvas
+            if k == Key.Key_C:
+                cv.copy_selection()
+            else:
+                if cv.tool != "select":         # pasted / selected marks show
+                    self.toolbar._activate("select")
+                {Key.Key_V: cv.paste, Key.Key_D: cv.duplicate,
+                 Key.Key_A: cv.select_all}[k]()
+        elif k in (Key.Key_Left, Key.Key_Right, Key.Key_Up, Key.Key_Down) \
+                and self.canvas._selection and not ctrl:
+            step = 10 if mods & KM.ShiftModifier else 1
+            dx = {Key.Key_Left: -step, Key.Key_Right: step}.get(k, 0)
+            dy = {Key.Key_Up: -step, Key.Key_Down: step}.get(k, 0)
+            self.canvas.move_selection(dx, dy)
         elif k == Key.Key_Z and ctrl:
             self.canvas.undo()
         elif k == Key.Key_Y and ctrl:
@@ -5999,6 +6416,8 @@ def main():
     app.aboutToQuit.connect(overlay.toolbar._save_dock_state)
     app.aboutToQuit.connect(overlay.usage.flush)
     app.aboutToQuit.connect(hotkey_mgr.stop)
+    hints = HintSwitch(settings_mgr)            # Settings → General → hints
+    app.installEventFilter(hints)
 
     if self_test:
         code = _self_test(overlay, settings_mgr, hotkey_mgr)

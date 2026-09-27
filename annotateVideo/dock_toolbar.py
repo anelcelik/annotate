@@ -143,8 +143,8 @@ FONT = "Segoe UI Variable"  # Archivo isn't bundled; this ships with Windows 11
 # (id, label, shortcut, [properties], tip)
 DOCK_TOOLS = [
     # Draw
-    ("select",    "Select",        "V", [],                                 "Drag any existing shape. Delete removes it."),
-    ("pen",       "Pen",           "P", ["color", "stroke", "opacity", "fade"],     ""),
+    ("select",    "Select",        "V", [],                                 "Click or frame marks to select them; drag to move, handles to resize. Ctrl+C/V/D, Delete."),
+    ("pen",       "Pen",           "P", ["color", "stroke", "opacity", "fade"],     "Draw freehand."),
     ("line",      "Line",          "L", ["color", "stroke", "opacity", "fade"],     "Hold Shift to snap to 45°."),
     ("arrow",     "Arrow",         "A", ["color", "stroke", "opacity", "fade"],     "Hold Shift to snap to 45°."),
     ("rect",      "Rectangle",     "R", ["color", "stroke", "opacity", "fade"],     "Hold Shift for a perfect square."),
@@ -156,7 +156,7 @@ DOCK_TOOLS = [
     ("text",      "Text",          "T", ["color", "size", "opacity", "textbox"], "Click and type. Enter finishes, Shift+Enter adds a line. Click a label to edit it."),
     ("callout",   "Callout",       "K", ["color", "size"],                  "Numbers itself. SIZE sets how big."),
     ("steps",     "Steps",         "S", ["color", "size"],                  "Numbers itself. SIZE sets how big."),
-    ("highlight", "Highlight",     "H", ["color", "stroke", "opacity"],     ""),
+    ("highlight", "Highlight",     "H", ["color", "stroke", "opacity"],     "Drag over something to highlight it."),
     # Redact
     ("blur",      "Blur",          "Z", ["blur"],                           "Drag a region to blur it."),
     ("pixel",     "Pixelate",      "X", ["pixel"],                          "Drag a region to turn it into large blocks."),
@@ -750,6 +750,7 @@ class CollapsedIndicator(QWidget):
         self.setFixedSize(*self.size_now())
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
 
     def set_tool(self, tid: str):
         meta = TOOL_META.get(tid)
@@ -846,10 +847,15 @@ class Toolbar(QWidget):
         self._parked_from: QPoint | None = None
 
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        # Qt shows tooltips only for the active window, and the dock almost
+        # never is (clicking it leaves the overlay or your app active) — so
+        # every hover hint on it was silently never shown.
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
         self._build()
         self._activate("pen")
         self._restore_position()
         self._built = True
+        canvas.selection_changed.connect(self._on_selection)
 
     # ── build ─────────────────────────────────────────────────────────────────
     def _build(self):
@@ -880,7 +886,8 @@ class Toolbar(QWidget):
                 continue
             for tid in group:
                 _, label, key, _props, _tip = TOOL_META[tid]
-                btn = ToolButton(tid, key, f"{label} — {key}")
+                btn = ToolButton(tid, key, f"<b>{label}</b> &nbsp;<i>{key}</i><br>{_tip}"
+                                 if _tip else f"<b>{label}</b> &nbsp;<i>{key}</i>")
                 btn.clicked.connect(lambda _c, t=tid: self._activate(t))
                 self._tool_btns[tid] = btn
                 row1.addWidget(btn)
@@ -1033,7 +1040,8 @@ class Toolbar(QWidget):
         cv = self.canvas
         for name, label in (("spotlight", "Spotlight   F  (wheel sizes it)"),
                             ("halo", "Cursor halo"),
-                            ("ripples", "Show clicks")):
+                            ("ripples", "Show clicks"),
+                            ("keys", "Show pressed shortcuts")):
             act = menu.addAction(label)
             act.setCheckable(True)
             act.setChecked(getattr(cv, name))
@@ -1041,12 +1049,43 @@ class Toolbar(QWidget):
         menu.exec(button.mapToGlobal(button.rect().topLeft())
                   - QPoint(0, menu.sizeHint().height()))
 
+    def _restyle(self, **change):
+        if getattr(self, "_editing", False):
+            self.canvas.restyle_selected(**change)
+
     def _set_pref(self, name: str, value):
         """A tool preference that sticks: onto the canvas and into settings."""
         setattr(self.canvas, name, value)
         self._settings_mgr.set(name, value)
         self._settings_mgr.save()
         self.canvas.update()
+
+    _SHAPE_TOOL = {"PenShape": "pen", "LineShape": "line", "ArrowShape": "arrow",
+                   "RectShape": "rect", "CircleShape": "circle", "RulerShape": "ruler",
+                   "TextShape": "text", "CalloutShape": "callout", "StepShape": "steps",
+                   "HighlightShape": "highlight"}
+
+    def _on_selection(self):
+        """With marks selected, the property row shows (and edits) the style
+        of the first one; with none, it goes back to the Select tool's."""
+        if self._active_tid != "select":
+            return
+        sel = self.canvas._selection
+        tid = self._SHAPE_TOOL.get(type(sel[0]).__name__) if sel else None
+        if tid is None:
+            self._build_props("select")
+            return
+        shape, cv = sel[0], self.canvas
+        if hasattr(shape, "color"):
+            c = QColor(shape.color)
+            cv.pen_alpha = c.alpha()
+            c.setAlpha(255)
+            cv.pen_color = c.name()
+        if hasattr(shape, "width") and tid != "highlight":
+            cv.pen_width = int(shape.width)
+        if hasattr(shape, "size"):
+            cv.font_size = int(shape.size)
+        self._build_props(tid, editing=True)
 
     def _clear_props(self):
         while self._props_lo.count():
@@ -1066,9 +1105,16 @@ class Toolbar(QWidget):
             lo.addWidget(w)
         return cell
 
-    def _build_props(self, tid: str):
+    def _build_props(self, tid: str, editing: bool = False):
         self._clear_props()
         _, label, key, props, tip = TOOL_META[tid]
+        # Editing a selection: the controls restyle it (and exclude what only
+        # applies to new marks).
+        self._editing = editing
+        if editing:
+            label, key = f"Selected {label.lower()}", "V"
+            props = [pr for pr in props if pr not in ("fade", "textbox")]
+            tip = "Changes apply to the selected marks. Ctrl+Z undoes them."
 
         # name + key, flush left
         name_box = QWidget()
@@ -1145,7 +1191,8 @@ class Toolbar(QWidget):
             sld = DockSlider(1, 30, int(self.canvas.pen_width))
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "pen_width", v),
-                                  l.setText(f"{v} px")))
+                                  l.setText(f"{v} px"),
+                                  self._restyle(width=v)))
             self._props_lo.addWidget(self._cell(_label(cap), sld, val))
             self._props_lo.addWidget(_vrule())
 
@@ -1155,7 +1202,8 @@ class Toolbar(QWidget):
             sld = DockSlider(8, 72, int(self.canvas.font_size))
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "font_size", v),
-                                  l.setText(f"{v} pt")))
+                                  l.setText(f"{v} pt"),
+                                  self._restyle(size=v)))
             self._props_lo.addWidget(self._cell(_label("SIZE"), sld, val))
             self._props_lo.addWidget(_vrule())
 
@@ -1166,7 +1214,8 @@ class Toolbar(QWidget):
             sld = DockSlider(10, 100, pct)
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "pen_alpha", int(v * 255 / 100)),
-                                  l.setText(f"{v}%")))
+                                  l.setText(f"{v}%"),
+                                  self._restyle(alpha=int(v * 255 / 100))))
             self._props_lo.addWidget(self._cell(_label("OPACITY"), sld, val))
             self._props_lo.addWidget(_vrule())
 
@@ -1217,6 +1266,7 @@ class Toolbar(QWidget):
         for s in self._swatches:
             s.active = (s.hex_c.lower() == hex_c.lower())
             s.update()
+        self._restyle(color=hex_c)
 
     def _pick_custom(self):
         color = QColorDialog.getColor(QColor(self.canvas.pen_color), self, "Custom Color")
@@ -1225,6 +1275,7 @@ class Toolbar(QWidget):
             for s in self._swatches:
                 s.active = False
                 s.update()
+            self._restyle(color=color.name())
 
     # ── theme ──────────────────────────────────────────────────────────────────
     def refresh_theme(self):
@@ -1247,6 +1298,8 @@ class Toolbar(QWidget):
         self.canvas.finish_editing()
         if tid != "eraser":
             self.canvas._eraser_pos = None
+        if tid != "select" and self.canvas._selection:
+            self.canvas._set_selection([])      # a new tool starts fresh
         # Reaching for a tool means you want to draw with it — being dropped
         # into click-through and having the first stroke land in the app
         # underneath would be worse than useless.
