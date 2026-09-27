@@ -53,6 +53,14 @@ def test_gpu_target_matches_by_position_when_names_differ(monkeypatch):
     assert VR.gpu_target(QRect(1920, 0, 2560, 1440), outs)[:2] == (1, 0)
 
 
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="DXGI is Windows-only")
+def test_dxgi_lists_the_screens_on_windows():
+    outs = VR.dxgi_outputs()
+    assert isinstance(outs, list)
+    for o in outs:
+        assert o["name"].startswith("\\\\.\\") and o["rect"].width() > 0
+
+
 def test_second_chip_gets_its_own_device():
     cmd = VR.gpu_record_command("ffmpeg", "o.mp4", 30, size=(2560, 1440), adapter=1, output=2)
     assert cmd[cmd.index("-init_hw_device") + 1] == "d3d11va=dda:1"

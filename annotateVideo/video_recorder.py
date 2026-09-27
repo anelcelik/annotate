@@ -1423,10 +1423,12 @@ def dxgi_outputs() -> list[dict]:
                     ("Attached", wintypes.BOOL), ("Rotation", c_uint),
                     ("Monitor", wintypes.HMONITOR)]
 
-    def call(obj, index, restype, *args):
+    def call(obj, index, restype, argtypes=(), *args):
         vtbl = ctypes.cast(obj, POINTER(POINTER(c_void_p))).contents
-        proto = ctypes.WINFUNCTYPE(restype, c_void_p, *[type(a) for a in args])
+        proto = ctypes.WINFUNCTYPE(restype, c_void_p, *argtypes)
         return proto(vtbl[index])(obj, *args)
+
+    OUT_PTR = (c_uint, POINTER(c_void_p))
 
     iid = GUID(0x770AAE78, 0xF26F, 0x4DBA,
                (ctypes.c_ubyte * 8)(0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87))
@@ -1441,15 +1443,16 @@ def dxgi_outputs() -> list[dict]:
         a = 0
         while True:
             adapter = c_void_p()        # IDXGIFactory1::EnumAdapters1 = 12
-            if call(factory, 12, c_long, c_uint(a), byref(adapter)) != 0:
+            if call(factory, 12, c_long, OUT_PTR, a, byref(adapter)) != 0:
                 break
             o = 0
             while True:
                 out = c_void_p()        # IDXGIAdapter::EnumOutputs = 7
-                if call(adapter, 7, c_long, c_uint(o), byref(out)) != 0:
+                if call(adapter, 7, c_long, OUT_PTR, o, byref(out)) != 0:
                     break
                 desc = OUTPUT_DESC()    # IDXGIOutput::GetDesc = 7
-                if call(out, 7, c_long, byref(desc)) == 0 and desc.Attached:
+                if call(out, 7, c_long, (POINTER(OUTPUT_DESC),), byref(desc)) == 0 \
+                        and desc.Attached:
                     r = desc.Desktop
                     found.append({"name": desc.DeviceName, "adapter": a, "output": o,
                                   "rect": QRect(r.left, r.top, r.right - r.left,
@@ -1458,6 +1461,8 @@ def dxgi_outputs() -> list[dict]:
                 o += 1
             call(adapter, 2, c_ulong)
             a += 1
+    except Exception:               # never let this stop a recording: the
+        found = []                  # caller falls back to the normal recorder
     finally:
         call(factory, 2, c_ulong)
     return found
