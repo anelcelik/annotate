@@ -79,6 +79,15 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 5.6 — More shapes, stamps, and saved annotations**
+
+- Filled rectangles and circles, double-headed and curved arrows, and speech bubbles
+- Stamps: ✓ ✗ ! ? ★ in one click
+- Save your annotations to a file and open them again later (Ctrl+S / Ctrl+O)
+- Hold a key to draw, and let go to go back to your app
+- A 3-2-1 countdown before recording starts
+
+
 **Version 5.5 — Edit your marks after drawing them**
 
 - New magnifier: a round loupe beside your cursor with a crosshair (M; the mouse wheel zooms 2×–16×)

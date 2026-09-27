@@ -146,16 +146,17 @@ DOCK_TOOLS = [
     ("select",    "Select",        "V", [],                                 "Click or frame marks to select them; drag to move, handles to resize. Ctrl+C/V/D, Delete."),
     ("pen",       "Pen",           "P", ["color", "stroke", "opacity", "fade"],     "Draw freehand."),
     ("line",      "Line",          "L", ["color", "stroke", "opacity", "fade"],     "Hold Shift to snap to 45°."),
-    ("arrow",     "Arrow",         "A", ["color", "stroke", "opacity", "fade"],     "Hold Shift to snap to 45°."),
-    ("rect",      "Rectangle",     "R", ["color", "stroke", "opacity", "fade"],     "Hold Shift for a perfect square."),
-    ("circle",    "Circle",        "O", ["color", "stroke", "opacity", "fade"],     "Hold Shift for a perfect circle."),
+    ("arrow",     "Arrow",         "A", ["color", "heads", "stroke", "opacity", "fade"], "Shift snaps to 45°. To curve it: Select it, drag the middle handle."),
+    ("rect",      "Rectangle",     "R", ["color", "fill", "stroke", "opacity", "fade"],  "Hold Shift for a perfect square."),
+    ("circle",    "Circle",        "O", ["color", "fill", "stroke", "opacity", "fade"],  "Hold Shift for a perfect circle."),
     ("ruler",     "Ruler",         "U", ["color", "stroke"],                "Measures in real screen pixels as you drag."),
     ("eraser",    "Eraser",        "E", ["erasemode", "stroke"],            "Shapes: touch a mark to remove it. Pixels: rub out part of one."),
     ("laser",     "Laser pointer", "I", ["color"],                          "Leaves no marks. Hides the OS cursor."),
     # Annotate
-    ("text",      "Text",          "T", ["color", "size", "opacity", "textbox"], "Click and type. Enter finishes, Shift+Enter adds a line. Click a label to edit it."),
+    ("text",      "Text",          "T", ["color", "size", "opacity", "textbox"], "Click and type; Enter finishes. Bubble: drag its tail with Select."),
     ("callout",   "Callout",       "K", ["color", "size"],                  "Numbers itself. SIZE sets how big."),
     ("steps",     "Steps",         "S", ["color", "size"],                  "Numbers itself. SIZE sets how big."),
+    ("stamp",     "Stamp",         "G", ["stamp", "color", "size"],         "Click to place it. Right, wrong, look here, unclear, well done."),
     ("highlight", "Highlight",     "H", ["color", "stroke", "opacity"],     "Drag over something to highlight it."),
     # Redact
     ("blur",      "Blur",          "Z", ["blur"],                           "Drag a region to blur it."),
@@ -167,7 +168,7 @@ DOCK_TOOLS = [
 
 GROUPS = [
     ["select", "pen", "line", "arrow", "rect", "circle", "ruler", "eraser", "laser"],
-    ["text", "callout", "steps", "highlight"],
+    ["text", "callout", "steps", "stamp", "highlight"],
     ["blur", "pixel", "redact"],
     ["ocr"],
 ]
@@ -256,6 +257,11 @@ def _paint_icon(p: QPainter, tid: str, size: float, color: QColor):
     elif tid == "steps":
         p.drawRect(QRectF(3, 3, 8, 8))
         p.drawRect(QRectF(13, 13, 8, 8))
+
+    elif tid == "stamp":
+        p.drawEllipse(QRectF(3, 3, 18, 18))
+        p.drawPolyline(QPolygonF([QPointF(7.5, 12), QPointF(10.5, 15),
+                                  QPointF(16.5, 9)]))
 
     elif tid == "highlight":
         p.drawPolyline(QPolygonF([QPointF(9, 11), QPointF(3, 17), QPointF(3, 20),
@@ -1053,6 +1059,16 @@ class Toolbar(QWidget):
         if getattr(self, "_editing", False):
             self.canvas.restyle_selected(**change)
 
+    def _style_choice(self, options, pref: str, attr: str) -> QWidget:
+        """A style choice: for new marks it's a remembered preference; while
+        editing a selection it shows and changes the selected mark's."""
+        if self._editing and self.canvas._selection:
+            current = getattr(self.canvas._selection[0], attr, options[0][0])
+            return self._choice(options, current,
+                                lambda v: self._restyle(**{attr: v}))
+        return self._choice(options, getattr(self.canvas, pref),
+                            lambda v: self._set_pref(pref, v))
+
     def _set_pref(self, name: str, value):
         """A tool preference that sticks: onto the canvas and into settings."""
         setattr(self.canvas, name, value)
@@ -1063,7 +1079,7 @@ class Toolbar(QWidget):
     _SHAPE_TOOL = {"PenShape": "pen", "LineShape": "line", "ArrowShape": "arrow",
                    "RectShape": "rect", "CircleShape": "circle", "RulerShape": "ruler",
                    "TextShape": "text", "CalloutShape": "callout", "StepShape": "steps",
-                   "HighlightShape": "highlight"}
+                   "StampShape": "stamp", "HighlightShape": "highlight"}
 
     def _on_selection(self):
         """With marks selected, the property row shows (and edits) the style
@@ -1083,7 +1099,7 @@ class Toolbar(QWidget):
             cv.pen_color = c.name()
         if hasattr(shape, "width") and tid != "highlight":
             cv.pen_width = int(shape.width)
-        if hasattr(shape, "size"):
+        if hasattr(shape, "size") and tid == "text":
             cv.font_size = int(shape.size)
         self._build_props(tid, editing=True)
 
@@ -1113,7 +1129,7 @@ class Toolbar(QWidget):
         self._editing = editing
         if editing:
             label, key = f"Selected {label.lower()}", "V"
-            props = [pr for pr in props if pr not in ("fade", "textbox")]
+            props = [pr for pr in props if pr != "fade"]
             tip = "Changes apply to the selected marks. Ctrl+Z undoes them."
 
         # name + key, flush left
@@ -1180,8 +1196,29 @@ class Toolbar(QWidget):
         if "textbox" in props:
             self._props_lo.addWidget(self._cell(
                 _label("BOX"),
-                self._choice([(False, "Off"), (True, "On")], self.canvas.text_box,
-                             lambda v: self._set_pref("text_box", v))))
+                self._style_choice([(False, "Off"), (True, "Box"), ("bubble", "Bubble")],
+                                   "text_box", "box")))
+            self._props_lo.addWidget(_vrule())
+
+        if "fill" in props:
+            self._props_lo.addWidget(self._cell(
+                _label("FILL"),
+                self._style_choice([("none", "Off"), ("tint", "Tint"), ("solid", "Solid")],
+                                   "shape_fill", "fill")))
+            self._props_lo.addWidget(_vrule())
+
+        if "heads" in props:
+            self._props_lo.addWidget(self._cell(
+                _label("HEADS"),
+                self._style_choice([(1, "One"), (2, "Both")], "arrow_heads", "heads")))
+            self._props_lo.addWidget(_vrule())
+
+        if "stamp" in props:
+            self._props_lo.addWidget(self._cell(
+                _label("STAMP"),
+                self._style_choice([("check", "✓"), ("cross", "✗"), ("excl", "!"),
+                                    ("quest", "?"), ("star", "★")],
+                                   "stamp_kind", "kind")))
             self._props_lo.addWidget(_vrule())
 
         if "stroke" in props:
