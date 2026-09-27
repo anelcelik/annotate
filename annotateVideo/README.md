@@ -46,7 +46,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Tool | Key | Description |
 |---|---|---|
 | Select / Edit | `V` | Click a mark to select it · drag to move · white handles reshape it (arrow tip, box corner…) · the dock's colour / stroke / opacity restyle it · drag across empty space or **Shift**-click to select several · `Ctrl+C` / `Ctrl+V` / `Ctrl+D` / `Ctrl+A` · arrow keys nudge (**Shift** = 10 px) · all undoable |
-| Pen | `P` | Freehand stroke |
+| Pen | `P` | Freehand stroke · with a pen (Surface, Wacom, Windows Ink) the width follows the pressure, and the pen's eraser end erases |
 | Line | `L` | Straight line · **Shift** → 45° snap |
 | Arrow | `A` | Line with arrowhead · **HEADS** One / Both · **Shift** → 45° snap · select it and drag the middle handle to curve it |
 | Rectangle | `R` | **FILL** Off / Tint / Solid · **Shift** → perfect square |
@@ -100,10 +100,12 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 ## Recording
 
+Areas: all monitors, the monitor in use, an area you drag, or **a window you click** (it comes to the front and its area is recorded).
+
 Press **Record** on the dock (or `Ctrl+Alt+R`, or the tray menu) — its own
 Record cell turns red and counts up; press it again (or `Ctrl+Alt+R`, or the
 tray menu) to stop. The file is already on disk — a panel offers **Play**,
-**Show in folder**, **Save as…** and **Delete** (which moves the file to the
+**Trim…** (drag the start and end on a timeline with a frame preview; saves `…-trimmed.mp4` beside it), **Show in folder**, **Save as…** and **Delete** (which moves the file to the
 Recycle Bin, so a misclick can be undone).
 
 Files go to `Videos/ScreenAnnotatorPro/annotation_YYYYMMDD_HHMMSS.mp4`
