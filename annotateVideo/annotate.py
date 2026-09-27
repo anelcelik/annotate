@@ -49,7 +49,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
-    QPolygonF, QPainterPath, QFontMetrics, QPixmap, QCursor, QIcon,
+    QPolygonF, QPainterPath, QPainterPathStroker, QFontMetrics, QPixmap, QCursor, QIcon,
     QKeySequence, QDesktopServices, QImage,
 )
 
@@ -125,7 +125,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.1.0"
+VERSION = "5.1.1"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -510,12 +510,34 @@ class ArrowShape(Shape):
         self.p1, self.p2, self.color, self.width = p1, p2, color, width
 
     def draw(self, p):
+        # One outline, filled once. Drawn as shaft + filled head + stroked
+        # head, every overlap was painted two or three times, so a
+        # see-through arrow showed its shaft through the head and a darker
+        # ring around it. The union covers exactly the same pixels as before.
         p.setRenderHint(RHint.Antialiasing)
-        p.setPen(_pen(self.color, self.width))
+        p.setPen(PS.NoPen)
         p.setBrush(QBrush(QColor(self.color)))
-        p.drawLine(self.p1, self.p2)
-        poly = _arrowhead(self.p1, self.p2, max(self.width*3.5, 14))
-        if not poly.isEmpty(): p.drawPolygon(poly)
+        p.drawPath(self.outline())
+
+    def outline(self) -> QPainterPath:
+        key = (self.p1.x(), self.p1.y(), self.p2.x(), self.p2.y(), self.width)
+        if getattr(self, "_outline_key", None) != key:
+            stroker = QPainterPathStroker()
+            stroker.setWidth(self.width)
+            stroker.setCapStyle(Cap.RoundCap)
+            stroker.setJoinStyle(Join.RoundJoin)
+            shaft = QPainterPath(self.p1)
+            shaft.lineTo(self.p2)
+            path = stroker.createStroke(shaft)
+            poly = _arrowhead(self.p1, self.p2, max(self.width*3.5, 14))
+            if not poly.isEmpty():
+                head = QPainterPath()
+                head.addPolygon(poly)
+                head.closeSubpath()
+                path = path.united(head).united(stroker.createStroke(head))
+            path.setFillRule(Qt.FillRule.WindingFill)
+            self._outline_key, self._outline_path = key, path
+        return self._outline_path
 
     def move(self, dx, dy):
         self.p1 = QPointF(self.p1.x()+dx, self.p1.y()+dy)
@@ -565,15 +587,23 @@ class RulerShape(Shape):
     def draw(self, p):
         p.setRenderHint(RHint.Antialiasing)
         p.setPen(_pen(self.color, self.width))
-        p.drawLine(self.p1, self.p2)
         dx, dy = self.p2.x()-self.p1.x(), self.p2.y()-self.p1.y()
         length = math.hypot(dx, dy)
-        if length < 1: return
+        if length < 1:
+            p.drawLine(self.p1, self.p2)
+            return
+        # Line and end ticks as one path, stroked once — separate lines
+        # painted the crossings twice, a dark blob at each end when the
+        # colour is see-through.
         nx, ny = -dy/length, dx/length
         tick = 8
+        path = QPainterPath(self.p1)
+        path.lineTo(self.p2)
         for pt in (self.p1, self.p2):
-            p.drawLine(QPointF(pt.x()+nx*tick, pt.y()+ny*tick),
-                       QPointF(pt.x()-nx*tick, pt.y()-ny*tick))
+            path.moveTo(QPointF(pt.x()+nx*tick, pt.y()+ny*tick))
+            path.lineTo(QPointF(pt.x()-nx*tick, pt.y()-ny*tick))
+        p.setBrush(BS.NoBrush)
+        p.drawPath(path)
         label = f"{round(length)} px"
         mid = QPointF((self.p1.x()+self.p2.x())/2, (self.p1.y()+self.p2.y())/2)
         font = QFont("Arial", 11, QFont.Weight.Bold)
