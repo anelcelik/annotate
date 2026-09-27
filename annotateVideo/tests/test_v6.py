@@ -1,4 +1,5 @@
 """6.0: GPU recording on any screen and with pause."""
+import os
 import shutil
 import time
 
@@ -8,7 +9,7 @@ from PySide6.QtTest import QTest
 
 import video_recorder as VR
 
-FFMPEG = shutil.which("ffmpeg")
+FFMPEG = os.environ.get("SCREEN_ANNOTATOR_FFMPEG") or shutil.which("ffmpeg")
 
 
 class FakeScreen:

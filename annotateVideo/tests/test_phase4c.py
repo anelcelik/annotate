@@ -1,5 +1,6 @@
 """Phase 4, part 3 (5.9): the PC's own sound, the webcam bubble."""
 import math
+import os
 import shutil
 import struct
 import subprocess
@@ -11,7 +12,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QWheelEvent
 from PySide6.QtTest import QTest
 
-FFMPEG = shutil.which("ffmpeg")
+FFMPEG = os.environ.get("SCREEN_ANNOTATOR_FFMPEG") or shutil.which("ffmpeg")
 needs_ffmpeg = pytest.mark.skipif(not FFMPEG, reason="no ffmpeg")
 
 LISTING = '''

@@ -8,13 +8,13 @@ available at the links given, and FFmpeg's is included next to this file
 
 
 FFmpeg                      GNU General Public License v3
-  The recorder runs ffmpeg.exe as a separate program. This copy is the
-  "essentials" build from www.gyan.dev; its exact version, build
-  configuration and a link to the corresponding source code are in
-  ffmpeg-README.txt next to this file.
+  The recorder runs ffmpeg.exe as a separate program. This copy is built
+  from the FFmpeg 9.0.2 source for this app, with only the parts it uses,
+  and includes x264 (GPL v2+), libvpx (BSD) and Opus (BSD). Versions,
+  source links and checksums are in ffmpeg-README.txt next to this file;
+  the build script is ffmpeg/build-ffmpeg.sh in the app's source.
   https://ffmpeg.org/legal.html
-  Source: https://github.com/FFmpeg/FFmpeg
-  Build:  https://www.gyan.dev/ffmpeg/builds/
+  Source: https://ffmpeg.org/releases/
 
 Qt 6                        GNU Lesser General Public License v3
   https://www.qt.io/licensing/open-source-lgpl-obligations

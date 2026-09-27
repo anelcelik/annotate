@@ -34,15 +34,10 @@ permissions:
   contents: write   # needed to publish/attach to GitHub Releases on tag push
 
 env:
-  # Pinned, checksummed ffmpeg: a stable release rather than a nightly (the
-  # BtbN master build used before could change under us on any run), and at
-  # 100 MB about 39 MB smaller than it. Has everything the app uses — x264,
-  # AAC, VP9 + Opus, GIF palettes, DirectShow — and Media Foundation / AMF /
-  # NVENC for hardware encoding later. GPLv3; its LICENSE and README (build
-  # config + source link) ship next to the binary. To update: new URL, then
-  # the zip's SHA-256.
-  FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
-  FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+  # ffmpeg.exe is built from source for this app by the `ffmpeg` job below
+  # (annotateVideo/ffmpeg/build-ffmpeg.sh: FFmpeg 9.0.2 with only the parts
+  # the app uses, every source pinned) instead of the 105 MB Gyan essentials
+  # build. tests/test_ffmpeg_build.py checks it has every part the app calls.
   # Python/WinRT: start-on-boot for the Store package, the Store's in-app
   # rating dialog, and Snip & Read's OCR. Imported lazily; the app runs
   # without them.
@@ -55,11 +50,41 @@ env:
     winrt-Windows.Globalization
 
 jobs:
+  # ── The lean ffmpeg.exe ─────────────────────────────────────────────────────
+  # Cross-compiled on Linux, cached until the build script changes, handed to
+  # the Windows jobs as a short-lived artifact.
+  ffmpeg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse the build for this script
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-${{ hashFiles('annotateVideo/ffmpeg/build-ffmpeg.sh') }}
+      - name: Build ffmpeg.exe
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            mingw-w64 nasm pkg-config libz-mingw-w64-dev autoconf automake libtool
+          bash annotateVideo/ffmpeg/build-ffmpeg.sh ffmpeg-out
+      - name: Size
+        run: ls -la ffmpeg-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-exe
+          path: ffmpeg-out
+          retention-days: 1
+
   # ── Tests on real Windows ───────────────────────────────────────────────────
   # The same suite that runs anywhere, plus what only Windows can check:
   # RegisterHotKey delivering WM_HOTKEY through the Qt native event filter,
   # and the WinRT names platform_win.py calls.
   tests:
+    needs: ffmpeg
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -72,15 +97,14 @@ jobs:
         run: pip install PySide6-Essentials pynput pytest ${{ env.WINRT_PACKAGES }}
       # The recording tests (GPU command, exports) need the same ffmpeg the
       # app ships.
-      - name: Fetch the pinned ffmpeg.exe
+      - name: Take the lean ffmpeg.exe built for this commit
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-exe
+          path: ffmpeg-out
+      - name: Point the tests at it
         shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
-          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne $env:FFMPEG_SHA256) { throw "ffmpeg.zip checksum mismatch" }
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
-          $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          "SCREEN_ANNOTATOR_FFMPEG=$($exe.FullName)" >> $env:GITHUB_ENV
+        run: '"SCREEN_ANNOTATOR_FFMPEG=$((Resolve-Path ffmpeg-out\ffmpeg.exe).Path)" >> $env:GITHUB_ENV'
       - name: Run the tests
         working-directory: annotateVideo
         env:
@@ -88,6 +112,7 @@ jobs:
         run: python -m pytest tests -v -rs
 
   build:
+    needs: ffmpeg
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -103,25 +128,19 @@ jobs:
       # A single-file build has no PATH to fall back on, so the encoder has to
       # travel inside the exe. find_ffmpeg() picks it up from _MEIPASS at run
       # time.
-      - name: Fetch the pinned ffmpeg.exe
+      - name: Take the lean ffmpeg.exe built for this commit
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-exe
+          path: ffmpeg-out
+      - name: Put it where the specs pick it up
         shell: pwsh
         run: |
-          Write-Host "Downloading $env:FFMPEG_URL"
-          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
-          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne $env:FFMPEG_SHA256) {
-            throw "ffmpeg.zip checksum mismatch: got $hash, expected $env:FFMPEG_SHA256"
-          }
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
-          $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe |
-                 Select-Object -First 1
-          if (-not $exe) { throw "ffmpeg.exe not found in the downloaded archive" }
-          $root = $exe.Directory.Parent.FullName
           New-Item -ItemType Directory -Force -Path annotateVideo\vendor | Out-Null
-          Copy-Item $exe.FullName annotateVideo\vendor\ffmpeg.exe
-          Copy-Item (Join-Path $root 'LICENSE') annotateVideo\vendor\ffmpeg-LICENSE.txt
-          Copy-Item (Join-Path $root 'README.txt') annotateVideo\vendor\ffmpeg-README.txt
-          "{0:N0} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
+          Copy-Item ffmpeg-out\ffmpeg.exe annotateVideo\vendor\ffmpeg.exe
+          Copy-Item ffmpeg-out\ffmpeg-LICENSE.txt annotateVideo\vendor\ffmpeg-LICENSE.txt
+          Copy-Item ffmpeg-out\ffmpeg-README.txt annotateVideo\vendor\ffmpeg-README.txt
+          "{0:N1} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
           & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       # ── Python dependencies ─────────────────────────────────────────────────
@@ -221,6 +240,7 @@ jobs:
   # copy is what goes to Partner Center; the MSI is the classic installer for
   # people who want one (Program Files, Start menu, optional desktop shortcut).
   msix:
+    needs: ffmpeg
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -232,25 +252,19 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Fetch the pinned ffmpeg.exe
+      - name: Take the lean ffmpeg.exe built for this commit
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-exe
+          path: ffmpeg-out
+      - name: Put it where the specs pick it up
         shell: pwsh
         run: |
-          Write-Host "Downloading $env:FFMPEG_URL"
-          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
-          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne $env:FFMPEG_SHA256) {
-            throw "ffmpeg.zip checksum mismatch: got $hash, expected $env:FFMPEG_SHA256"
-          }
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
-          $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe |
-                 Select-Object -First 1
-          if (-not $exe) { throw "ffmpeg.exe not found in the downloaded archive" }
-          $root = $exe.Directory.Parent.FullName
           New-Item -ItemType Directory -Force -Path annotateVideo\vendor | Out-Null
-          Copy-Item $exe.FullName annotateVideo\vendor\ffmpeg.exe
-          Copy-Item (Join-Path $root 'LICENSE') annotateVideo\vendor\ffmpeg-LICENSE.txt
-          Copy-Item (Join-Path $root 'README.txt') annotateVideo\vendor\ffmpeg-README.txt
-          "{0:N0} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
+          Copy-Item ffmpeg-out\ffmpeg.exe annotateVideo\vendor\ffmpeg.exe
+          Copy-Item ffmpeg-out\ffmpeg-LICENSE.txt annotateVideo\vendor\ffmpeg-LICENSE.txt
+          Copy-Item ffmpeg-out\ffmpeg-README.txt annotateVideo\vendor\ffmpeg-README.txt
+          "{0:N1} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
           & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       - name: Install dependencies

@@ -1,5 +1,6 @@
 """Phase 4, part 2 (5.8): pen pressure, the pen's eraser end, trimming a
 recording, recording one window."""
+import os
 import shutil
 import time
 
@@ -115,7 +116,7 @@ def test_range_bar_keeps_its_handles_apart(A):
 
 @pytest.fixture
 def clip(tmp_path):
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = os.environ.get("SCREEN_ANNOTATOR_FFMPEG") or shutil.which("ffmpeg")
     if not ffmpeg:
         pytest.skip("no ffmpeg")
     import subprocess
@@ -128,7 +129,7 @@ def clip(tmp_path):
 
 def test_trim_a_real_recording(A, clip, monkeypatch):
     import video_recorder as vr
-    monkeypatch.setattr(vr, "find_ffmpeg", lambda: shutil.which("ffmpeg"))
+    monkeypatch.setattr(vr, "find_ffmpeg", lambda: os.environ.get("SCREEN_ANNOTATOR_FFMPEG") or shutil.which("ffmpeg"))
     assert vr.frame_at(clip, 1.0)[:4] == b"\x89PNG"
     dlg = A.TrimDialog(clip)
     dlg.range.set_range(1.0, 4.0, "start")
