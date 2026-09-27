@@ -79,6 +79,13 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 5.8 — Pen pressure, trimming, and window recording**
+
+- Pen pressure: lines get thicker the harder you press, and the eraser end of the pen erases
+- Trim a recording right after you make it: drag two handles and save a trimmed copy
+- Record just one window: click it and it's recorded
+
+
 **Version 5.6 — More shapes, stamps, and saved annotations**
 
 - Filled rectangles and circles, double-headed and curved arrows, and speech bubbles

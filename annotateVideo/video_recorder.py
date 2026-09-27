@@ -536,6 +536,87 @@ def screen_under_cursor() -> QRect:
     return scr.geometry()
 
 
+# ── Recording one window ──────────────────────────────────────────────────────
+
+def native_to_logical(rect: QRect) -> QRect:
+    """Physical pixels (what Win32 reports) to Qt's coordinates. Qt keeps each
+    screen's top-left corner where Windows has it and scales only its size,
+    so the mapping depends on the screen the rectangle is on."""
+    c = rect.center()
+    for scr in QApplication.screens():
+        g, dpr = scr.geometry(), scr.devicePixelRatio()
+        native = QRect(g.x(), g.y(), round(g.width() * dpr), round(g.height() * dpr))
+        if native.contains(c):
+            return QRect(g.x() + round((rect.x() - g.x()) / dpr),
+                         g.y() + round((rect.y() - g.y()) / dpr),
+                         round(rect.width() / dpr), round(rect.height() / dpr))
+    return QRect(rect)
+
+
+_SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+
+
+def list_windows() -> list[tuple[int, str, QRect]]:
+    """The windows you can see, front to back: (handle, title, rectangle in
+    Qt coordinates). Windows only — elsewhere [] and the caller lets you drag
+    an area instead."""
+    if platform.system() != "Windows":
+        return []
+    import ctypes
+    from ctypes import wintypes
+    user32, dwm = ctypes.windll.user32, ctypes.windll.dwmapi
+    H = wintypes.HWND
+    for fn, args in ((user32.IsWindowVisible, [H]), (user32.IsIconic, [H]),
+                     (user32.GetWindowTextLengthW, [H]),
+                     (user32.GetWindowTextW, [H, wintypes.LPWSTR, ctypes.c_int]),
+                     (user32.GetClassNameW, [H, wintypes.LPWSTR, ctypes.c_int]),
+                     (user32.GetWindowLongW, [H, ctypes.c_int]),
+                     (user32.GetWindowThreadProcessId, [H, ctypes.POINTER(wintypes.DWORD)]),
+                     (user32.GetWindowRect, [H, ctypes.POINTER(wintypes.RECT)]),
+                     (dwm.DwmGetWindowAttribute, [H, wintypes.DWORD, ctypes.c_void_p,
+                                                  wintypes.DWORD])):
+        fn.argtypes = args
+    own, found = os.getpid(), []
+
+    def visit(hwnd, _lparam):
+        if not hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == own:                        # the overlay, the dock
+            return True
+        cloaked = wintypes.DWORD()                  # on another virtual desktop
+        dwm.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+        n = user32.GetWindowTextLengthW(hwnd)
+        if cloaked.value or n == 0 or user32.GetWindowLongW(hwnd, -20) & 0x80:
+            return True                             # WS_EX_TOOLWINDOW: not a window you'd pick
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        if cls.value in _SHELL_CLASSES:
+            return True
+        title = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, title, n + 1)
+        r = wintypes.RECT()                         # without the invisible resize border
+        if dwm.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:
+            user32.GetWindowRect(hwnd, ctypes.byref(r))
+        rect = QRect(r.left, r.top, r.right - r.left, r.bottom - r.top)
+        if rect.width() >= 80 and rect.height() >= 50:
+            found.append((int(hwnd), title.value, native_to_logical(rect)))
+        return True
+
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, H, wintypes.LPARAM)(visit)
+    user32.EnumWindows(proc, 0)
+    return found
+
+
+def bring_to_front(hwnd: int):
+    if platform.system() == "Windows" and hwnd:
+        import ctypes
+        from ctypes import wintypes
+        ctypes.windll.user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+
+
 # ── Where frames come from ────────────────────────────────────────────────────
 #
 # Qt's own grabWindow() is the fast path, and the only one on Windows. It
@@ -1275,6 +1356,50 @@ def convert_command(ffmpeg: str, src: str, dst: str, kind: str,
     return cmd
 
 
+def trim_command(ffmpeg: str, src: str, dst: str, start: float, end: float,
+                 progress: bool = True) -> list[str]:
+    """Keep `start`–`end` seconds of a recording. Re-encoded rather than
+    stream-copied: a copy can only cut on a keyframe, which is seconds away
+    in a screen recording, so the cut would land in the wrong place."""
+    if end <= start:
+        raise RecorderError("the end has to come after the start")
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if progress:
+        cmd += ["-progress", "pipe:1", "-nostats"]
+    # -ss before -i seeks fast; re-encoding makes it frame-accurate anyway.
+    cmd += ["-ss", f"{start:.3f}", "-i", src, "-t", f"{end - start:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "160k", dst]
+    return cmd
+
+
+def trimmed_path(src: str) -> str:
+    base, ext = os.path.splitext(src)
+    candidate, n = f"{base}-trimmed{ext}", 2
+    while os.path.exists(candidate):
+        candidate = f"{base}-trimmed-{n}{ext}"
+        n += 1
+    return candidate
+
+
+def frame_at(path: str, seconds: float, width: int = 560) -> bytes:
+    """One frame of a video as PNG bytes (b"" if it cannot be had)."""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg or not os.path.exists(path):
+        return b""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+           "-ss", f"{max(0.0, seconds):.3f}", "-i", path, "-frames:v", "1",
+           "-vf", f"scale={width}:-2", "-f", "image2pipe", "-vcodec", "png",
+           "pipe:1"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=15,
+                             creationflags=_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return b""
+    return out.stdout if out.returncode == 0 else b""
+
+
 def export_path(src: str, kind: str) -> str:
     """Sibling of the recording, with the new extension — and never clobbering
     something already there."""
@@ -1333,7 +1458,8 @@ class MediaConverter(QObject):
         return self._thread is not None and self._thread.is_alive()
 
     def start(self, src: str, dst: str, kind: str, *, fps: int = 12,
-              width: int = 0, duration: float = 0.0) -> bool:
+              width: int = 0, duration: float = 0.0,
+              trim: tuple[float, float] | None = None) -> bool:
         if self.running:
             return False
         ffmpeg = find_ffmpeg()
@@ -1345,7 +1471,12 @@ class MediaConverter(QObject):
             return False
 
         self._cancelled = False
-        cmd = convert_command(ffmpeg, src, dst, kind, fps=fps, width=width)
+        if kind == "trim":
+            start, end = trim
+            cmd = trim_command(ffmpeg, src, dst, start, end)
+            duration = end - start
+        else:
+            cmd = convert_command(ffmpeg, src, dst, kind, fps=fps, width=width)
         self._thread = threading.Thread(
             target=self._run, args=(cmd, dst, duration), daemon=True,
             name="video-convert")
@@ -1394,6 +1525,11 @@ class MediaConverter(QObject):
                 emit(self.progress, 1.0)
         code = self._proc.wait()
         drain.join(timeout=2)
+        for pipe in (self._proc.stdout, self._proc.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
 
         if self._cancelled:
             try:

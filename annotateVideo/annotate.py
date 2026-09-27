@@ -46,14 +46,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
-    QKeyCombination, QMargins, QSizeF,
+    QKeyCombination, QMargins, QSize, QSizeF,
     Signal, Slot,
 )
 from PySide6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
     QPolygonF, QPainterPath, QPainterPathStroker, QFontMetrics, QFontMetricsF,
     QPixmap, QCursor, QIcon,
-    QKeySequence, QDesktopServices, QImage,
+    QKeySequence, QDesktopServices, QImage, QPointingDevice,
 )
 
 from video_recorder import (
@@ -64,7 +64,8 @@ from video_recorder import (
     format_elapsed, list_audio_devices, pick_region_natively,
     screen_under_cursor, virtual_desktop_rect,
     EXPORT_FORMATS, GIF_RATES, GIF_WIDTHS, MediaConverter, export_path,
-    probe_duration,
+    probe_duration, frame_at, trimmed_path,
+    list_windows, bring_to_front,
 )
 
 # ── Resource path helper (dev + PyInstaller bundle) ───────────────────────────
@@ -129,7 +130,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.7.0"
+VERSION = "5.8.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -182,7 +183,7 @@ _DEFAULT_SETTINGS: dict = {
     "tips_done":      False,           # first-run tips shown (or skipped)
     "rec_fps":        30,
     "rec_quality":    "balanced",      # high | balanced | small
-    "rec_area":       "all",           # all | screen | region
+    "rec_area":       "all",           # all | screen | region | window
     "rec_cursor":     True,
     "rec_audio":      False,
     "rec_audio_dev":  "",              # "" = system default input
@@ -509,9 +510,57 @@ class PenShape(Shape):
     def __init__(self, color, width):
         self.color, self.width = color, width
         self.pts: list[QPointF] = []
+        # One per point when drawn with a pen (0–1); None for the mouse.
+        self.pressures: list[float] | None = None
+
+    def add(self, pt: QPointF, pressure: float | None = None):
+        self.pts.append(pt)
+        if pressure is not None and self.pressures is None:
+            self.pressures = [pressure] * (len(self.pts) - 1)
+        if self.pressures is not None:
+            self.pressures.append(self.pressures[-1] if pressure is None else pressure)
+
+    def _pressure_width(self, a: float, b: float) -> float:
+        return max(0.8, self.width * (0.2 + 0.8 * (a + b) / 2))
+
+    def _draw_pressure(self, p, pr):
+        """Width follows the pen. Segments overlap at every joint, so a
+        see-through stroke is drawn solid into a layer and laid down once —
+        otherwise it came out as a string of darker beads."""
+        color = QColor(self.color)
+        alpha, layer, target = color.alpha(), None, p
+        if alpha < 255:
+            m = self.width + 2
+            box = self.bounding_rect().adjusted(-m, -m, m, m)
+            dev = p.device()
+            dpr = dev.devicePixelRatioF() if dev is not None else 1.0
+            layer = QImage(max(1, math.ceil(box.width() * dpr)),
+                           max(1, math.ceil(box.height() * dpr)),
+                           QImage.Format.Format_ARGB32_Premultiplied)
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(0)
+            target = QPainter(layer)
+            target.translate(-box.x(), -box.y())
+            color.setAlpha(255)
+        target.setRenderHint(RHint.Antialiasing)
+        for i in range(1, len(self.pts)):
+            pen = QPen(color, self._pressure_width(pr[i - 1], pr[i]))
+            pen.setCapStyle(Cap.RoundCap)
+            target.setPen(pen)
+            target.drawLine(self.pts[i - 1], self.pts[i])
+        if layer is not None:
+            target.end()
+            p.save()
+            p.setOpacity(p.opacity() * alpha / 255)
+            p.drawImage(box.topLeft(), layer)
+            p.restore()
 
     def draw(self, p):
         if not self.pts: return
+        pr = getattr(self, "pressures", None)
+        if pr and len(pr) == len(self.pts) and len(self.pts) > 1:
+            self._draw_pressure(p, pr)
+            return
         p.setRenderHint(RHint.Antialiasing)
         p.setPen(_pen(self.color, self.width))
         if len(self.pts) == 1:
@@ -1422,6 +1471,8 @@ class Canvas(QWidget):
         self._band: QRectF | None = None        # rubber-band selection
         self._clip: list[Shape] = []
         self._paste_offset = 0
+        self._tablet_pressure, self._tablet_time = 1.0, -1.0
+        self._tool_before_eraser: str | None = None
         self._last_restyle = 0.0
         self._drag_last    = QPointF()
         self._move_from    = QPointF()
@@ -1638,6 +1689,32 @@ class Canvas(QWidget):
             return max(self.pen_width * 4, 20) / 2
         return max(self.pen_width * 2, 10)
 
+    # ── pen (tablet) input ─────────────────────────────────────────────────
+    def tabletEvent(self, e):
+        """A pen: note its pressure and let Qt turn the event into the usual
+        mouse events, so every tool works exactly as with a mouse. The eraser
+        end of a pen erases while it's down, then hands the tool back."""
+        kind = e.type()
+        self._tablet_pressure = e.pressure()
+        self._tablet_time = time.monotonic()
+        if kind == QEvent.Type.TabletPress:
+            if e.pointerType() == QPointingDevice.PointerType.Eraser \
+                    and self.tool != "eraser":
+                self._tool_before_eraser = self.tool
+                self.tool = "eraser"
+        elif kind == QEvent.Type.TabletRelease and self._tool_before_eraser:
+            back = self._tool_before_eraser
+            self._tool_before_eraser = None
+            # After the mouse release Qt makes from this event, not before it.
+            QTimer.singleShot(0, lambda: setattr(self, "tool", back))
+        e.ignore()
+
+    def _pen_pressure(self) -> float | None:
+        """The pen's pressure if this stroke comes from a pen, else None."""
+        if time.monotonic() - self._tablet_time > 0.1:
+            return None                 # the mouse, or a pen put down a while ago
+        return max(0.0, min(1.0, self._tablet_pressure))
+
     def wheelEvent(self, e):
         if self.zoom_pix is not None:
             k = 1.25 if e.angleDelta().y() > 0 else 1 / 1.25
@@ -1700,7 +1777,7 @@ class Canvas(QWidget):
 
         if self.tool == "pen":
             self._pen_shape = PenShape(_with_alpha(self.pen_color, self.pen_alpha), self.pen_width)
-            self._pen_shape.pts.append(pos); return
+            self._pen_shape.add(pos, self._pen_pressure()); return
 
         if self.tool == "eraser":
             if self.eraser_mode == "shapes":
@@ -1800,7 +1877,7 @@ class Canvas(QWidget):
             return
 
         if self.tool == "pen" and self._pen_shape:
-            self._pen_shape.pts.append(pos)
+            self._pen_shape.add(pos, self._pen_pressure())
             w = self._pen_shape.width
             self._update_area(QRectF(last, pos).normalized(), margin=w + 2)
             return
@@ -3664,6 +3741,7 @@ class RecordingBar(QWidget):
         for buttons in (
             [("Play",           self._play,     True),
              ("Make GIF",       self._make_gif, True),
+             ("Trim…",          self._trim,     False),
              ("Export…",        self._export,   False)],
             [("Delete",         self._delete,   False),
              None,
@@ -3711,6 +3789,9 @@ class RecordingBar(QWidget):
 
     def _export(self):
         ExportDialog(self._path, self._duration, self._overlay).exec()
+
+    def _trim(self):
+        TrimDialog(self._path, self._duration, self._overlay).exec()
 
     def _reveal(self):
         _reveal_in_file_manager(self._path)
@@ -3968,6 +4049,407 @@ class ExportDialog(QDialog):
         _dlg_frame_paint(self)
 
 
+class WindowPicker(QWidget):
+    """Point at a window and click: it comes to the front and its area is
+    what gets recorded. Everything else is dimmed while you choose."""
+
+    chosen = Signal(object)          # QRect in global coords, or None
+
+    HINT = "Click the window to record   ·   Esc to cancel"
+
+    def __init__(self, windows: list):
+        super().__init__(None, WType.FramelessWindowHint |
+                         WType.WindowStaysOnTopHint | WType.Tool)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setMouseTracking(True)
+        self.setCursor(Cursor.PointingHandCursor)
+        desk = virtual_desktop_rect()
+        self._origin = desk.topLeft()
+        self.setGeometry(desk)
+        # Only the part on screen: a window hanging off an edge can't be filmed.
+        self._windows = [(h, title, r.intersected(desk)) for h, title, r in windows
+                         if r.intersects(desk)]
+        self._hover: tuple | None = None
+        self._done = False
+
+    def choose(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
+        self._pick_at(QCursor.pos())
+
+    def window_at(self, pos: QPoint):
+        return next((w for w in self._windows if w[2].contains(pos)), None)
+
+    def _pick_at(self, global_pos: QPoint):
+        hit = self.window_at(global_pos)
+        if hit is not self._hover:
+            self._hover = hit
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        self._pick_at(e.globalPosition().toPoint())
+
+    def mousePressEvent(self, e):
+        if e.button() != MB.LeftButton:
+            self._finish(None)
+            return
+        self._pick_at(e.globalPosition().toPoint())
+        if self._hover is not None:
+            self._finish(self._hover)
+
+    def keyPressEvent(self, e):
+        if e.key() == Key.Key_Escape:
+            self._finish(None)
+
+    def _finish(self, window):
+        if self._done:
+            return
+        self._done = True
+        self.hide()
+        if window is None:
+            self.chosen.emit(None)
+            self.deleteLater()
+            return
+        hwnd, _title, rect = window
+        bring_to_front(hwnd)
+
+        def emit():                  # once it has had a moment to come forward
+            self.chosen.emit(QRect(rect))
+            self.deleteLater()
+        QTimer.singleShot(200, emit)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(RHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        if self._hover is not None:
+            r = QRect(self._hover[2].topLeft() - self._origin, self._hover[2].size())
+            p.setCompositionMode(CM.CompositionMode_Clear)
+            p.fillRect(r, GC.transparent)
+            p.setCompositionMode(CM.CompositionMode_SourceOver)
+            p.setPen(QPen(QColor("#FF3B3B"), 3))
+            p.setBrush(BS.NoBrush)
+            p.drawRect(r.adjusted(1, 1, -2, -2))
+            label = f"{self._hover[1][:60]}   ·   {r.width()} × {r.height()}"
+            f = QFont(DLG_FONT, 10)
+            f.setBold(True)
+            p.setFont(f)
+            tw = QFontMetrics(f).horizontalAdvance(label) + 16
+            box = QRect(r.x(), max(0, r.y() - 26), tw, 22)
+            if box.top() == 0 and r.y() < 26:
+                box.moveTop(r.y() + 4)
+            p.fillRect(box, QColor("#FF3B3B"))
+            p.setPen(QColor("#FFFFFF"))
+            p.drawText(box, AA.AlignCenter, label)
+        f2 = QFont(DLG_FONT, 12)
+        f2.setBold(True)
+        p.setFont(f2)
+        fm = QFontMetrics(f2)
+        scr = QApplication.primaryScreen().geometry()
+        w = fm.horizontalAdvance(self.HINT) + 32
+        hint = QRect(scr.center().x() - w // 2 - self._origin.x(),
+                     scr.top() + 40 - self._origin.y(), w, 36)
+        p.fillRect(hint, QColor(20, 20, 22, 220))
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(hint, AA.AlignCenter, self.HINT)
+        p.end()
+
+
+def _clock(seconds: float) -> str:
+    """0:07.4 — tenths, because a trim is placed by eye to within a frame or so."""
+    m, s = divmod(max(0.0, seconds), 60)
+    return f"{int(m)}:{s:04.1f}"
+
+
+class RangeBar(QWidget):
+    """A timeline with two handles: where the trimmed video starts and ends."""
+
+    changed = Signal(float, float, str)     # start, end (seconds), which moved
+
+    MARGIN = 10
+
+    def __init__(self, duration: float, parent=None):
+        super().__init__(parent)
+        self.duration = max(0.1, float(duration))
+        self.start, self.end = 0.0, self.duration
+        self.last = "start"
+        self._drag: str | None = None
+        self.setFixedHeight(36)
+        self.setMinimumWidth(300)
+        self.setCursor(Cursor.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def gap(self) -> float:
+        return min(0.5, self.duration / 2)
+
+    def x_of(self, t: float) -> float:
+        return self.MARGIN + (self.width() - 2 * self.MARGIN) * t / self.duration
+
+    def t_of(self, x: float) -> float:
+        span = max(1, self.width() - 2 * self.MARGIN)
+        return max(0.0, min(self.duration, (x - self.MARGIN) / span * self.duration))
+
+    def set_range(self, start: float, end: float, moved: str = "start"):
+        if moved == "start":
+            start = max(0.0, min(start, end - self.gap()))
+        else:
+            end = min(self.duration, max(end, start + self.gap()))
+        self.start, self.end, self.last = start, end, moved
+        self.update()
+        self.changed.emit(start, end, moved)
+
+    def mousePressEvent(self, e):
+        x = e.position().x()
+        self._drag = ("start" if abs(x - self.x_of(self.start))
+                      <= abs(x - self.x_of(self.end)) else "end")
+        self._to(x)
+
+    def mouseMoveEvent(self, e):
+        if self._drag:
+            self._to(e.position().x())
+
+    def mouseReleaseEvent(self, _e):
+        self._drag = None
+
+    def _to(self, x: float):
+        t = self.t_of(x)
+        if self._drag == "start":
+            self.set_range(t, self.end, "start")
+        else:
+            self.set_range(self.start, t, "end")
+
+    def keyPressEvent(self, e):
+        if e.key() not in (Key.Key_Left, Key.Key_Right):
+            return super().keyPressEvent(e)
+        step = 1.0 if e.modifiers() & Qt.KeyboardModifier.ShiftModifier else 0.1
+        step = -step if e.key() == Key.Key_Left else step
+        if self.last == "start":
+            self.set_range(self.start + step, self.end, "start")
+        else:
+            self.set_range(self.start, self.end + step, "end")
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(RHint.Antialiasing)
+        mid = self.height() / 2
+        track = QRectF(self.MARGIN, mid - 4, self.width() - 2 * self.MARGIN, 8)
+        p.setPen(PS.NoPen)
+        p.setBrush(QColor(DLG_SURFACE))
+        p.drawRect(track)
+        a, b = self.x_of(self.start), self.x_of(self.end)
+        p.setBrush(QColor(DLG_ACCENT))
+        p.drawRect(QRectF(a, mid - 4, b - a, 8))
+        for x, name in ((a, "start"), (b, "end")):
+            p.setBrush(QColor(DLG_INK))
+            p.drawRect(QRectF(x - 3, 2, 6, self.height() - 4))
+            if self.hasFocus() and name == self.last:
+                p.setBrush(QColor(DLG_ACCENT))
+                p.drawRect(QRectF(x - 1, 6, 2, self.height() - 12))
+        p.end()
+
+
+class _FrameFetcher(QObject):
+    """ffmpeg frame grabs off the GUI thread. Only the newest request
+    matters: dragging a handle asks for dozens, and the ones in between
+    would only arrive late."""
+
+    ready = Signal(float, bytes)
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._want: float | None = None
+        self._busy = False
+        self._lock = threading.Lock()
+
+    def request(self, seconds: float):
+        with self._lock:
+            self._want = seconds
+            if self._busy:
+                return
+            self._busy = True
+        threading.Thread(target=self._run, daemon=True, name="trim-frames").start()
+
+    def _run(self):
+        while True:
+            with self._lock:
+                t, self._want = self._want, None
+                if t is None:
+                    self._busy = False
+                    return
+            data = frame_at(self._path, t)
+            try:
+                self.ready.emit(t, data)
+            except RuntimeError:            # the dialog is gone
+                return
+
+
+class TrimDialog(QDialog):
+    """Cut the dead seconds off either end of a recording. Saved as a copy
+    next to it; the original stays as it was."""
+
+    PREVIEW = QSize(552, 310)
+
+    def __init__(self, path: str, duration: float = 0.0, parent=None):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setWindowTitle("Trim recording")
+        self._path = path
+        self._duration = duration or probe_duration(path)
+        self._out = ""
+        self._conv = MediaConverter(self)
+        self._conv.progress.connect(self._on_progress)
+        self._conv.done.connect(self._on_done)
+        self._conv.failed.connect(self._on_failed)
+        self._frames = _FrameFetcher(path, self)
+        self._frames.ready.connect(self._show_frame)
+        self._build()
+        self.setFixedWidth(600)
+        self.adjustSize()
+        _center_on_display1(self)
+        self._frames.request(0.0)
+
+    def _build(self):
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(24, 20, 24, 20)
+        lo.setSpacing(10)
+        title = QLabel("Trim recording")
+        tf = QFont(DLG_FONT, 13)
+        tf.setBold(True)
+        title.setFont(tf)
+        title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
+        lo.addWidget(title)
+        lo.addWidget(_dlg_sep())
+
+        self._preview = QLabel()
+        self._preview.setFixedSize(self.PREVIEW)
+        self._preview.setAlignment(AA.AlignCenter)
+        self._preview.setStyleSheet(f"background:#000000;color:{DLG_MUTED};")
+        self._preview.setText("Loading…")
+        lo.addWidget(self._preview, alignment=AA.AlignHCenter)
+
+        self.range = RangeBar(self._duration)
+        self.range.changed.connect(self._on_range)
+        lo.addWidget(self.range)
+
+        self._times = QLabel()
+        self._times.setStyleSheet(
+            f"color:{DLG_INK};font-family:'{DLG_FONT}';font-size:12px;"
+            "background:transparent;")
+        lo.addWidget(self._times)
+        note = QLabel("Drag the two handles to where it should start and end. "
+                      "← → nudge the last one you moved (Shift: a whole second). "
+                      "The original recording stays as it is.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;background:transparent;")
+        lo.addWidget(note)
+
+        self._bar = QProgressBar()
+        self._bar.setFixedHeight(6)
+        self._bar.setTextVisible(False)
+        self._bar.setStyleSheet(
+            f"QProgressBar{{background:{DLG_SURFACE};border:none;}}"
+            f"QProgressBar::chunk{{background:{DLG_ACCENT};}}")
+        self._bar.hide()
+        lo.addWidget(self._bar)
+        self._status = QLabel()
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(f"color:{DLG_INK};font-size:11px;background:transparent;")
+        self._status.hide()
+        lo.addWidget(self._status)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addStretch()
+        self._cancel_btn = QPushButton("Cancel")
+        self._go_btn = QPushButton("Save trimmed copy")
+        for b, primary, fn in ((self._cancel_btn, False, self.reject),
+                               (self._go_btn, True, self._start)):
+            b.setFixedHeight(34)
+            b.setCursor(Cursor.PointingHandCursor)
+            b.setStyleSheet(_dlg_button_style(primary=primary))
+            b.clicked.connect(fn)
+            btns.addWidget(b)
+        lo.addLayout(btns)
+        self._on_range(0.0, self._duration, "start")
+
+    def _on_range(self, start: float, end: float, moved: str):
+        self._times.setText(f"Start {_clock(start)}   ·   End {_clock(end)}   ·   "
+                            f"Keeps {_clock(end - start)} of {_clock(self._duration)}")
+        at = start if moved == "start" else max(0.0, end - 0.05)
+        self._frames.request(at)
+
+    def _show_frame(self, _t: float, data: bytes):
+        img = QImage.fromData(data, "PNG") if data else QImage()
+        if img.isNull():
+            self._preview.setText("No preview")
+            return
+        self._preview.setPixmap(QPixmap.fromImage(img).scaled(
+            self.PREVIEW, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+
+    def _start(self):
+        dst = trimmed_path(self._path)
+        if not self._conv.start(self._path, dst, "trim",
+                                trim=(self.range.start, self.range.end)):
+            return
+        self.range.setEnabled(False)
+        self._go_btn.setEnabled(False)
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.show()
+        self._status.setText("Trimming…")
+        self._status.show()
+        self._cancel_btn.setText("Stop")
+        self.adjustSize()
+
+    def _on_progress(self, fraction: float):
+        self._bar.setValue(int(fraction * 100))
+
+    def _on_done(self, path: str):
+        self._out = path
+        settings = getattr(self.parent(), "settings", None)
+        if settings is not None:
+            note_success(settings)
+        try:
+            size = f"{os.path.getsize(path) / (1024 * 1024):.1f} MB"
+        except OSError:
+            size = "—"
+        self._bar.setValue(100)
+        self._status.setText(f"Saved  {os.path.basename(path)}   ·   {size}")
+        self._cancel_btn.setText("Close")
+        self._go_btn.setText("Show in folder")
+        self._go_btn.setEnabled(True)
+        self._go_btn.clicked.disconnect()
+        self._go_btn.clicked.connect(self._reveal)
+        self.adjustSize()
+
+    def _on_failed(self, message: str):
+        self._bar.hide()
+        self._status.setText(f"Trimming failed.\n{message}")
+        self._status.show()
+        self.range.setEnabled(True)
+        self._go_btn.setEnabled(True)
+        self._cancel_btn.setText("Close")
+        self.adjustSize()
+
+    def _reveal(self):
+        if self._out:
+            _reveal_in_file_manager(self._out)
+        self.accept()
+
+    def reject(self):
+        if self._conv.running:
+            self._conv.cancel()
+        super().reject()
+
+    def paintEvent(self, _):
+        _dlg_frame_paint(self)
+
+
 class Countdown(QWidget):
     """3-2-1 in the middle of what's about to be recorded. It is gone before
     the first frame is taken, so it is never in the video."""
@@ -4057,6 +4539,7 @@ class RecordingController(QObject):
         self._gpu_broken = ""           # why the GPU path failed this session
         self._pending: tuple | None = None
         self._countdown: Countdown | None = None
+        self._picker: QWidget | None = None
         self.recorder = self._cpu
 
     # ── state ─────────────────────────────────────────────────────────────────
@@ -4099,15 +4582,26 @@ class RecordingController(QObject):
             return
 
         cfg = self.config()
-        if cfg.area == "region":
+        if cfg.area == "window":
+            windows = list_windows()
+            if windows:
+                self._picker = WindowPicker(windows)
+                self._picker.chosen.connect(
+                    lambda r: self._count_in(cfg, r) if r else None)
+                self._picker.choose()
+                return
+            # Nothing to list (not Windows): drag the area instead.
+        if cfg.area in ("region", "window"):
             native = pick_region_natively()
             if native is not False:            # the compositor picked, or cancelled
                 if native:
                     self._count_in(cfg, native)
                 return
-            sel = RegionSelector()
-            sel.chosen.connect(lambda r: self._count_in(cfg, r) if r else None)
-            sel.choose()
+            # Kept: a window nothing refers to can be collected mid-pick.
+            self._picker = RegionSelector()
+            self._picker.chosen.connect(
+                lambda r: self._count_in(cfg, r) if r else None)
+            self._picker.choose()
             return
         region = screen_under_cursor() if cfg.area == "screen" else None
         self._count_in(cfg, region)
@@ -5259,14 +5753,15 @@ class SettingsDialog(QDialog):
             c.setStyleSheet(_dlg_combo_style())
             return c
 
-        self._area_keys = ["all", "screen", "region"]
-        area_labels = ["All monitors", "Monitor in use", "Pick an area"]
+        self._area_keys = ["all", "screen", "region", "window"]
+        area_labels = ["All monitors", "Monitor in use", "Pick an area", "Pick a window"]
         area_now = area_labels[self._area_keys.index(g("rec_area"))
                                if g("rec_area") in self._area_keys else 0]
         self._rec_area = combo(area_labels, area_now)
         self._rec_area.setToolTip(
             "“Monitor in use” records whichever screen the cursor is on when "
-            "you hit Record.")
+            "you hit Record. “Pick a window” brings the window you click to "
+            "the front and records its area.")
 
         self._fps_choices = [15, 24, 30, 60]
         self._rec_fps = combo([f"{f} fps" for f in self._fps_choices],
