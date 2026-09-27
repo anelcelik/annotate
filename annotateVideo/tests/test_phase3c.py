@@ -1,7 +1,7 @@
 """Phase 3, part 3 (5.5): editing marks after drawing, pressed keys, hints."""
-from PyQt6.QtCore import QEvent, QPointF, Qt
-from PyQt6.QtGui import QColor, QKeyEvent, QMouseEvent
-from PyQt6.QtWidgets import QPushButton
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent
+from PySide6.QtWidgets import QPushButton
 
 
 def make_canvas(A):
@@ -187,9 +187,9 @@ def test_hints_show_on_the_dock_and_can_be_switched_off(A, overlay, settings):
 
 
 def test_hints_are_parented_to_the_window_not_the_see_through_button(A, overlay, settings):
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QHelpEvent
-    from PyQt6.QtWidgets import QApplication, QToolTip
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QHelpEvent
+    from PySide6.QtWidgets import QApplication, QToolTip
     btn = overlay.toolbar._tool_btns["arrow"]
     ev = QHelpEvent(QEvent.Type.ToolTip, QPoint(5, 5), btn.mapToGlobal(QPoint(5, 5)))
     assert A.HintSwitch(settings).eventFilter(btn, ev)

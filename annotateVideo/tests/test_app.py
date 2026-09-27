@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QEvent, QPointF, Qt
-from PyQt6.QtGui import QKeyEvent
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QKeyEvent
 
 HERE = Path(__file__).resolve().parent.parent
 
@@ -240,7 +240,7 @@ def test_running_as_script_keeps_one_module(tmp_path):
     code = r'''
 import runpy, sys
 sys.argv = ["annotate.py", "--minimized"]
-from PyQt6 import QtWidgets as W
+from PySide6 import QtWidgets as W
 def fake_exec(self=None):
     m, a = sys.modules["__main__"], sys.modules.get("annotate")
     print("SAME" if a is m else "COPY", a._current_dlg_theme)
@@ -293,6 +293,35 @@ def test_build_filters_keep_what_the_app_needs():
     ]
     assert bf.keep_data(r"PyQt6\Qt6\translations\qt_de.qm") is False
     assert "PIL" in bf.LITE_EXCLUDES and "_ssl" in bf.LITE_EXCLUDES
+
+
+def test_build_filters_on_the_pyside6_layout():
+    import build_filters as bf
+    shipped = """
+    _internal/PySide6/opengl32sw.dll
+    _internal/PySide6/Qt6Core.dll
+    _internal/PySide6/Qt6Gui.dll
+    _internal/PySide6/Qt6Widgets.dll
+    _internal/PySide6/Qt6Pdf.dll
+    _internal/PySide6/Qt6Qml.dll
+    _internal/PySide6/pyside6.abi3.dll
+    _internal/shiboken6/shiboken6.abi3.dll
+    _internal/PySide6/plugins/platforms/qwindows.dll
+    _internal/PySide6/plugins/platforms/qminimal.dll
+    _internal/PySide6/plugins/imageformats/qico.dll
+    _internal/PySide6/plugins/imageformats/qjpeg.dll
+    _internal/PySide6/translations/qtbase_de.qm
+    """.split()
+    kept = [p for p in shipped if bf.keep_binary(p) and bf.keep_data(p)]
+    assert kept == [
+        "_internal/PySide6/Qt6Core.dll",
+        "_internal/PySide6/Qt6Gui.dll",
+        "_internal/PySide6/Qt6Widgets.dll",
+        "_internal/PySide6/pyside6.abi3.dll",
+        "_internal/shiboken6/shiboken6.abi3.dll",
+        "_internal/PySide6/plugins/platforms/qwindows.dll",
+        "_internal/PySide6/plugins/imageformats/qico.dll",
+    ]
 
 
 def test_idle_overlay_lets_go_of_its_window_and_comes_back(overlay):

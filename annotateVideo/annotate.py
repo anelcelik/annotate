@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Screen Annotation Tool  (PyQt6)
+Screen Annotation Tool  (PySide6)
 ================================
 Fullscreen transparent overlay — draw on your screen like a whiteboard.
 
@@ -8,7 +8,7 @@ Tools: Select, Pen, Line, Arrow, Rectangle, Circle, Ruler,
        Text, Callout, Steps, Highlight, Eraser,
        Blur, Pixelate, Redact, Laser Pointer
 
-Install:  pip install PyQt6
+Install:  pip install PySide6-Essentials
 Run:      python annotate.py
 Exit:     Esc or ✕ in toolbar
 
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 import hotkeys
 import ocr_win
 import platform_win
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QToolTip,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
@@ -44,12 +44,12 @@ from PyQt6.QtWidgets import (
     QDialog, QCheckBox, QTextEdit, QComboBox, QScrollArea, QProgressBar,
     QLineEdit, QTabWidget,
 )
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     Qt, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
     QKeyCombination, QMargins, QSizeF,
-    pyqtSignal, pyqtSlot,
+    Signal, Slot,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
     QPolygonF, QPainterPath, QPainterPathStroker, QFontMetrics, QFontMetricsF,
     QPixmap, QCursor, QIcon,
@@ -129,7 +129,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.6.0"
+VERSION = "5.7.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -1310,7 +1310,7 @@ def marks_to_json(shapes) -> dict:
     """Every mark with its attributes. Blur and pixelate keep the picture of
     what was underneath (PNG), so they still hide it when reopened."""
     import base64
-    from PyQt6.QtCore import QBuffer, QIODevice
+    from PySide6.QtCore import QBuffer, QIODevice
 
     def enc(v):
         if isinstance(v, QPointF):
@@ -1383,9 +1383,9 @@ BOX_SHAPES = ("RectShape", "CircleShape", "HighlightShape", "RedactShape",
 
 class Canvas(QWidget):
     # Anything that changes which marks exist: add, undo, redo, clear, delete.
-    shapes_changed = pyqtSignal()
+    shapes_changed = Signal()
     # The Select tool's selection changed (the dock shows its style).
-    selection_changed = pyqtSignal()
+    selection_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1657,7 +1657,7 @@ class Canvas(QWidget):
                 self.stop_zoom()
             return
         if e.button() != MB.LeftButton: return
-        pos = QPointF(e.pos())
+        pos = e.position()
         # A click anywhere finishes the text being typed (the canvas never
         # takes focus, so the editor would not notice on its own).
         was_editing = self._editor is not None
@@ -1749,7 +1749,7 @@ class Canvas(QWidget):
         return preview.bounding_rect().adjusted(-m, -m, m, m)
 
     def mouseMoveEvent(self, e):
-        pos = QPointF(e.pos())
+        pos = e.position()
 
         if self.zoom_pix is not None:           # the magnifier follows the cursor
             old = self.loupe_rect()
@@ -1817,7 +1817,7 @@ class Canvas(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() != MB.LeftButton or not self._drawing: return
         self._drawing = False
-        pos = QPointF(e.pos()); self._cur = pos
+        pos = e.position(); self._cur = pos
 
         if self.tool == "laser":
             return  # laser never commits shapes
@@ -2735,7 +2735,7 @@ def screenshot_dir(settings=None) -> str:
     chosen = (settings.get("shot_dir") if settings is not None else "") or ""
     if chosen and os.path.isdir(chosen):
         return chosen
-    from PyQt6.QtCore import QStandardPaths
+    from PySide6.QtCore import QStandardPaths
     pictures = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.PicturesLocation) or os.path.expanduser("~")
     folder = os.path.join(pictures, "Screenshots")
@@ -3364,7 +3364,7 @@ class RegionSelector(QWidget):
     recorder (and its capture exclusions) exist.
     """
 
-    chosen = pyqtSignal(object)          # QRect in global coords, or None
+    chosen = Signal(object)          # QRect in global coords, or None
 
     RECORD_HINT = "Drag the area you want to record   ·   Esc to cancel"
     SHOT_HINT = ("Drag an area to capture   ·   click for this whole screen"
@@ -3734,7 +3734,7 @@ class RecordingBar(QWidget):
 
     def _delete(self):
         """To the Recycle Bin, not gone: one misclick used to cost the take."""
-        from PyQt6.QtCore import QFile
+        from PySide6.QtCore import QFile
         ok, _where = QFile.moveToTrash(self._path)
         if not ok and os.path.exists(self._path):
             if not ConfirmDialog(
@@ -4028,8 +4028,8 @@ class RecordingController(QObject):
     never touch the recorder, the HUD or ffmpeg directly.
     """
 
-    state_changed = pyqtSignal(bool)     # True while a recording is running
-    ticked        = pyqtSignal(float)    # elapsed seconds
+    state_changed = Signal(bool)     # True while a recording is running
+    ticked        = Signal(float)    # elapsed seconds
 
     def __init__(self, overlay: "AnnotationOverlay", settings: SettingsManager):
         super().__init__(overlay)
@@ -4081,7 +4081,7 @@ class RecordingController(QObject):
         )
 
     # ── start / stop ──────────────────────────────────────────────────────────
-    @pyqtSlot()
+    @Slot()
     def toggle(self):
         if self._countdown is not None:     # pressed again while counting in
             self._countdown.cancel()
@@ -4236,7 +4236,7 @@ class RecordingController(QObject):
             "on screen and out of the frame.",
             self.overlay).exec()
 
-    @pyqtSlot()
+    @Slot()
     def stop(self):
         if not self.active:
             return
@@ -4504,7 +4504,7 @@ class ShortcutCapture(QLineEdit):
         Qt.Key.Key_unknown,
     }
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, combo: str, parent=None):
         super().__init__(parent)
@@ -4642,8 +4642,8 @@ class InlineTextEditor(QTextEdit):
     opened in the middle of monitor 1, wherever you had clicked.
     """
 
-    committed = pyqtSignal(str)
-    cancelled = pyqtSignal()
+    committed = Signal(str)
+    cancelled = Signal()
 
     PAD_X, PAD_Y, BORDER = 8, 4, 1
 
@@ -4826,7 +4826,7 @@ class HelpDialog(QDialog):
         outer.addWidget(_dlg_sep())
 
         # Scroll area
-        from PyQt6.QtWidgets import QScrollArea
+        from PySide6.QtWidgets import QScrollArea
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -5093,6 +5093,13 @@ class SettingsDialog(QDialog):
             btn.clicked.connect(slot)
             btn_row.addWidget(btn)
         lo.addLayout(btn_row)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Heights guessed before the first show (fonts, word-wrapped notes)
+        # come out a few pixels short and clipped the last row of a tab; fit
+        # once more now that everything has been laid out for real.
+        QTimer.singleShot(0, self.adjustSize)
 
     def _fit_tab(self, tabs: QTabWidget, index: int):
         tabs.updateGeometry()
@@ -5650,9 +5657,9 @@ def _preload_ocr_reader():
 class OcrThread(QThread):
     """Reads the snip off the GUI thread: Windows' own OCR where it is
     available (ocr_win.py), EasyOCR otherwise (Linux, from source)."""
-    status   = pyqtSignal(str)   # progress updates for the dialog label
-    finished = pyqtSignal(str)
-    error    = pyqtSignal(str)
+    status   = Signal(str)   # progress updates for the dialog label
+    finished = Signal(str)
+    error    = Signal(str)
 
     def __init__(self, image: QImage, language: str = ""):
         super().__init__()
@@ -5675,7 +5682,7 @@ class OcrThread(QThread):
         import numpy as np
         img = self._image.convertToFormat(QImage.Format.Format_RGB888)
         w, h, stride = img.width(), img.height(), img.bytesPerLine()
-        raw = np.frombuffer(img.constBits().asstring(img.sizeInBytes()),
+        raw = np.frombuffer(bytes(img.constBits()),
                             dtype=np.uint8).reshape(h, stride)
         rgb = raw[:, :w * 3].reshape(h, w, 3)
         if _ocr_reader is None:
@@ -6216,7 +6223,7 @@ class Toolbar(QWidget):
         self.move(margin, margin)
 
     def paintEvent(self, _):
-        from PyQt6.QtGui import QPainterPath
+        from PySide6.QtGui import QPainterPath
         p = QPainter(self)
         p.setRenderHint(RHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
@@ -6232,11 +6239,11 @@ class Toolbar(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == MB.LeftButton:
-            self._drag_pos = e.pos()
+            self._drag_pos = e.position().toPoint()
 
     def mouseMoveEvent(self, e):
         if e.buttons() & MB.LeftButton and self._drag_pos:
-            self.move(self.mapToParent(e.pos() - self._drag_pos))
+            self.move(self.mapToParent(e.position().toPoint() - self._drag_pos))
 
     def mouseReleaseEvent(self, e):
         self._drag_pos = None
@@ -6399,7 +6406,7 @@ class AnnotationOverlay(QWidget):
             self.canvas.update()
             self.sync_window()
 
-    @pyqtSlot()
+    @Slot()
     def toggle_passthrough(self):
         if not self._wanted:              # put away entirely: bring it back armed
             self._wanted = True
@@ -6413,7 +6420,7 @@ class AnnotationOverlay(QWidget):
     # ── Display configuration helpers ──────────────────────────────────────────
     def _fit_to_screens(self):
         """Resize the overlay to cover every connected monitor."""
-        from PyQt6.QtCore import QRect
+        from PySide6.QtCore import QRect
         rect = QRect()
         for scr in QApplication.screens():
             rect = rect.united(scr.geometry())
@@ -6466,7 +6473,7 @@ class AnnotationOverlay(QWidget):
             p.fillRect(self.rect(), QColor(0, 0, 0, 1))
         p.end()
 
-    @pyqtSlot()
+    @Slot()
     def activate_ocr(self):
         if not ocr_available():
             return
@@ -6477,12 +6484,12 @@ class AnnotationOverlay(QWidget):
         self.sync_window()
         self.toolbar._activate("ocr")
 
-    @pyqtSlot()
+    @Slot()
     def toggle_recording(self):
         self.recording.toggle()
 
     # ── marks to a file and back ──────────────────────────────────────────────
-    @pyqtSlot()
+    @Slot()
     def save_marks(self):
         shapes = list(self.canvas._shapes)
         if not shapes:
@@ -6507,7 +6514,7 @@ class AnnotationOverlay(QWidget):
         self.toast.show_message(f"Saved {len(shapes)} marks — Ctrl+O opens them again",
                                 anchor=self.toolbar)
 
-    @pyqtSlot()
+    @Slot()
     def open_marks(self):
         folder = self.settings.get("marks_dir") or str(Path.home() / "Documents")
         path, _ = QFileDialog.getOpenFileName(self, "Open annotations", folder, MARKS_FILTER)
@@ -6560,7 +6567,7 @@ class AnnotationOverlay(QWidget):
             if user32 and self._hold_prev:
                 user32.SetForegroundWindow(self._hold_prev)
 
-    @pyqtSlot()
+    @Slot()
     def take_screenshot(self):
         """Pick an area (or click for a whole screen), then Copy / Save."""
         if getattr(self, "_selector", None) is not None:
@@ -6582,7 +6589,7 @@ class AnnotationOverlay(QWidget):
         pixmap = self.canvas.capture_annotated(rect, marks=self._wanted)
         self._shot_bar = ScreenshotBar(pixmap, self)
 
-    @pyqtSlot()
+    @Slot()
     def toggle(self):
         self._wanted = not self._wanted
         self.toolbar.set_chrome_visible(self._wanted)
@@ -6594,7 +6601,7 @@ class AnnotationOverlay(QWidget):
             self.toolbar.raise_chrome()
 
     # ── Whiteboard / presenter effects ─────────────────────────────────────────
-    @pyqtSlot()
+    @Slot()
     def cycle_board(self):
         """Open the board (white or dark, as chosen in Settings) on the screen
         under the cursor — or close it. One key, one click."""
@@ -6624,7 +6631,7 @@ class AnnotationOverlay(QWidget):
         self.toolbar.move_back()
         self.sync_window()
 
-    @pyqtSlot()
+    @Slot()
     def toggle_zoom(self):
         """Magnify the screen under the cursor (a still, marks included);
         again, or Esc, to leave."""
@@ -6667,7 +6674,7 @@ class AnnotationOverlay(QWidget):
                 f"Cleared {n} mark{'s' if n != 1 else ''}", "Undo",
                 self.canvas.undo_clear, anchor=self.toolbar)
 
-    @pyqtSlot()
+    @Slot()
     def request_exit(self):
         """Exit, but not by accident: a running recording is finished and saved
         first, and marks on screen (which are not saved anywhere) are asked
@@ -6772,7 +6779,7 @@ def _start_hotkeys(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
                    settings: SettingsManager):
     """Bind every configured shortcut. Callbacks are queued onto the GUI
     thread — pynput calls them from its own thread."""
-    from PyQt6.QtCore import QMetaObject, Qt as _Qt
+    from PySide6.QtCore import QMetaObject, Qt as _Qt
 
     def invoker(slot: str):
         return lambda: QMetaObject.invokeMethod(

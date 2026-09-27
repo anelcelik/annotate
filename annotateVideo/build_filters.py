@@ -55,7 +55,9 @@ def keep_binary(dest: str) -> bool:
 
 def keep_data(dest: str) -> bool:
     # Qt's own translations (6.4 MB): the app never installs a QTranslator.
-    return '/Qt6/translations/' not in '/' + _norm(dest)
+    # (PyQt6 kept them in PyQt6/Qt6/translations, PySide6 in PySide6/translations.)
+    path = '/' + _norm(dest)
+    return '/Qt6/translations/' not in path and '/PySide6/translations/' not in path
 
 
 def filter_toc(toc, keep):

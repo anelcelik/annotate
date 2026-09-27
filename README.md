@@ -111,4 +111,6 @@ submission using that unsigned `.msix`.
 
 MIT — see [`archive/before-recording/installer/License.rtf`](archive/before-recording/installer/License.rtf).
 
+Built on Qt for Python (PySide6, LGPLv3); the full list of open-source parts and their licenses is in [`annotateVideo/THIRD_PARTY_NOTICES.txt`](annotateVideo/THIRD_PARTY_NOTICES.txt).
+
 Copyright © 2025–2026 Anel Celik / Casultra · [celikovic.xyz](https://celikovic.xyz)

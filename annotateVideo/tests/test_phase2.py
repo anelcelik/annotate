@@ -4,9 +4,9 @@ first-run tips and the live dock size."""
 import sys
 
 import pytest
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPixmap
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication
 
 import ocr_win
 
@@ -280,7 +280,7 @@ def test_click_captures_the_whole_screen(A, qapp):
 
 
 def test_screenshots_default_to_pictures_screenshots(A, settings, tmp_path, monkeypatch):
-    from PyQt6.QtCore import QStandardPaths
+    from PySide6.QtCore import QStandardPaths
     monkeypatch.setattr(QStandardPaths, "writableLocation",
                         staticmethod(lambda *_: str(tmp_path / "Pictures")))
     assert A.screenshot_dir(settings) == str(tmp_path / "Pictures" / "Screenshots")

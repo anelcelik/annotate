@@ -19,8 +19,8 @@ X11 still uses pynput. Wayland has no global shortcuts at all.
 import os
 import platform
 
-from PyQt6.QtCore import QAbstractNativeEventFilter, QTimer
-from PyQt6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QAbstractNativeEventFilter, QTimer
+from PySide6.QtWidgets import QApplication, QWidget
 
 IS_WIN = platform.system() == "Windows"
 

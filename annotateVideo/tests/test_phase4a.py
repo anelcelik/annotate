@@ -2,9 +2,9 @@
 the recording countdown."""
 import json
 
-from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QImage, QKeyEvent, QPainter, QPixmap
-from PyQt6.QtTest import QTest
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QPainter, QPixmap
+from PySide6.QtTest import QTest
 
 from test_phase3c import drag, make_canvas, mouse
 
@@ -104,7 +104,7 @@ def test_g_places_a_solid_stamp(A, overlay):
 # ── dock ──────────────────────────────────────────────────────────────────────
 
 def test_dock_style_choices_set_new_marks_and_edit_selected(A, overlay):
-    from PyQt6.QtWidgets import QPushButton
+    from PySide6.QtWidgets import QPushButton
     dock, cv = overlay.toolbar, overlay.canvas
 
     def press(text):

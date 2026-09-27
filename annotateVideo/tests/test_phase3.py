@@ -2,8 +2,8 @@
 presenter effects (spotlight, halo, click ripples)."""
 import time
 
-from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QImage, QKeyEvent, QPainter
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QPainter
 
 
 def make_canvas(A):
@@ -118,7 +118,7 @@ def test_w_opens_and_closes_the_board_in_the_chosen_style(A, overlay):
 
 
 def test_the_dock_comes_onto_the_board_and_goes_back(A, overlay):
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
     dock = overlay.toolbar
     dock._collapse()                                # tucked away as a puck
     before = dock._anchor
@@ -171,7 +171,7 @@ def test_effects_repaint_only_near_the_cursor(A, monkeypatch):
     areas = []
     monkeypatch.setattr(cv, "update", lambda *a: areas.append(a[0] if a else None))
     monkeypatch.setattr(A.QCursor, "pos", staticmethod(lambda: cv.mapToGlobal(
-        __import__("PyQt6.QtCore", fromlist=["QPoint"]).QPoint(100, 100))))
+        __import__("PySide6.QtCore", fromlist=["QPoint"]).QPoint(100, 100))))
     cv._fx_tick()
     assert areas and all(a is not None and a.width() < 100 for a in areas)
 

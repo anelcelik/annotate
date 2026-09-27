@@ -4,8 +4,8 @@ import subprocess
 import sys
 
 import pytest
-from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QImage, QKeyEvent, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QPainter, QPixmap
 
 import video_recorder as VR
 
@@ -150,8 +150,8 @@ def test_magnifier_paints_the_magnified_still_over_the_marks(A):
 
 def test_wheel_zooms_within_limits(A):
     cv = zoomed_canvas(A)
-    from PyQt6.QtGui import QWheelEvent
-    from PyQt6.QtCore import QPoint
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtCore import QPoint
 
     def wheel(dy):
         cv.wheelEvent(QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0),

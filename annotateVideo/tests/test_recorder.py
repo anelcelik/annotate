@@ -2,8 +2,8 @@
 import sys
 
 import pytest
-from PyQt6.QtCore import QPointF, QRect
-from PyQt6.QtGui import QColor, QPixmap
+from PySide6.QtCore import QPointF, QRect
+from PySide6.QtGui import QColor, QPixmap
 
 import video_recorder as VR
 

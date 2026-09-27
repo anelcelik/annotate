@@ -77,8 +77,8 @@ def prepare(image):
     """The QImage Windows OCR reads best: 32-bit BGRA, and small text scaled
     up — the engine wants letters roughly 20 px tall or more, and a snip of
     ordinary UI text at 100 % scaling is often half that."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QImage
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
     img = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     h = img.height()
     factor = 3 if h < 60 else 2 if h < 200 else 1
@@ -122,11 +122,11 @@ def recognize(image, language_tag: str = "") -> str:
     img = prepare(image)
     limit = int(OcrEngine.max_image_dimension)
     if img.width() > limit or img.height() > limit:
-        from PyQt6.QtCore import Qt
+        from PySide6.QtCore import Qt
         img = img.scaled(min(img.width(), limit), min(img.height(), limit),
                          Qt.AspectRatioMode.KeepAspectRatio,
                          Qt.TransformationMode.SmoothTransformation)
-    data = img.constBits().asstring(img.sizeInBytes())
+    data = bytes(img.constBits())
     try:
         # pywinrt takes any buffer-protocol object where WinRT wants an IBuffer.
         bitmap = SoftwareBitmap.create_copy_from_buffer(

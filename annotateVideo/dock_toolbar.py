@@ -44,12 +44,12 @@ WHAT CHANGED VS THE OLD PANEL
 * Flat: zero corner radius, 2px rules, ink on a light ground.
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QSlider,
     QFrame, QApplication, QColorDialog, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QRect, QRectF, QPointF, QPoint, QSize
-from PyQt6.QtGui import (
+from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QPoint, QSize
+from PySide6.QtGui import (
     QPainter, QPen, QColor, QBrush, QFont, QPainterPath, QPolygonF, QCursor,
 )
 
@@ -792,14 +792,14 @@ class CollapsedIndicator(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = e.pos()
+            self._drag_pos = e.position().toPoint()
             self._dragged  = False
 
     def mouseMoveEvent(self, e):
         if self._drag_pos and e.buttons() & Qt.MouseButton.LeftButton:
-            if (e.pos() - self._drag_pos).manhattanLength() > 3:
+            if (e.position().toPoint() - self._drag_pos).manhattanLength() > 3:
                 self._dragged = True
-                self.move(self.mapToParent(e.pos() - self._drag_pos))
+                self.move(self.mapToParent(e.position().toPoint() - self._drag_pos))
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -1036,7 +1036,7 @@ class Toolbar(QWidget):
 
     def _presenter_menu(self, button):
         """Spotlight, halo and ripples — on/off, shown with their state."""
-        from PyQt6.QtWidgets import QMenu
+        from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu{{background:{GROUND};color:{INK};border:2px solid {INK};"
@@ -1613,15 +1613,15 @@ class Toolbar(QWidget):
     # ── drag: only from the grip ──────────────────────────────────────────────
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            local = self._grip.mapFrom(self, e.pos())
+            local = self._grip.mapFrom(self, e.position().toPoint())
             if self._grip.rect().contains(local):
-                self._drag_pos = e.pos()
+                self._drag_pos = e.position().toPoint()
             else:
                 self._drag_pos = None
 
     def mouseMoveEvent(self, e):
         if e.buttons() & Qt.MouseButton.LeftButton and self._drag_pos:
-            self.move(self.mapToParent(e.pos() - self._drag_pos))
+            self.move(self.mapToParent(e.position().toPoint() - self._drag_pos))
 
     def mouseReleaseEvent(self, e):
         if self._drag_pos is not None:
@@ -1631,7 +1631,7 @@ class Toolbar(QWidget):
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            local = self._grip.mapFrom(self, e.pos())
+            local = self._grip.mapFrom(self, e.position().toPoint())
             if self._grip.rect().contains(local):
                 self._collapse()
 
