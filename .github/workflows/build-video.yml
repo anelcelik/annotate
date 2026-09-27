@@ -109,7 +109,15 @@ jobs:
         working-directory: annotateVideo
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests -v -rs
+        run: |
+          # TEMP diagnostic: which new tests make python exit 1 afterwards
+          python -m pytest tests/test_v62.py -q -k "copy"; Write-Host "DIAG copy: $LASTEXITCODE"
+          python -m pytest tests/test_v62.py -q -k "hides or black"; Write-Host "DIAG redact: $LASTEXITCODE"
+          python -m pytest tests/test_v62.py -q -k "guide"; Write-Host "DIAG guide: $LASTEXITCODE"
+          python -m pytest tests/test_v62.py -q -k "not copy and not hides and not black and not guide"; Write-Host "DIAG finder: $LASTEXITCODE"
+          python -m pytest tests -v -rs
+          Write-Host "DIAG full: $LASTEXITCODE"
+          exit $LASTEXITCODE
 
   build:
     needs: ffmpeg

@@ -102,3 +102,33 @@ def test_copy_puts_the_file_on_the_clipboard(A, tmp_path):
     A.copy_file_to_clipboard(str(f))
     urls = QApplication.clipboard().mimeData().urls()
     assert urls == [QUrl.fromLocalFile(str(f))]
+
+
+# ── the Guide ─────────────────────────────────────────────────────────────────
+
+def test_guide_covers_every_topic_and_searches(A, settings):
+    g = A.HelpDialog(settings)
+    for topic in ("Start", "Draw", "Edit", "Present", "Private", "Capture",
+                  "Record", "Pen", "Shortcuts", "Settings", "FAQ"):
+        assert topic in g._sections
+    assert len(g.visible_titles()) > 50
+    g.search.setText("iban")
+    assert g.visible_titles() == ["Find private info  B"]
+    g.search.setText("no sound")
+    assert g.visible_titles() == ["My recording has no sound"]
+    g.search.setText("zzzz")
+    assert g.visible_titles() == [] and not g.nothing.isHidden()
+    g.search.clear()
+    assert len(g.visible_titles()) > 50
+
+
+def test_f1_and_settings_open_the_guide(A, overlay, monkeypatch):
+    overlay.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_F1,
+                                    Qt.KeyboardModifier.NoModifier))
+    assert isinstance(overlay._guide, A.HelpDialog) and overlay._guide.isVisible()
+    overlay._guide.close()
+    opened = []
+    monkeypatch.setattr(A.HelpDialog, "exec", lambda self: opened.append(self))
+    dlg = A.SettingsDialog(overlay.settings, overlay._hotkeys, overlay)
+    dlg.open_guide()
+    assert len(opened) == 1
