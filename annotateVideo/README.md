@@ -76,22 +76,23 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 | Tool | Key | Description |
 |---|---|---|
-| Snip & Read | `J` | Drag a region → extract text + translate |
+| Snip & Read | `J` | Drag a region → extract text + translate (full build only — see below) |
 
 ### Recording
 
 | Control | Key | Description |
 |---|---|---|
-| Record / Stop | `Ctrl+Shift+R` | Records the screen to MP4 with the annotations in it |
+| Record / Stop | `Ctrl+Alt+R` | Records the screen to MP4 with the annotations in it |
 
 ---
 
 ## Recording
 
-Press **Record** on the dock (or `Ctrl+Shift+R`, or the tray menu) — its own
-Record cell turns red and counts up; press it again (or `Ctrl+Shift+R`, or the
+Press **Record** on the dock (or `Ctrl+Alt+R`, or the tray menu) — its own
+Record cell turns red and counts up; press it again (or `Ctrl+Alt+R`, or the
 tray menu) to stop. The file is already on disk — a panel offers **Play**,
-**Show in folder**, **Save as…** and **Delete**.
+**Show in folder**, **Save as…** and **Delete** (which moves the file to the
+Recycle Bin, so a misclick can be undone).
 
 Files go to `Videos/ScreenAnnotatorPro/annotation_YYYYMMDD_HHMMSS.mp4`
 (H.264 + AAC), changeable in Settings.
@@ -148,7 +149,7 @@ app moves its own chrome out of the frame instead, automatically:
   and stays fully usable. Nothing is lost.
 - **Recording everything** — there is no outside, so the dock hides for the
   duration and comes back when you stop. Tool shortcuts still work; stop with
-  `Ctrl+Shift+R` or the tray icon.
+  `Ctrl+Alt+R` or the tray icon.
 
 The recorder also skips its own compositing wherever the overlay wasn't
 actually excluded, since the grab already contains it and drawing the shapes
@@ -165,7 +166,7 @@ again would double them up.
 | Show the cursor | on / off | A drawn pointer on Windows; the real one on wlroots |
 | Record the microphone | on / off | Pause is disabled while the mic is live — the mic has no pause |
 | Save to | any folder | Defaults to `Videos/ScreenAnnotatorPro`; exports land beside the recording |
-| Shortcut | any combo | `Ctrl+Shift+R` by default |
+| Shortcut | any combo | `Ctrl+Alt+R` by default |
 
 ### ffmpeg
 
@@ -203,7 +204,12 @@ plays back at real speed.
 
 ## OCR & Translation
 
-Press `J` (or `Ctrl+T` by default, configurable in Settings) to activate Snip & Read, then drag a rectangle over any text on screen. A resizable popup appears with:
+> **Not in the Store build.** The Microsoft Store package is the lite build,
+> which leaves out EasyOCR and Torch; the app hides Snip & Read there rather
+> than offering a tool that can't run. It's in the full `.exe` and when run
+> from source.
+
+Press `J` (or `Ctrl+Alt+T` by default, configurable in Settings) to activate Snip & Read, then drag a rectangle over any text on screen. A resizable popup appears with:
 
 - **Recognized text** — extracted via [EasyOCR](https://github.com/JaidedAI/EasyOCR), runs fully offline with no API key
 - **Translate to** — pick any of 50+ languages and press **Go** to translate via Google Translate
@@ -223,12 +229,22 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 |---|---|
 | `Ctrl + Shift + A` | Draw ⇄ click-through (customisable in Settings) |
 | `Ctrl + Shift + H` | Show / hide the overlay entirely (customisable) |
-| `Ctrl + T` | Activate Snip & Read / OCR (customisable in Settings) |
-| `Ctrl + Shift + R` | Start / stop recording (customisable in Settings) |
-| `Ctrl + Z` | Undo last shape |
+| `Ctrl + Alt + T` | Activate Snip & Read / OCR (customisable in Settings) |
+| `Ctrl + Alt + R` | Start / stop recording (customisable in Settings) |
+| `Ctrl + Z` | Undo — drawing, moving, deleting and Clear all |
 | `Ctrl + Y` | Redo (restore undone shape) |
-| `C` | Clear all shapes |
+| `C` | Clear all shapes (`Ctrl + Z` brings them back) |
 | `Esc` | Drop into click-through — marks stay up, the dock stays reachable |
+
+Up to 5.0 the defaults were `Ctrl+T` (Snip & Read) and `Ctrl+Shift+R`
+(record) — new tab and hard reload in every browser, so pressing either one
+in a browser did both things at once. 5.1 moves anyone still on those two defaults
+to the new ones once. On Windows each shortcut is now registered with
+`RegisterHotKey`, so it belongs to this app alone while it runs, and if
+another program already owns a combination the app says so (a tray message
+at launch, a note in Settings) instead of the shortcut silently doing
+nothing. A combination has to include Ctrl, Alt or Win (function keys may
+stand alone), so a shortcut can never swallow ordinary typing.
 | `Delete` | Remove selected shape (Select tool) |
 | **Hold Shift** | 45° snap for lines / perfect square / perfect circle |
 
@@ -258,17 +274,24 @@ A single horizontal dock sits at the bottom of the screen. The top row is every 
 
 ## Asking for a Store review
 
-After **eight hours of actual use** — time the overlay is on screen or a
-recording is running, not time it sits in the tray — the app asks once whether
-you would leave a review, and opens the Store's review dialog directly
-(`ms-windows-store://review/?ProductId=…`).
+Only right after the app has just done its job — a screenshot copied or
+saved, a recording saved (and its panel closed without deleting it), an
+export finished — and only once that has happened at least three times, on
+at least two different days. Never on a timer, so never in the middle of a
+presentation, never while recording, never over another dialog.
 
-It never interrupts: not while drawing is armed, not while recording, not over
-another dialog. **Maybe later** buys a fortnight of silence, **Don't ask
-again** is permanent, and Esc counts as "later" rather than "never", so
-dismissing it is never punishing. Nothing is gated behind reviewing, and the
-prompt deliberately does not screen for happy users first — a rating you got by
-only asking people who already said they liked it is not worth having.
+**Write a review** opens the Store's own rating dialog on top of the app
+(`StoreContext.RequestRateAndReviewAppAsync`) where the installed package
+allows it, and the Store's review page
+(`ms-windows-store://review/?ProductId=…`) otherwise. **Maybe later** buys a
+fortnight of silence, **Don't ask again** is permanent, and Esc counts as
+"later" rather than "never", so dismissing it is never punishing. Nothing is
+gated behind reviewing, and the prompt deliberately does not screen for happy
+users first — a rating you got by only asking people who already said they
+liked it is not worth having.
+
+Up to 5.0 it waited for eight hours of accumulated use, which almost nobody
+ever reached.
 
 Windows only; there is no Store to review on anywhere else.
 
@@ -280,9 +303,9 @@ Open via the **Settings** button in the toolbar.
 |---|---|
 | Draw / click-through | Global hotkey to switch modes (default `Ctrl+Shift+A`) |
 | Show / hide the overlay | Global hotkey to put it away entirely (default `Ctrl+Shift+H`) |
-| OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+T`) |
+| OCR Shortcut | Global hotkey to activate Snip & Read (default `Ctrl+Alt+T`; full build only) |
 | Recording | Area, frame rate, quality, cursor, microphone, output folder, shortcut |
-| Start on boot | Adds to Windows startup registry; app launches hidden in the tray |
+| Start with Windows | App launches hidden in the tray at sign-in. The Store package uses a manifest startup task (the only kind a package can have — its Run-key writes are invisible to Windows); the portable .exe uses the Run key. Also switchable in Windows Settings → Apps → Startup |
 | Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies next launch |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
 
@@ -296,15 +319,18 @@ Settings are saved to:
 
 ### Test builds
 
-CI publishes three artifacts per run, under Actions → *Build single-file
-Windows EXE (video)*:
+Every push and pull request builds and self-tests everything but keeps
+nothing (artifact storage has a quota). To get test builds, use **Actions →
+Build single-file Windows EXE (video) → Run workflow**; that run keeps them
+for five days:
 
 | Artifact | What it is | Install |
 |---|---|---|
 | `…Video-lite` | One ~95 MB .exe, everything but OCR | Run it. SmartScreen → More info → Run anyway |
 | `…Video-full` | Same plus Snip & Read (~334 MB) | As above, slower to start |
-| `…Video-msix` | A real installed package | Trust the bundled .cer, then install — see `INSTALL-MSIX.txt` |
-| `ScreenAnnotatorPro-StoreSubmission` | Unsigned MSIX for Partner Center | Not for installing — upload it to Partner Center for an actual Store submission |
+| `…Video-installers` | The `.msi` installer, the sideload `.msix` + `.cer` (see `INSTALL-MSIX.txt`) and the unsigned Store-submission `.msix` | MSI: double-click. MSIX: trust the .cer first |
+
+A `vX.Y.Z` tag puts all of it on the GitHub Release instead.
 
 The MSIX now carries the **same package identity as the Store app**
 (`Casultra.ScreenAnnotatorPro`) — recording is a feature of the one app, not a
@@ -346,7 +372,7 @@ Open an issue with a clear description of the use case. What are you trying to d
 
 ### Known limitations
 
-- **Recording needs ffmpeg** — bundled in a shipped Windows build, otherwise installed once by the user
+- **Recording needs ffmpeg** — bundled in a shipped Windows build (a pinned, checksummed ffmpeg 9.0.2 "essentials" build from gyan.dev, GPLv3 — its license ships beside it, see Settings → Licenses), otherwise installed once by the user
 - **Wayland (Linux):** Global hotkeys are not available — use the tray icon to toggle the overlay
 - **Wayland recording:** wlroots compositors (Hyprland, Sway) record through `grim` at roughly 15 fps. GNOME and KDE Wayland need XWayland
 - **Only Windows can show the dock on screen without it landing in the video**, and even there it isn't guaranteed — everywhere else, and whenever it fails on Windows too, the dock is moved aside or hidden while recording instead

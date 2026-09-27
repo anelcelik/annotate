@@ -6,6 +6,9 @@
 # collect_all() handles every file the package ships so nothing is missed.
 # Wrapped in try/except so local builds without these packages still work.
 import os as _os
+import sys as _sys
+_sys.path.insert(0, SPECPATH)
+import build_filters as _bf   # shared, tested drop rules
 
 # Same switch as annotate_onefile.spec: ANNOTATE_LITE=1 leaves out EasyOCR and
 # Torch. Everything except Snip & Read still works, and the package drops from
@@ -44,6 +47,12 @@ for _cand in ('vendor/ffmpeg.exe', 'ffmpeg.exe', 'vendor/ffmpeg', 'ffmpeg'):
 else:
     print("spec: no ffmpeg binary found — recording will need one on PATH")
 
+# Open-source notices (Settings → Licenses). CI drops ffmpeg's own license and
+# build readme into vendor/ next to the binary; both travel with it.
+_LICENSES = [(_src, 'licenses') for _src in (
+    'THIRD_PARTY_NOTICES.txt', 'vendor/ffmpeg-LICENSE.txt',
+    'vendor/ffmpeg-README.txt') if _os.path.isfile(_src)]
+
 a = Analysis(
     ['annotate.py'],
     pathex=[],
@@ -52,10 +61,13 @@ a = Analysis(
         ('icons/tray.ico', 'icons'),
         ('icons/annotate.ico', 'icons'),
         ('installer/app.manifest', '.'),
-    ] + _FFMPEG + _easyocr_d + _dt_d + _torch_d + _tv_d,
+    ] + _FFMPEG + _LICENSES + _easyocr_d + _dt_d + _torch_d + _tv_d,
     hiddenimports=[
         'PyQt6.sip',
-        'video_recorder',
+        'video_recorder', 'hotkeys', 'platform_win',
+        'winrt.windows.foundation', 'winrt.windows.applicationmodel',
+        'winrt.windows.applicationmodel.activation',
+        'winrt.windows.services.store', 'winrt.runtime.interop',
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
     ] + ([] if LITE else [
@@ -101,33 +113,13 @@ a = Analysis(
         'tkinter', '_tkinter',
         'tkinter', '_tkinter',
         'curses', 'lib2to3', 'test',
-    ] + ([
-        'easyocr', 'torch', 'torchvision', 'scipy', 'skimage', 'cv2',
-        'numpy', 'deep_translator', 'matplotlib', 'pandas',
-    ] if LITE else []),
+    ] + (_bf.LITE_EXCLUDES if LITE else []),
     noarchive=False,
 )
 
-# ── Strip unused Qt6 native DLLs ─────────────────────────────────────────────
-_QT_DROP = {
-    'Qt6Network',     'Qt6Sql',           'Qt6Test',
-    'Qt6Xml',         'Qt6Bluetooth',     'Qt6DBus',
-    'Qt6Multimedia',  'Qt6MultimediaWidgets',
-    'Qt6Positioning', 'Qt6PrintSupport',
-    'Qt6Qml',         'Qt6Quick',         'Qt6QuickWidgets',
-    'Qt6RemoteObjects','Qt6Sensors',      'Qt6SerialPort',
-    'Qt6Svg',         'Qt6SvgWidgets',
-    'Qt6WebChannel',  'Qt6WebSockets',
-    'Qt6WebEngineCore','Qt6WebEngineWidgets',
-    'Qt63DCore',      'Qt63DRender',      'Qt63DAnimation',
-    'Qt63DExtras',    'Qt63DInput',       'Qt63DLogic',
-    'qsqlite',        'qsqlodbc',         'qsqlpsql',
-    'qtvirtualkeyboard',
-}
-a.binaries = TOC([
-    b for b in a.binaries
-    if not any(drop in b[0] for drop in _QT_DROP)
-])
+# ── Strip what the app never loads — see build_filters.py ──────────────────
+a.binaries = TOC(_bf.filter_toc(a.binaries, _bf.keep_binary))
+a.datas = TOC(_bf.filter_toc(a.datas, _bf.keep_data))
 
 pyz = PYZ(a.pure, a.zipped_data)
 

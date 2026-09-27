@@ -8,6 +8,16 @@ name: Build single-file Windows EXE (video)
 #   lite  — no OCR. Annotation + recording. Small, starts fast.
 #   full  — adds Snip & Read, which drags in EasyOCR and Torch. Several
 #           hundred MB and a slow first launch while it unpacks.
+#
+# What gets kept, and where:
+#   every push   builds and self-tests everything, keeps nothing. Artifact
+#                storage has a quota, and one run used to upload ~620 MB —
+#                two pushes in a month were enough to turn CI red.
+#   Run workflow (workflow_dispatch) → every build as an artifact, 5 days
+#   v* tag       → everything on the GitHub Release: the .exe (lite + full),
+#                  the .msi, the sideload .msix (+ .cer) and the unsigned
+#                  Store-submission .msix. Releases don't count against the
+#                  artifact quota, so a full quota can't block a release.
 
 on:
   push:
@@ -19,19 +29,59 @@ on:
     # silently build nothing if paths is set. main is annotateVideo/ almost
     # entirely now, so an occasional rebuild on an unrelated root-level
     # commit is a small price for a release tag that reliably fires.
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write   # needed to publish/attach to GitHub Releases on tag push
 
+env:
+  # Pinned, checksummed ffmpeg: a stable release rather than a nightly (the
+  # BtbN master build used before could change under us on any run), and at
+  # 100 MB about 39 MB smaller than it. Has everything the app uses — x264,
+  # AAC, VP9 + Opus, GIF palettes, DirectShow — and Media Foundation / AMF /
+  # NVENC for hardware encoding later. GPLv3; its LICENSE and README (build
+  # config + source link) ship next to the binary. To update: new URL, then
+  # the zip's SHA-256.
+  FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
+  FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+  # Python/WinRT: start-on-boot for the Store package, the Store's in-app
+  # rating dialog. Imported lazily; the app runs without them.
+  WINRT_PACKAGES: >-
+    winrt-runtime winrt-Windows.Foundation winrt-Windows.ApplicationModel
+    winrt-Windows.ApplicationModel.Activation winrt-Windows.Services.Store
+
 jobs:
+  # ── Tests on real Windows ───────────────────────────────────────────────────
+  # The same suite that runs anywhere, plus what only Windows can check:
+  # RegisterHotKey delivering WM_HOTKEY through PyQt6's native event filter,
+  # and the WinRT names platform_win.py calls.
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: pip install PyQt6 pynput pytest ${{ env.WINRT_PACKAGES }}
+      - name: Run the tests
+        working-directory: annotateVideo
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -v
+
   build:
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        variant: [lite, full]
+        # The full (Torch) build takes the longest and nobody needs it from an
+        # ordinary push: only for a release or a manual run.
+        variant: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["lite","full"]' || '["lite"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -45,24 +95,32 @@ jobs:
       # A single-file build has no PATH to fall back on, so the encoder has to
       # travel inside the exe. find_ffmpeg() picks it up from _MEIPASS at run
       # time.
-      - name: Fetch a static ffmpeg.exe
+      - name: Fetch the pinned ffmpeg.exe
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Write-Host "Downloading $env:FFMPEG_URL"
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
+          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:FFMPEG_SHA256) {
+            throw "ffmpeg.zip checksum mismatch: got $hash, expected $env:FFMPEG_SHA256"
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
           $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe |
                  Select-Object -First 1
           if (-not $exe) { throw "ffmpeg.exe not found in the downloaded archive" }
+          $root = $exe.Directory.Parent.FullName
           New-Item -ItemType Directory -Force -Path annotateVideo\vendor | Out-Null
           Copy-Item $exe.FullName annotateVideo\vendor\ffmpeg.exe
+          Copy-Item (Join-Path $root 'LICENSE') annotateVideo\vendor\ffmpeg-LICENSE.txt
+          Copy-Item (Join-Path $root 'README.txt') annotateVideo\vendor\ffmpeg-README.txt
           "{0:N0} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
           & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       # ── Python dependencies ─────────────────────────────────────────────────
+      # No Pillow here: only the OCR path uses it, and the lite build must not
+      # carry it (create_icons.py draws with Qt).
       - name: Install core dependencies
-        run: pip install PyQt6 Pillow pynput pyinstaller
+        run: pip install PyQt6 pynput pyinstaller ${{ env.WINRT_PACKAGES }}
 
       - name: Install OCR stack (full build only)
         if: matrix.variant == 'full'
@@ -88,6 +146,21 @@ jobs:
           Get-ChildItem dist\*.exe | ForEach-Object {
             "{0}  —  {1:N0} MB" -f $_.Name, ($_.Length / 1MB)
           }
+
+      # The spec strips everything it believes unused (build_filters.py). Run
+      # the result: a module or DLL it dropped by mistake fails here.
+      - name: Self-test the executable
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          $exe = Get-ChildItem dist -Recurse -Filter *.exe |
+                 Where-Object { $_.Name -like 'ScreenAnnotatorPro*' } |
+                 Select-Object -First 1
+          $dir = New-Item -ItemType Directory -Force -Path selftest
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' `
+                 -WorkingDirectory $dir -Wait -PassThru
+          Get-Content (Join-Path $dir 'self-test.log') -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "self-test failed (exit $($p.ExitCode))" }
 
       - name: Write the read-me that ships beside it
         shell: pwsh
@@ -118,19 +191,21 @@ jobs:
             the .exe (and those two folders if you want them gone).
 
           RECORDING
-            Ctrl+Shift+R, the Record button on the dock, or the tray icon.
+            Ctrl+Alt+R, the Record button on the dock, or the tray icon.
             Stop the same way. The dock and the HUD are excluded from the
             capture on Windows, so they never appear in the video.
           '@ | Set-Content dist\READ-ME-FIRST.txt -Encoding UTF8
 
       - name: Upload the executable
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true      # a full artifact quota must not fail the run
         uses: actions/upload-artifact@v4
         with:
           name: ScreenAnnotatorProVideo-${{ matrix.variant }}
           path: |
             annotateVideo/dist/*.exe
             annotateVideo/dist/READ-ME-FIRST.txt
-          retention-days: 30
+          retention-days: 5
 
       - name: Attach to the release on a tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -138,10 +213,11 @@ jobs:
         with:
           files: annotateVideo/dist/*.exe
 
-  # ── MSIX ────────────────────────────────────────────────────────────────────
-  # A proper installed package: Start-menu entry, its own identity, clean
-  # uninstall. Deliberately a different identity from the Store app, so it
-  # installs *alongside* it rather than replacing the one you actually use.
+  # ── MSIX + MSI ──────────────────────────────────────────────────────────────
+  # Both installers come from the one folder build. The MSIX is a proper
+  # installed package with the same identity as the Store app, so its unsigned
+  # copy is what goes to Partner Center; the MSI is the classic installer for
+  # people who want one (Program Files, Start menu, optional desktop shortcut).
   msix:
     runs-on: windows-latest
     timeout-minutes: 60
@@ -154,20 +230,29 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Fetch a static ffmpeg.exe
+      - name: Fetch the pinned ffmpeg.exe
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Write-Host "Downloading $env:FFMPEG_URL"
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
+          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:FFMPEG_SHA256) {
+            throw "ffmpeg.zip checksum mismatch: got $hash, expected $env:FFMPEG_SHA256"
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract
           $exe = Get-ChildItem ffmpeg_extract -Recurse -Filter ffmpeg.exe |
                  Select-Object -First 1
           if (-not $exe) { throw "ffmpeg.exe not found in the downloaded archive" }
+          $root = $exe.Directory.Parent.FullName
           New-Item -ItemType Directory -Force -Path annotateVideo\vendor | Out-Null
           Copy-Item $exe.FullName annotateVideo\vendor\ffmpeg.exe
+          Copy-Item (Join-Path $root 'LICENSE') annotateVideo\vendor\ffmpeg-LICENSE.txt
+          Copy-Item (Join-Path $root 'README.txt') annotateVideo\vendor\ffmpeg-README.txt
+          "{0:N0} MB  ffmpeg.exe" -f ((Get-Item annotateVideo\vendor\ffmpeg.exe).Length / 1MB)
+          & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       - name: Install dependencies
-        run: pip install PyQt6 Pillow pynput pyinstaller
+        run: pip install PyQt6 pynput pyinstaller ${{ env.WINRT_PACKAGES }}
 
       - name: Generate icons
         working-directory: annotateVideo
@@ -180,6 +265,71 @@ jobs:
         env:
           ANNOTATE_LITE: '1'
         run: pyinstaller annotate.spec
+
+      - name: Self-test the build
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          $exe = Get-ChildItem dist -Recurse -Filter *.exe |
+                 Where-Object { $_.Name -like 'ScreenAnnotatorPro*' } |
+                 Select-Object -First 1
+          $dir = New-Item -ItemType Directory -Force -Path selftest
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' `
+                 -WorkingDirectory $dir -Wait -PassThru
+          Get-Content (Join-Path $dir 'self-test.log') -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "self-test failed (exit $($p.ExitCode))" }
+
+      # ── MSI (WiX 4) ───────────────────────────────────────────────────────────
+      - name: Install WiX 4
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          wix extension add --global WixToolset.UI.wixext/4.0.5
+
+      - name: Build the MSI
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          $m = Select-String -Path annotate.py -Pattern '^VERSION = "([^"]+)"'
+          $version = $m.Matches[0].Groups[1].Value
+          Write-Host "Version $version"
+          # One component per file under _internal (WiX 4 has no heat).
+          $sourceDir = Resolve-Path "dist\ScreenAnnotatorPro\_internal"
+          $lines = @(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">',
+            '  <Fragment>',
+            '    <ComponentGroup Id="AppFiles" Directory="InternalFolder">'
+          )
+          Get-ChildItem -Path $sourceDir -Recurse -File | ForEach-Object {
+            $rel    = $_.FullName.Substring($sourceDir.Path.Length + 1)
+            $subdir = Split-Path $rel -Parent
+            $src    = "`$(var.SourceDir)\$rel"
+            $attrs  = if ($subdir) { "Guid=""*"" Subdirectory=""$subdir""" } else { 'Guid="*"' }
+            $lines += "      <Component $attrs>"
+            $lines += "        <File Source=""$src"" />"
+            $lines += "      </Component>"
+          }
+          $lines += '    </ComponentGroup>'
+          $lines += '  </Fragment>'
+          $lines += '</Wix>'
+          $lines -join "`r`n" | Set-Content installer\AppFiles.wxs -Encoding UTF8
+          wix build installer\annotate.wxs installer\AppFiles.wxs `
+            -ext WixToolset.UI.wixext -arch x64 `
+            -d SourceDir=dist\ScreenAnnotatorPro\_internal -d Version=$version `
+            -o dist\ScreenAnnotatorPro-Setup.msi
+          if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+          "{0:N1} MB  msi" -f ((Get-Item dist\ScreenAnnotatorPro-Setup.msi).Length / 1MB)
+
+      - name: Report the package size by component
+        shell: pwsh
+        working-directory: annotateVideo
+        run: |
+          $root = "dist\ScreenAnnotatorPro"
+          "{0:N1} MB  installed total" -f ((Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+          Get-ChildItem $root -Recurse -File | Sort-Object Length -Descending |
+            Select-Object -First 12 | ForEach-Object {
+              "{0,8:N1} MB  {1}" -f ($_.Length / 1MB), $_.FullName.Substring((Resolve-Path $root).Path.Length)
+            }
 
       - name: Stage the package contents
         shell: pwsh
@@ -212,6 +362,7 @@ jobs:
         run: |
           & "${{ steps.sdk.outputs.makeappx }}" pack /d msix_staging `
             /p dist\ScreenAnnotatorProVideo.msix /nv
+          "{0:N1} MB  msix (what the Store download is, near enough)" -f ((Get-Item dist\ScreenAnnotatorProVideo.msix).Length / 1MB)
 
       # Keep an unsigned copy before CI's throwaway cert touches it — this is
       # the one to upload to Partner Center for an actual Store submission;
@@ -278,10 +429,13 @@ jobs:
 
           If you would rather not touch the certificate store at all, use the
           single-file .exe artifact instead — it needs no install and no trust,
-          only a SmartScreen "More info -> Run anyway".
+          only a SmartScreen "More info -> Run anyway". (Start with Windows and
+          the in-app Store rating need the installed package; the .exe falls
+          back to the registry and the Store link.)
 
-          This is the LITE build: no Snip & Read / OCR. Everything else —
-          annotation, click-through, recording, GIF and WebM export — is here.
+          This is the LITE build: no Snip & Read / OCR, and the app hides that
+          tool accordingly. Everything else — annotation, click-through,
+          recording, GIF and WebM export — is here.
 
           SUBMITTING TO THE STORE INSTEAD? Do not upload this file — it is
           signed with the throwaway sideload cert above. Use
@@ -289,30 +443,30 @@ jobs:
           artifacts (unsigned; Partner Center signs it itself).
           '@ | Set-Content dist\INSTALL-MSIX.txt -Encoding UTF8
 
-      - name: Upload the MSIX
+      - name: Upload the installers
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true      # a full artifact quota must not fail the run
         uses: actions/upload-artifact@v4
         with:
-          name: ScreenAnnotatorProVideo-msix
+          name: ScreenAnnotatorProVideo-installers
           path: |
             annotateVideo/dist/ScreenAnnotatorProVideo.msix
             annotateVideo/dist/ScreenAnnotatorProVideo.cer
             annotateVideo/dist/INSTALL-MSIX.txt
-          retention-days: 30
+            annotateVideo/dist/ScreenAnnotatorPro-Setup.msi
+            annotateVideo/dist/ScreenAnnotatorPro-StoreSubmission.msix
+          retention-days: 5
 
-      # Not attached to the public release — an unsigned package installs
-      # nowhere on its own, it exists only for you to hand to Partner Center.
-      - name: Upload the unsigned Store-submission MSIX
-        uses: actions/upload-artifact@v4
-        with:
-          name: ScreenAnnotatorPro-StoreSubmission
-          path: annotateVideo/dist/ScreenAnnotatorPro-StoreSubmission.msix
-          retention-days: 30
-
+      # The repo is private, so its releases are too: the unsigned
+      # Store-submission package rides along for Partner Center.
       - name: Attach to the release on a tag
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          body_path: docs/release-notes/${{ github.ref_name }}.md
           files: |
+            annotateVideo/dist/ScreenAnnotatorPro-Setup.msi
             annotateVideo/dist/ScreenAnnotatorProVideo.msix
             annotateVideo/dist/ScreenAnnotatorProVideo.cer
             annotateVideo/dist/INSTALL-MSIX.txt
+            annotateVideo/dist/ScreenAnnotatorPro-StoreSubmission.msix
