@@ -129,7 +129,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.5.1"
+VERSION = "5.6.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -145,7 +145,13 @@ _DEFAULT_SETTINGS: dict = {
     # reload in every browser. See _migrate_hotkeys().
     "ocr_hotkey":    "<ctrl>+<alt>+t",
     "hotkeys_version": 2,
-    "text_box":       False,           # Text tool: plate behind the text
+    "text_box":       False,           # Text tool: False, True (box) or "bubble"
+    "shape_fill":     "none",          # Rectangle/Circle: "none", "tint", "solid"
+    "arrow_heads":    1,               # Arrow: 1 or 2 heads
+    "stamp_kind":     "check",         # Stamp: check, cross, excl, quest, star
+    "rec_countdown":  True,            # 3-2-1 before a recording starts
+    "hold_to_draw":   "off",           # "off", "rctrl", "rshift": hold to draw
+    "marks_dir":      "",              # where marks were last saved / opened
     "fade_ink":       False,           # marks disappear after a few seconds
     "fx_halo":        False,           # highlight around the cursor
     "fx_ripples":     False,           # ripple on every click
@@ -242,7 +248,7 @@ HOTKEY_SETTINGS = {
     "ocr_hotkey":        ("ocr",        "Snip & Read"),
     "rec_hotkey":        ("record",     "Start / stop recording"),
     "screenshot_hotkey": ("screenshot", "Screenshot"),
-    "zoom_hotkey":       ("zoom",       "Zoom"),
+    "zoom_hotkey":       ("zoom",       "Magnifier"),
 }
 
 _OLD_DEFAULT_HOTKEYS = {
@@ -406,11 +412,11 @@ KEY_TOOL = {
     Key.Key_S: "steps",  Key.Key_H: "highlight",
     Key.Key_Z: "blur",   Key.Key_X: "pixel",
     Key.Key_D: "redact", Key.Key_I: "laser",
-    Key.Key_E: "eraser", Key.Key_J: "ocr",
+    Key.Key_E: "eraser", Key.Key_J: "ocr",    Key.Key_G: "stamp",
 }
 
 DRAG_TOOLS  = {"line","arrow","rect","circle","ruler","highlight","blur","pixel","redact"}
-POINT_TOOLS = {"text","callout","steps"}
+POINT_TOOLS = {"text","callout","steps","stamp"}
 PEN_TOOLS   = {"pen", "eraser"}   # freehand stroke tools
 
 # [WIN-FIX] pick the right system emoji font per platform
@@ -559,8 +565,37 @@ class LineShape(Shape):
 
 
 class ArrowShape(Shape):
-    def __init__(self, p1, p2, color, width):
+    """`heads` 1 or 2. `bend` curves it: how far the middle of the arrow sits
+    off the straight line, in px, to its left (negative: right)."""
+
+    def __init__(self, p1, p2, color, width, heads: int = 1, bend: float = 0.0):
         self.p1, self.p2, self.color, self.width = p1, p2, color, width
+        self.heads, self.bend = heads, bend
+
+    def _normal(self) -> tuple[float, float]:
+        dx, dy = self.p2.x() - self.p1.x(), self.p2.y() - self.p1.y()
+        length = math.hypot(dx, dy)
+        return (0.0, 0.0) if length < 1 else (-dy / length, dx / length)
+
+    def mid_point(self) -> QPointF:
+        """The middle of the arrow as drawn — the handle that bends it."""
+        nx, ny = self._normal()
+        b = getattr(self, "bend", 0.0)
+        return QPointF((self.p1.x() + self.p2.x()) / 2 + nx * b,
+                       (self.p1.y() + self.p2.y()) / 2 + ny * b)
+
+    def set_mid(self, pos: QPointF):
+        nx, ny = self._normal()
+        mx, my = (self.p1.x() + self.p2.x()) / 2, (self.p1.y() + self.p2.y()) / 2
+        b = (pos.x() - mx) * nx + (pos.y() - my) * ny
+        self.bend = 0.0 if abs(b) < 4 else b        # a little slack snaps straight
+
+    def _ctrl(self) -> QPointF:
+        # A quadratic curve passes through half its control point's offset.
+        nx, ny = self._normal()
+        b = 2 * getattr(self, "bend", 0.0)
+        return QPointF((self.p1.x() + self.p2.x()) / 2 + nx * b,
+                       (self.p1.y() + self.p2.y()) / 2 + ny * b)
 
     def draw(self, p):
         # One outline, filled once. Drawn as shaft + filled head + stroked
@@ -573,17 +608,30 @@ class ArrowShape(Shape):
         p.drawPath(self.outline())
 
     def outline(self) -> QPainterPath:
-        key = (self.p1.x(), self.p1.y(), self.p2.x(), self.p2.y(), self.width)
+        heads, bend = getattr(self, "heads", 1), getattr(self, "bend", 0.0)
+        key = (self.p1.x(), self.p1.y(), self.p2.x(), self.p2.y(), self.width,
+               heads, bend)
         if getattr(self, "_outline_key", None) != key:
             stroker = QPainterPathStroker()
             stroker.setWidth(self.width)
             stroker.setCapStyle(Cap.RoundCap)
             stroker.setJoinStyle(Join.RoundJoin)
             shaft = QPainterPath(self.p1)
-            shaft.lineTo(self.p2)
+            if bend:
+                ctrl = self._ctrl()
+                shaft.quadTo(ctrl, self.p2)
+            else:
+                ctrl = None
+                shaft.lineTo(self.p2)
             path = stroker.createStroke(shaft)
-            poly = _arrowhead(self.p1, self.p2, max(self.width*3.5, 14))
-            if not poly.isEmpty():
+            size = max(self.width*3.5, 14)
+            # A curve's head points along the curve's own end, not the chord.
+            polys = [_arrowhead(ctrl or self.p1, self.p2, size)]
+            if heads == 2:
+                polys.append(_arrowhead(ctrl or self.p2, self.p1, size))
+            for poly in polys:
+                if poly.isEmpty():
+                    continue
                 head = QPainterPath()
                 head.addPolygon(poly)
                 head.closeSubpath()
@@ -596,23 +644,59 @@ class ArrowShape(Shape):
         self.p1 = QPointF(self.p1.x()+dx, self.p1.y()+dy)
         self.p2 = QPointF(self.p2.x()+dx, self.p2.y()+dy)
 
-    def bounding_rect(self): return _norm(self.p1, self.p2).adjusted(-20,-20,20,20)
+    def bounding_rect(self):
+        box = _norm(self.p1, self.p2).adjusted(-20, -20, 20, 20)
+        if getattr(self, "bend", 0.0):
+            box = box.united(self.outline().boundingRect().adjusted(-4, -4, 4, 4))
+        return box
 
     def hit(self, pt, tolerance=6.0):
+        if getattr(self, "bend", 0.0):
+            wide = QPainterPathStroker()
+            wide.setWidth(self.width + 2 * tolerance)
+            shaft = QPainterPath(self.p1)
+            shaft.quadTo(self._ctrl(), self.p2)
+            return wide.createStroke(shaft).contains(pt) or self.outline().contains(pt)
         if _dist_to_segment(pt, self.p1, self.p2) <= self.width / 2 + tolerance:
             return True
         return self.outline().contains(pt)
 
 
+def _paint_filled(p: QPainter, shape, draw):
+    """Rectangle/circle with FILL: "tint" puts a light wash inside the
+    outline, "solid" fills it in the mark's colour. Fill and outline never
+    overlap, so a see-through mark has no darker ring (the arrow lesson)."""
+    fill, r = getattr(shape, "fill", "none"), _norm(shape.p1, shape.p2)
+    h = shape.width / 2
+    p.setRenderHint(RHint.Antialiasing)
+    if fill == "solid":
+        p.setPen(PS.NoPen)
+        p.setBrush(QBrush(QColor(shape.color)))
+        draw(r.adjusted(-h, -h, h, h), h)
+        return
+    if fill == "tint":
+        wash = QColor(shape.color)
+        wash.setAlpha(max(1, round(wash.alpha() * 0.28)))
+        p.setPen(PS.NoPen)
+        p.setBrush(QBrush(wash))
+        draw(r.adjusted(h, h, -h, -h), 0)
+    p.setPen(_pen(shape.color, shape.width))
+    p.setBrush(BS.NoBrush)
+    draw(r, None)
+
+
 class RectShape(Shape):
-    def __init__(self, p1, p2, color, width):
+    def __init__(self, p1, p2, color, width, fill: str = "none"):
         self.p1, self.p2, self.color, self.width = p1, p2, color, width
+        self.fill = fill
 
     def draw(self, p):
-        p.setRenderHint(RHint.Antialiasing)
-        p.setPen(_pen(self.color, self.width))
-        p.setBrush(BS.NoBrush)
-        p.drawRect(_norm(self.p1, self.p2))
+        def rect(r, radius):
+            if radius:
+                p.drawRoundedRect(r, radius, radius)   # the round join's corners
+            else:
+                p.drawRect(r)
+        _paint_filled(p, self, rect)
 
     def move(self, dx, dy):
         self.p1 = QPointF(self.p1.x()+dx, self.p1.y()+dy)
@@ -622,6 +706,8 @@ class RectShape(Shape):
 
     def hit(self, pt, tolerance=6.0):
         r = _norm(self.p1, self.p2)
+        if getattr(self, "fill", "none") != "none" and r.contains(pt):
+            return True
         c = [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()]
         reach = self.width / 2 + tolerance
         return any(_dist_to_segment(pt, c[i], c[(i + 1) % 4]) <= reach
@@ -629,14 +715,12 @@ class RectShape(Shape):
 
 
 class CircleShape(Shape):
-    def __init__(self, p1, p2, color, width):
+    def __init__(self, p1, p2, color, width, fill: str = "none"):
         self.p1, self.p2, self.color, self.width = p1, p2, color, width
+        self.fill = fill
 
     def draw(self, p):
-        p.setRenderHint(RHint.Antialiasing)
-        p.setPen(_pen(self.color, self.width))
-        p.setBrush(BS.NoBrush)
-        p.drawEllipse(_norm(self.p1, self.p2))
+        _paint_filled(p, self, lambda r, _radius: p.drawEllipse(r))
 
     def move(self, dx, dy):
         self.p1 = QPointF(self.p1.x()+dx, self.p1.y()+dy)
@@ -650,6 +734,9 @@ class CircleShape(Shape):
         if a < 1 or b < 1:
             return r.adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(pt)
         dx, dy = pt.x() - r.center().x(), pt.y() - r.center().y()
+        if getattr(self, "fill", "none") != "none" and \
+                (dx / a) ** 2 + (dy / b) ** 2 <= 1:
+            return True
         # Distance from the outline along the ray from the centre: the
         # ellipse's radius in that direction against the point's distance.
         theta = math.atan2(dy, dx)
@@ -719,9 +806,35 @@ class TextShape(Shape):
 
     PAD_X, PAD_Y = 8, 4
 
-    def __init__(self, pos, text, color, size, box: bool = False):
+    def __init__(self, pos, text, color, size, box: bool | str = False):
         self.pos, self.text, self.color, self.size = pos, text, color, size
-        self.box = box
+        self.box = box                  # False, True (plate) or "bubble"
+        self.tail: QPointF | None = None    # bubble tail tip, relative to pos
+
+    def tail_point(self) -> QPointF:
+        off = self.tail
+        if off is None:                 # below the first letters, pointing down
+            off = QPointF(18, self.text_rect().height() + self.PAD_Y + 34)
+        return QPointF(self.pos.x() + off.x(), self.pos.y() + off.y())
+
+    def bubble_path(self) -> QPainterPath:
+        body = self.text_rect().adjusted(-self.PAD_X - 4, -self.PAD_Y - 3,
+                                         self.PAD_X + 4, self.PAD_Y + 3)
+        path = QPainterPath()
+        path.addRoundedRect(body, 12, 12)
+        tip = self.tail_point()
+        bx = min(max(tip.x(), body.left() + 16), body.right() - 16)
+        by = min(max(tip.y(), body.top() + 12), body.bottom() - 12)
+        dx, dy = tip.x() - bx, tip.y() - by
+        length = math.hypot(dx, dy)
+        if length > 1 and not body.contains(tip):
+            nx, ny, half = -dy / length, dx / length, 9
+            tail = QPainterPath()
+            tail.addPolygon(QPolygonF([QPointF(bx + nx * half, by + ny * half), tip,
+                                       QPointF(bx - nx * half, by - ny * half)]))
+            tail.closeSubpath()
+            path = path.united(tail)
+        return path
 
     def font(self) -> QFont:
         return QFont("Arial", self.size, QFont.Weight.Bold)
@@ -735,7 +848,13 @@ class TextShape(Shape):
     def draw(self, p):
         p.setRenderHint(RHint.Antialiasing)
         r = self.text_rect()
-        if self.box:
+        if self.box == "bubble":
+            plate = _contrast(self.color)
+            plate.setAlpha(240)
+            p.setPen(QPen(QColor(self.color), 2))
+            p.setBrush(QBrush(plate))
+            p.drawPath(self.bubble_path())
+        elif self.box:
             plate = _contrast(self.color)
             plate.setAlpha(225)
             p.setPen(PS.NoPen)
@@ -750,6 +869,8 @@ class TextShape(Shape):
 
     def bounding_rect(self):
         r = self.text_rect()
+        if self.box == "bubble":
+            return self.bubble_path().boundingRect().adjusted(-2, -2, 2, 2)
         return r.adjusted(-self.PAD_X, -self.PAD_Y, self.PAD_X, self.PAD_Y) \
             if self.box else r
 
@@ -795,6 +916,72 @@ class StepShape(Shape):
 
     def move(self, dx, dy): self.pos = QPointF(self.pos.x()+dx, self.pos.y()+dy)
     def bounding_rect(self): return QRectF(self.pos.x()-self.r, self.pos.y()-self.r, self.r*2, self.r*2)
+
+
+STAMPS = ("check", "cross", "excl", "quest", "star")
+
+
+class StampShape(Shape):
+    """A ✓ ✗ ! ? or ★ on a filled disc: right, wrong, look here, unclear,
+    well done. Vector-drawn, so it never depends on a font having the glyph."""
+
+    def __init__(self, pos, kind, color, size):
+        self.pos, self.kind, self.color = pos, kind, color
+        self.r = _stamp_radius(size)
+
+    def draw(self, p):
+        c, r = self.pos, self.r
+        p.setRenderHint(RHint.Antialiasing)
+        p.setPen(PS.NoPen)
+        p.setBrush(QBrush(QColor(self.color)))
+        p.drawEllipse(c, r, r)
+        ink = _contrast(self.color)
+        ink.setAlpha(255)
+        pen = QPen(ink, max(2.0, r * 0.2))
+        pen.setCapStyle(Cap.RoundCap)
+        pen.setJoinStyle(Join.RoundJoin)
+        at = lambda fx, fy: QPointF(c.x() + fx * r, c.y() + fy * r)
+        if self.kind == "check":
+            p.setPen(pen)
+            p.drawPolyline(QPolygonF([at(-0.42, 0.02), at(-0.12, 0.32), at(0.44, -0.3)]))
+        elif self.kind == "cross":
+            p.setPen(pen)
+            p.drawLine(at(-0.33, -0.33), at(0.33, 0.33))
+            p.drawLine(at(-0.33, 0.33), at(0.33, -0.33))
+        elif self.kind == "excl":
+            p.setPen(pen)
+            p.drawLine(at(0, -0.48), at(0, 0.1))
+            p.setPen(PS.NoPen)
+            p.setBrush(QBrush(ink))
+            p.drawEllipse(at(0, 0.42), r * 0.12, r * 0.12)
+        elif self.kind == "quest":
+            f = QFont("Arial", 10, QFont.Weight.Black)
+            f.setPixelSize(max(8, round(r * 1.35)))
+            p.setFont(f)
+            p.setPen(QPen(ink))
+            p.drawText(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r),
+                       int(AA.AlignCenter), "?")
+        else:                           # star
+            pts = []
+            for i in range(10):
+                a = -math.pi / 2 + i * math.pi / 5
+                k = 0.58 if i % 2 == 0 else 0.24
+                pts.append(at(k * math.cos(a), k * math.sin(a)))
+            p.setPen(PS.NoPen)
+            p.setBrush(QBrush(ink))
+            p.drawPolygon(QPolygonF(pts))
+
+    def move(self, dx, dy): self.pos = QPointF(self.pos.x()+dx, self.pos.y()+dy)
+
+    def bounding_rect(self):
+        return QRectF(self.pos.x()-self.r, self.pos.y()-self.r, 2*self.r, 2*self.r)
+
+    def hit(self, pt, tolerance=6.0):
+        return math.hypot(pt.x()-self.pos.x(), pt.y()-self.pos.y()) <= self.r + tolerance
+
+
+def _stamp_radius(size: int) -> int:
+    return round(_marker_radius(size) * 1.15)
 
 
 class HighlightShape(Shape):
@@ -1111,6 +1298,84 @@ def _clone(shape):
     return twin
 
 
+# ── saving marks to a file and opening them again (Ctrl+S / Ctrl+O) ──────────
+MARKS_FILTER = "Screen Annotator marks (*.samarks)"
+_MARK_TYPES = {c.__name__: c for c in (
+    PenShape, LineShape, ArrowShape, RectShape, CircleShape, RulerShape,
+    TextShape, CalloutShape, StepShape, StampShape, HighlightShape,
+    BlurShape, PixelShape, RedactShape, EraserShape)}
+
+
+def marks_to_json(shapes) -> dict:
+    """Every mark with its attributes. Blur and pixelate keep the picture of
+    what was underneath (PNG), so they still hide it when reopened."""
+    import base64
+    from PyQt6.QtCore import QBuffer, QIODevice
+
+    def enc(v):
+        if isinstance(v, QPointF):
+            return {"pt": [v.x(), v.y()]}
+        if isinstance(v, (QPixmap, QImage)):
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            v.save(buf, "PNG")
+            return {"png": base64.b64encode(bytes(buf.data())).decode("ascii"),
+                    "dpr": v.devicePixelRatio()}
+        if isinstance(v, list):
+            return [enc(x) for x in v]
+        if v is None or isinstance(v, (str, int, float, bool)):
+            return v
+        raise TypeError(type(v).__name__)
+
+    out = []
+    for sh in shapes:
+        name = type(sh).__name__
+        if name not in _MARK_TYPES:
+            continue
+        d = {"type": name}
+        for k, v in sh.__dict__.items():
+            if k.startswith("_") or k in ("fades", "born"):   # fading: not kept
+                continue
+            try:
+                d[k] = enc(v)
+            except TypeError:
+                continue
+        out.append(d)
+    return {"app": "Screen Annotator Pro", "format": 1, "marks": out}
+
+
+def marks_from_json(data: dict) -> list:
+    import base64
+
+    def dec(v):
+        if isinstance(v, dict):
+            if "pt" in v:
+                return QPointF(float(v["pt"][0]), float(v["pt"][1]))
+            if "png" in v:
+                pm = QPixmap()
+                pm.loadFromData(base64.b64decode(v["png"]), "PNG")
+                pm.setDevicePixelRatio(float(v.get("dpr", 1.0)))
+                return pm
+            return None
+        if isinstance(v, list):
+            return [dec(x) for x in v]
+        return v
+
+    if not isinstance(data, dict) or data.get("app") != "Screen Annotator Pro":
+        raise ValueError("not a Screen Annotator marks file")
+    shapes = []
+    for d in data.get("marks", []):
+        cls = _MARK_TYPES.get(d.get("type"))
+        if cls is None:
+            continue
+        sh = cls.__new__(cls)
+        for k, v in d.items():
+            if k != "type" and not k.startswith("_"):
+                setattr(sh, k, dec(v))
+        shapes.append(sh)
+    return shapes
+
+
 LINE_SHAPES = ("LineShape", "ArrowShape", "RulerShape")
 BOX_SHAPES = ("RectShape", "CircleShape", "HighlightShape", "RedactShape",
               "BlurShape", "PixelShape")
@@ -1135,7 +1400,10 @@ class Canvas(QWidget):
         self.pen_width  = 4
         self.pen_alpha  = 255   # 0-255; baked into colour when shapes are created
         self.font_size  = 20
-        self.text_box   = False       # Text tool: plate behind the text
+        self.text_box   = False       # Text tool: False, True (plate), "bubble"
+        self.shape_fill = "none"      # Rectangle/Circle fill
+        self.arrow_heads = 1
+        self.stamp_kind = "check"
         self.eraser_mode = "shapes"   # "shapes": touch a mark to remove it
                                       # "pixels": rub out part of one
         self.pixel_size = 14          # Pixelate cell, logical px
@@ -1238,8 +1506,12 @@ class Canvas(QWidget):
 
     def _handles(self, sh) -> dict:
         name = type(sh).__name__
+        if name == "ArrowShape":
+            return {"p1": sh.p1, "p2": sh.p2, "mid": sh.mid_point()}
         if name in LINE_SHAPES:
             return {"p1": sh.p1, "p2": sh.p2}
+        if name == "TextShape" and sh.box == "bubble":
+            return {"tail": sh.tail_point()}
         if name in BOX_SHAPES:
             r = _norm(sh.p1, sh.p2)
             return {"tl": r.topLeft(), "tr": r.topRight(),
@@ -1272,7 +1544,9 @@ class Canvas(QWidget):
             self._record(("move_many", list(self._selection), dx, dy))
 
     def restyle_selected(self, *, color: str | None = None, alpha: int | None = None,
-                         width: int | None = None, size: int | None = None) -> bool:
+                         width: int | None = None, size: int | None = None,
+                         fill: str | None = None, heads: int | None = None,
+                         box=None, kind: str | None = None) -> bool:
         """Apply the dock's colour / opacity / stroke / size to the selection.
         A slider dragged across many values is one undo step."""
         changes = []
@@ -1295,6 +1569,16 @@ class Canvas(QWidget):
                     sh.size = size
                 elif isinstance(sh, (CalloutShape, StepShape)):
                     sh.r = _marker_radius(size)
+                elif isinstance(sh, StampShape):
+                    sh.r = _stamp_radius(size)
+            if fill is not None and isinstance(sh, (RectShape, CircleShape)):
+                sh.fill = fill
+            if heads is not None and isinstance(sh, ArrowShape):
+                sh.heads = heads
+            if box is not None and isinstance(sh, TextShape):
+                sh.box = box
+            if kind is not None and isinstance(sh, StampShape):
+                sh.kind = kind
             after = _snap(sh)
             if after != before:
                 changes.append((sh, before, after))
@@ -1336,6 +1620,18 @@ class Canvas(QWidget):
             return 0
         self.copy_selection()
         return self.paste()
+
+    def add_marks(self, shapes: list) -> int:
+        """Marks from a saved file, added on top of what's there — one undo
+        step takes them all away again."""
+        if not shapes:
+            return 0
+        self.finish_editing()
+        self._shapes.extend(shapes)
+        self._record(("add_many", list(shapes)))
+        self._set_selection([])
+        self.update()
+        return len(shapes)
 
     def _eraser_radius(self) -> float:
         if self.eraser_mode == "pixels":
@@ -1484,6 +1780,10 @@ class Canvas(QWidget):
             before = self._selection_area()
             if self._handle in ("p1", "p2"):
                 setattr(sh, self._handle, QPointF(pos))
+            elif self._handle == "mid":
+                sh.set_mid(pos)
+            elif self._handle == "tail":
+                sh.tail = QPointF(pos.x() - sh.pos.x(), pos.y() - sh.pos.y())
             else:
                 sh.p1, sh.p2 = QPointF(self._handle_anchor), QPointF(pos)
             self._update_area(before, self._selection_area())
@@ -1622,6 +1922,8 @@ class Canvas(QWidget):
         elif t == "steps":
             self._commit(StepShape(pos, self._next_number(StepShape), col,
                                    self.font_size))
+        elif t == "stamp":
+            self._commit(StampShape(pos, self.stamp_kind, col, self.font_size))
 
     # ── text typed on the canvas ───────────────────────────────────────────
     def begin_text(self, pos: QPointF, shape: "TextShape | None" = None):
@@ -1690,7 +1992,7 @@ class Canvas(QWidget):
 
     # Tools whose dock row has no opacity slider — they used to inherit
     # whatever opacity another tool was left at, with no way to see why.
-    OPAQUE_TOOLS = ("callout", "steps", "ruler")
+    OPAQUE_TOOLS = ("callout", "steps", "stamp", "ruler")
 
     def _tool_color(self) -> str:
         alpha = 255 if self.tool in self.OPAQUE_TOOLS else self.pen_alpha
@@ -1717,9 +2019,9 @@ class Canvas(QWidget):
                 p2   = QPointF(p1.x() + math.copysign(size, p2.x()-p1.x()),
                                 p1.y() + math.copysign(size, p2.y()-p1.y()))
         if t == "line":      return LineShape(p1, p2, col, self.pen_width)
-        if t == "arrow":     return ArrowShape(p1, p2, col, self.pen_width)
-        if t == "rect":      return RectShape(p1, p2, col, self.pen_width)
-        if t == "circle":    return CircleShape(p1, p2, col, self.pen_width)
+        if t == "arrow":     return ArrowShape(p1, p2, col, self.pen_width, self.arrow_heads)
+        if t == "rect":      return RectShape(p1, p2, col, self.pen_width, self.shape_fill)
+        if t == "circle":    return CircleShape(p1, p2, col, self.pen_width, self.shape_fill)
         if t == "ruler":
             scr = self.screen()
             scale = scr.devicePixelRatio() if scr is not None else 1.0
@@ -3666,6 +3968,59 @@ class ExportDialog(QDialog):
         _dlg_frame_paint(self)
 
 
+class Countdown(QWidget):
+    """3-2-1 in the middle of what's about to be recorded. It is gone before
+    the first frame is taken, so it is never in the video."""
+
+    def __init__(self, rect: QRect, done, seconds: int = 3):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool
+                         | Qt.WindowType.WindowTransparentForInput)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setAttribute(WAtt.WA_ShowWithoutActivating)
+        self.setAttribute(WAtt.WA_TransparentForMouseEvents)
+        self.n, self._done = seconds, done
+        side = 200
+        self.setGeometry(rect.center().x() - side // 2,
+                         rect.center().y() - side // 2, side, side)
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def cancel(self):
+        self._timer.stop()
+        self.hide()
+        self.deleteLater()
+
+    def _tick(self):
+        self.n -= 1
+        if self.n > 0:
+            self.update()
+            return
+        self.cancel()
+        QTimer.singleShot(150, self._done)   # let the compositor take it away
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(RHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(10, 10, -10, -10)
+        p.setPen(PS.NoPen)
+        p.setBrush(QColor(20, 20, 22, 205))
+        p.drawEllipse(r)
+        f = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        f.setPixelSize(96)
+        p.setFont(f)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(r, int(AA.AlignCenter), str(self.n))
+        p.end()
+
+
 class RecordingController(QObject):
     """Everything the rest of the app needs to know about recording.
 
@@ -3701,6 +4056,7 @@ class RecordingController(QObject):
         self._gpu.fell_back.connect(self._gpu_fell_back)
         self._gpu_broken = ""           # why the GPU path failed this session
         self._pending: tuple | None = None
+        self._countdown: Countdown | None = None
         self.recorder = self._cpu
 
     # ── state ─────────────────────────────────────────────────────────────────
@@ -3727,6 +4083,10 @@ class RecordingController(QObject):
     # ── start / stop ──────────────────────────────────────────────────────────
     @pyqtSlot()
     def toggle(self):
+        if self._countdown is not None:     # pressed again while counting in
+            self._countdown.cancel()
+            self._countdown = None
+            return
         self.stop() if self.active else self.start()
 
     def start(self):
@@ -3743,14 +4103,27 @@ class RecordingController(QObject):
             native = pick_region_natively()
             if native is not False:            # the compositor picked, or cancelled
                 if native:
-                    self._begin(cfg, native)
+                    self._count_in(cfg, native)
                 return
             sel = RegionSelector()
-            sel.chosen.connect(lambda r: self._begin(cfg, r) if r else None)
+            sel.chosen.connect(lambda r: self._count_in(cfg, r) if r else None)
             sel.choose()
             return
         region = screen_under_cursor() if cfg.area == "screen" else None
-        self._begin(cfg, region)
+        self._count_in(cfg, region)
+
+    def _count_in(self, cfg: RecordConfig, region):
+        if not self._settings.get("rec_countdown"):
+            self._begin(cfg, region)
+            return
+        where = region if region and region.isValid() else screen_under_cursor()
+
+        def go():
+            if self._countdown is not None:
+                self._countdown = None
+                self._begin(cfg, region)
+        self._countdown = Countdown(where, go)
+        self._countdown.start()
 
     def _begin(self, cfg: RecordConfig, region):
         # WDA_EXCLUDEFROMCAPTURE exists on Windows 10 2004+, but it does not
@@ -4360,6 +4733,7 @@ class HelpDialog(QDialog):
         ("T",  "Text",            "T",  "Click and type  ·  Enter finishes, Shift+Enter adds a line  ·  click a label to edit it"),
         ("①",  "Callout",        "K",  "Auto-numbered filled circles"),
         ("1▸2","Steps",           "S",  "Auto-numbered step squares"),
+        ("✓",  "Stamp",           "G",  "Click to place ✓ ✗ ! ? or ★"),
         ("HL", "Highlight",       "H",  "Semi-transparent colour band"),
         ("◻",  "Eraser",          "E",  "Touch a mark to remove it  ·  or switch to Pixels to rub out part of one"),
         ("⊘",  "Blur",            "Z",  "Gaussian blur over a selected region"),
@@ -4418,6 +4792,7 @@ class HelpDialog(QDialog):
                           "the app underneath"),
             ("Delete",    "Remove the selected marks (Select tool)"),
             ("Ctrl + C / V / D", "Copy, paste, duplicate the selection"),
+            ("Ctrl + S / Ctrl + O", "Save the marks to a file / open saved marks"),
             ("Ctrl + A",  "Select everything"),
             ("Arrows",    "Nudge the selection (Shift: 10 px)"),
         ]
@@ -4756,6 +5131,25 @@ class SettingsDialog(QDialog):
             f"QPushButton:hover{{color:{DLG_ACCENT_600};text-decoration:underline;}}")
         reset.clicked.connect(self._reset_shortcuts)
         lo.addWidget(reset)
+        lo.addSpacing(10)
+        hold = QHBoxLayout()
+        hold.setSpacing(10)
+        hold_lbl = QLabel("Hold a key to draw, let go to click through")
+        hold_lbl.setStyleSheet(f"color:{DLG_INK};background:transparent;"
+                               f"font-size:12px;font-family:'{DLG_FONT}';")
+        self._hold_keys = ["off", "rctrl", "rshift"]
+        self._hold_box = QComboBox()
+        self._hold_box.addItems(["Off", "Right Ctrl", "Right Shift"])
+        cur = self._settings.get("hold_to_draw")
+        self._hold_box.setCurrentIndex(self._hold_keys.index(cur)
+                                       if cur in self._hold_keys else 0)
+        self._hold_box.setFixedHeight(30)
+        self._hold_box.setStyleSheet(_dlg_combo_style())
+        self._hold_box.setEnabled(IS_WIN)
+        hold.addWidget(hold_lbl)
+        hold.addWidget(self._hold_box)
+        hold.addStretch()
+        lo.addLayout(hold)
         lo.addStretch()
         return page
 
@@ -4891,7 +5285,9 @@ class SettingsDialog(QDialog):
         self._rec_cursor_cb.setChecked(bool(g("rec_cursor")))
         self._rec_audio_cb = QCheckBox("Record the microphone")
         self._rec_audio_cb.setChecked(bool(g("rec_audio")))
-        for cb in (self._rec_cursor_cb, self._rec_audio_cb):
+        self._rec_countdown_cb = QCheckBox("3-2-1 countdown")
+        self._rec_countdown_cb.setChecked(bool(g("rec_countdown")))
+        for cb in (self._rec_cursor_cb, self._rec_audio_cb, self._rec_countdown_cb):
             cb.setStyleSheet(_dlg_checkbox_style())
             opts.addWidget(cb)
         opts.addStretch()
@@ -5078,6 +5474,7 @@ class SettingsDialog(QDialog):
                            self._quality_keys[self._rec_quality.currentIndex()])
         self._settings.set("rec_cursor", self._rec_cursor_cb.isChecked())
         self._settings.set("rec_audio", self._rec_audio_cb.isChecked())
+        self._settings.set("rec_countdown", self._rec_countdown_cb.isChecked())
         if self._rec_dev is not None:
             self._settings.set("rec_audio_dev", self._rec_dev.currentText())
         self._settings.set("rec_dir", self._rec_dir)
@@ -5090,6 +5487,9 @@ class SettingsDialog(QDialog):
         self._settings.set("board_style",
                            "black" if self._board_box.currentIndex() == 1 else "white")
         self._settings.set("show_hints", self._hints_cb.isChecked())
+        self._settings.set("hold_to_draw", self._hold_keys[self._hold_box.currentIndex()])
+        if hasattr(overlay, "apply_hold_to_draw"):
+            overlay.apply_hold_to_draw()
         if overlay is not None and hasattr(overlay, "set_effect") \
                 and self._keys_cb.isChecked() != bool(self._settings.get("fx_keys")):
             overlay.set_effect("keys", self._keys_cb.isChecked())
@@ -5471,6 +5871,7 @@ TOOL_GROUPS = [
         ("text",      "T",   "Text"),
         ("callout",   "①",  "Callout"),
         ("steps",     "1▸2", "Steps"),
+        ("stamp",     "✓",   "Stamp"),
         ("highlight", "HL",  "Highlight"),
     ]),
     ("🔒 Redact", [
@@ -5871,7 +6272,17 @@ class AnnotationOverlay(QWidget):
         self._release_timer.setInterval(self.RELEASE_AFTER_MS)
         self._release_timer.timeout.connect(self._release_window)
         self.canvas  = Canvas(self)
-        self.canvas.text_box = bool(settings_mgr.get("text_box"))
+        tb = settings_mgr.get("text_box")
+        self.canvas.text_box = "bubble" if tb == "bubble" else bool(tb)
+        self.canvas.shape_fill = settings_mgr.get("shape_fill") or "none"
+        self.canvas.arrow_heads = 2 if settings_mgr.get("arrow_heads") == 2 else 1
+        kind = settings_mgr.get("stamp_kind")
+        self.canvas.stamp_kind = kind if kind in STAMPS else "check"
+        self._held, self._hold_prev = False, 0
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setInterval(30)
+        self._hold_timer.timeout.connect(self._poll_hold)
+        self.apply_hold_to_draw()
         self.canvas.eraser_mode = ("pixels" if settings_mgr.get("eraser_mode") == "pixels"
                                    else "shapes")
         self.canvas.fade_ink = bool(settings_mgr.get("fade_ink"))
@@ -6070,6 +6481,85 @@ class AnnotationOverlay(QWidget):
     def toggle_recording(self):
         self.recording.toggle()
 
+    # ── marks to a file and back ──────────────────────────────────────────────
+    @pyqtSlot()
+    def save_marks(self):
+        shapes = list(self.canvas._shapes)
+        if not shapes:
+            self.toast.show_message("Nothing to save yet — draw something first",
+                                    anchor=self.toolbar)
+            return
+        folder = self.settings.get("marks_dir") or str(Path.home() / "Documents")
+        start = str(Path(folder) / time.strftime("annotations_%Y%m%d_%H%M%S.samarks"))
+        path, _ = QFileDialog.getSaveFileName(self, "Save annotations", start, MARKS_FILTER)
+        if not path:
+            return
+        if not path.lower().endswith(".samarks"):
+            path += ".samarks"
+        try:
+            Path(path).write_text(json.dumps(marks_to_json(shapes)), encoding="utf-8")
+        except OSError as exc:
+            self.toast.show_message(f"Couldn't save the file: {exc.strerror or exc}",
+                                    anchor=self.toolbar)
+            return
+        self.settings.set("marks_dir", str(Path(path).parent))
+        self.settings.save()
+        self.toast.show_message(f"Saved {len(shapes)} marks — Ctrl+O opens them again",
+                                anchor=self.toolbar)
+
+    @pyqtSlot()
+    def open_marks(self):
+        folder = self.settings.get("marks_dir") or str(Path.home() / "Documents")
+        path, _ = QFileDialog.getOpenFileName(self, "Open annotations", folder, MARKS_FILTER)
+        if not path:
+            return
+        try:
+            shapes = marks_from_json(json.loads(Path(path).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            self.toast.show_message("That file couldn't be opened as annotations",
+                                    anchor=self.toolbar)
+            return
+        self.settings.set("marks_dir", str(Path(path).parent))
+        self.settings.save()
+        self._wanted = True
+        self.canvas.add_marks(shapes)
+        self.sync_window()
+        self.toast.show_message(f"Opened {len(shapes)} marks — Ctrl+Z takes them away",
+                                anchor=self.toolbar)
+
+    # ── hold a key to draw ────────────────────────────────────────────────────
+    HOLD_KEYS = {"rctrl": 0xA3, "rshift": 0xA1}     # VK_RCONTROL, VK_RSHIFT
+
+    def apply_hold_to_draw(self):
+        if IS_WIN and self.settings.get("hold_to_draw") in self.HOLD_KEYS:
+            self._hold_timer.start()
+        else:
+            self._hold_timer.stop()
+            self._held = False
+
+    def _poll_hold(self, key_state=None):
+        """Held: drawing. Let go: click-through again, and the app you were
+        in gets the keyboard back."""
+        vk = self.HOLD_KEYS.get(self.settings.get("hold_to_draw"))
+        if vk is None:
+            return
+        user32 = None
+        if IS_WIN:
+            import ctypes
+            user32 = ctypes.windll.user32
+        if key_state is None:
+            key_state = lambda v: bool(user32.GetAsyncKeyState(v) & 0x8000)
+        down = key_state(vk)
+        if down and not self._held and self._passthrough and self._wanted:
+            self._held = True
+            self._hold_prev = user32.GetForegroundWindow() if user32 else 0
+            self.set_passthrough(False)
+        elif not down and self._held:
+            self._held = False
+            self.set_passthrough(True)
+            if user32 and self._hold_prev:
+                user32.SetForegroundWindow(self._hold_prev)
+
     @pyqtSlot()
     def take_screenshot(self):
         """Pick an area (or click for a whole screen), then Copy / Save."""
@@ -6152,7 +6642,7 @@ class AnnotationOverlay(QWidget):
         self.set_passthrough(False)
         self.canvas.start_zoom(pix, rect, QPointF(self.canvas.mapFromGlobal(QCursor.pos())))
         self.sync_window()
-        self.toast.show_message("Zoom — mouse wheel to zoom in or out · "
+        self.toast.show_message("Magnifier — mouse wheel zooms · "
                                 "Esc to leave", anchor=self.toolbar)
 
     def turn_page(self, delta: int):
@@ -6245,6 +6735,10 @@ class AnnotationOverlay(QWidget):
             self.set_effect("spotlight", not self.canvas.spotlight)
         elif k in (Key.Key_PageDown, Key.Key_PageUp) and self.canvas.board:
             self.turn_page(1 if k == Key.Key_PageDown else -1)
+        elif ctrl and k == Key.Key_S:
+            self.save_marks()
+        elif ctrl and k == Key.Key_O:
+            self.open_marks()
         elif ctrl and k in (Key.Key_C, Key.Key_V, Key.Key_D, Key.Key_A):
             cv = self.canvas
             if k == Key.Key_C:
@@ -6353,6 +6847,10 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
         lambda on: rec_action.setText("Stop recording" if on
                                       else "Start recording"))
 
+    save_marks_action = menu.addAction("Save annotations…")
+    save_marks_action.triggered.connect(overlay.save_marks)
+    open_marks_action = menu.addAction("Open annotations…")
+    open_marks_action.triggered.connect(overlay.open_marks)
     conv_action = menu.addAction("Convert a recording…")
     conv_action.triggered.connect(lambda: _convert_recording(overlay))
 

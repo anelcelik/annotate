@@ -48,9 +48,9 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Select / Edit | `V` | Click a mark to select it · drag to move · white handles reshape it (arrow tip, box corner…) · the dock's colour / stroke / opacity restyle it · drag across empty space or **Shift**-click to select several · `Ctrl+C` / `Ctrl+V` / `Ctrl+D` / `Ctrl+A` · arrow keys nudge (**Shift** = 10 px) · all undoable |
 | Pen | `P` | Freehand stroke |
 | Line | `L` | Straight line · **Shift** → 45° snap |
-| Arrow | `A` | Line with arrowhead · **Shift** → 45° snap |
-| Rectangle | `R` | Outline rectangle · **Shift** → perfect square |
-| Circle | `O` | Outline ellipse · **Shift** → perfect circle |
+| Arrow | `A` | Line with arrowhead · **HEADS** One / Both · **Shift** → 45° snap · select it and drag the middle handle to curve it |
+| Rectangle | `R` | **FILL** Off / Tint / Solid · **Shift** → perfect square |
+| Circle | `O` | **FILL** Off / Tint / Solid · **Shift** → perfect circle |
 | Ruler | `U` | Line labelled with its length in real screen pixels (125 px for 100 logical px at 125 %) · **Shift** → 45° snap |
 | Eraser | `E` | **Shapes** (default): touch a mark to remove it, one undo step per drag · **Pixels**: rub out part of a mark |
 | Laser Pointer | `I` | Real-time glowing dot — no marks left, OS cursor hidden |
@@ -70,9 +70,10 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 | Tool | Key | Description |
 |---|---|---|
-| Text | `T` | Click and type right there — Enter finishes, Shift+Enter adds a line, Esc cancels · **Box** puts a plate behind it · click a label to edit it |
+| Text | `T` | Click and type right there — Enter finishes, Shift+Enter adds a line, Esc cancels · **BOX** Off / Box (a plate behind it) / Bubble (a speech bubble — drag its tail with Select) · click a label to edit it |
 | Callout | `K` | Auto-numbered filled circles |
 | Steps | `S` | Auto-numbered step squares |
+| Stamp | `G` | Click to place ✓ ✗ ! ? or ★ on a disc in the current colour · SIZE sets how big |
 | Highlight | `H` | Semi-transparent colour band |
 
 ### Redact Tools
@@ -93,7 +94,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 | Control | Key | Description |
 |---|---|---|
-| Record / Stop | `Ctrl+Alt+R` | Records the screen to MP4 with the annotations in it |
+| Record / Stop | `Ctrl+Alt+R` | Records the screen to MP4 with the annotations in it · a 3-2-1 countdown first (never recorded; Record again cancels; Settings → Recording turns it off) |
 
 ---
 
@@ -271,6 +272,7 @@ stand alone), so a shortcut can never swallow ordinary typing.
 | `Delete` | Remove the selected marks (Select tool) |
 | `Ctrl + C` / `Ctrl + V` / `Ctrl + D` | Copy / paste / duplicate the selected marks |
 | `Ctrl + A` | Select every mark |
+| `Ctrl + S` / `Ctrl + O` | Save the marks on screen to a `.samarks` file / open saved marks on top (also in the tray menu; one `Ctrl + Z` takes them away) |
 | Arrow keys | Nudge the selection 1 px (`Shift` = 10 px) |
 | **Hold Shift** | 45° snap for lines / perfect square / perfect circle |
 
@@ -335,6 +337,7 @@ Open via the **Settings** button in the toolbar.
 | Start with Windows | App launches hidden in the tray at sign-in. The Store package uses a manifest startup task (the only kind a package can have — its Run-key writes are invisible to Windows); the portable .exe uses the Run key. Also switchable in Windows Settings → Apps → Startup |
 | Dock size | 100 / 90 / 78 / 70 / 60 % — for displays the dock runs off the edge of. Applies immediately |
 | Appearance | Light or Dark — applies immediately, remembered next launch |
+| Hold a key to draw (Shortcuts tab) | Off / Right Ctrl / Right Shift — hold it to draw, let go to click through; the app you were in gets the keyboard back |
 | Show a hint when hovering over a button | Hover hints with what a button does and its key — on by default, also shown in click-through mode |
 | Show pressed shortcuts on screen | See *Presenting* — off by default |
 
