@@ -176,7 +176,7 @@ again would double them up.
 |---|---|---|
 | Area | All monitors · Monitor in use · Pick an area | "Monitor in use" means the one the cursor is on when you hit Record |
 | Keep the dock visible while recording | on / off | Windows 10 2004+ only. On by default; see [What ends up in the frame](#what-ends-up-in-the-frame) |
-| Record with the graphics chip (beta) | on / off | Windows, one screen. ffmpeg captures (Desktop Duplication), converts and encodes (Media Foundation, hardware) on the GPU — Python only starts and stops it. Falls back to the CPU recorder by itself if the PC can't. No pause in this mode yet. Off by default until confirmed on more hardware (CI runners have no GPU) |
+| Record with the graphics chip (beta) | on / off | Windows. ffmpeg captures (Desktop Duplication), converts and encodes (Media Foundation, hardware) on the GPU — Python only starts and stops it. Any one screen, area or window: the Qt screen is matched to its DXGI adapter/output (by device name, then position), a screen on a second graphics chip gets its own D3D11 device. Pause ends a piece and resume starts the next; stop joins them with the concat demuxer (streams copied). "All monitors" across several screens uses the CPU recorder. Falls back to the CPU recorder by itself if the PC can't. Off by default until confirmed on more hardware (CI runners have no GPU) |
 | Frame rate | 15 · 24 · 30 · 60 fps | 30 is the sensible default |
 | Quality | High (CRF 18) · Balanced (23) · Small file (28) | x264, `veryfast` preset |
 | Show the cursor | on / off | A drawn pointer on Windows; the real one on wlroots |

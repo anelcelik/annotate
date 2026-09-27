@@ -32,6 +32,8 @@ QT_DROP = {
     # Platform / input plugins for environments the app doesn't run in.
     # (qoffscreen stays: --self-test uses it.)
     'qminimal', 'qtuiotouchplugin',
+    # PySide6 also ships the Direct2D platform plugin; Qt only loads qwindows.
+    'qdirect2d',
 }
 
 # Python modules the lite build (the Store package) doesn't need. Pillow is
