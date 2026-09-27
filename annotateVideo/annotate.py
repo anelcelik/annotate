@@ -187,8 +187,10 @@ _DEFAULT_SETTINGS: dict = {
     # if you ever catch the dock in a finished recording despite it.
     "rec_keep_dock_live": True,
     # Capture + encode on the graphics chip (one screen; falls back to the
-    # CPU recorder by itself if this machine can't).
-    "rec_hardware":   True,
+    # CPU recorder by itself if this machine can't). Opt-in while it is new:
+    # CI has no GPU to prove it on.
+    "rec_hardware":   False,
+    "board_style":    "white",         # whiteboard: white | black
 }
 
 def _settings_path() -> Path:
@@ -3911,7 +3913,7 @@ class HelpDialog(QDialog):
         ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
         ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
         ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
-        ("▢",  "Whiteboard",      "W",  "Board over this screen · W again: blackboard · PgDn/PgUp: pages · Esc leaves"),
+        ("▢",  "Whiteboard",      "W",  "Board over this screen, white or dark (Settings) · PgDn/PgUp: pages · W or Esc leaves"),
         ("◎",  "Spotlight",       "F",  "Dims everything but the cursor · mouse wheel sizes it"),
         ("⌕",  "Zoom",            "M",  "Magnifies this screen around the cursor · wheel zooms · Esc leaves"),
     ]
@@ -4333,6 +4335,16 @@ class SettingsDialog(QDialog):
         lo.addWidget(self._scale_box)
         lo.addSpacing(6)
 
+        # ── Whiteboard ─────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Whiteboard style  (W)"))
+        self._board_box = QComboBox()
+        self._board_box.addItems(["White board", "Dark board"])
+        self._board_box.setCurrentIndex(1 if self._settings.get("board_style") == "black" else 0)
+        self._board_box.setFixedHeight(30)
+        self._board_box.setStyleSheet(_dlg_combo_style())
+        lo.addWidget(self._board_box)
+        lo.addSpacing(6)
+
         # ── Appearance ─────────────────────────────────────────────────────────
         lo.addWidget(_dlg_section_lbl("Appearance"))
         appearance_row = QHBoxLayout()
@@ -4442,7 +4454,7 @@ class SettingsDialog(QDialog):
 
         self._rec_gpu_cb = None
         if IS_WIN:
-            self._rec_gpu_cb = QCheckBox("Record with the graphics chip")
+            self._rec_gpu_cb = QCheckBox("Record with the graphics chip (beta)")
             self._rec_gpu_cb.setChecked(bool(g("rec_hardware")))
             self._rec_gpu_cb.setStyleSheet(_dlg_checkbox_style())
             self._rec_gpu_cb.setToolTip(
@@ -4602,6 +4614,8 @@ class SettingsDialog(QDialog):
         if self._rec_gpu_cb is not None:
             self._settings.set("rec_hardware", self._rec_gpu_cb.isChecked())
 
+        self._settings.set("board_style",
+                           "black" if self._board_box.currentIndex() == 1 else "white")
         new_scale = self._scale_values[self._scale_box.currentIndex()]
         if abs(new_scale - float(self._settings.get("dock_scale") or 1.0)) > 1e-3 \
                 and overlay is not None and hasattr(overlay, "toolbar"):
@@ -5615,26 +5629,33 @@ class AnnotationOverlay(QWidget):
     # ── Whiteboard / presenter effects ─────────────────────────────────────────
     @pyqtSlot()
     def cycle_board(self):
-        """Off → whiteboard → blackboard → off, on the screen under the cursor."""
-        nxt = {None: "white", "white": "black", "black": None}[self.canvas.board]
-        rect = None
-        if nxt is not None:
-            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-            g = scr.geometry()
-            rect = QRectF(QPointF(self.canvas.mapFromGlobal(g.topLeft())),
-                          QSizeF(g.size()))
-            if not self._wanted:
-                self._wanted = True
-                self.toolbar.set_chrome_visible(True)
-            self.set_passthrough(False)          # a board is for drawing on
-        self.canvas.set_board(nxt, rect)
+        """Open the board (white or dark, as chosen in Settings) on the screen
+        under the cursor — or close it. One key, one click."""
+        if self.canvas.board is not None:
+            self.leave_board()
+            return
+        style = "black" if self.settings.get("board_style") == "black" else "white"
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.geometry()
+        rect = QRectF(QPointF(self.canvas.mapFromGlobal(g.topLeft())), QSizeF(g.size()))
+        if not self._wanted:
+            self._wanted = True
+            self.toolbar.set_chrome_visible(True)
+        self.set_passthrough(False)              # a board is for drawing on
+        self.canvas.set_board(style, rect)
         self.sync_window()
-        if nxt is not None:
-            self.toast.show_message(
-                f"{'Whiteboard' if nxt == 'white' else 'Blackboard'} · page "
-                f"{self.canvas._page + 1} of {len(self.canvas._pages)} — "
-                "PgDn new page · W again to switch · Esc to leave",
-                anchor=self.toolbar)
+        # The dock comes onto the board, so every tool is right there.
+        self.toolbar.move_onto(scr.availableGeometry())
+        self.toolbar.raise_chrome()
+        self.toast.show_message(
+            f"{'Whiteboard' if style == 'white' else 'Dark board'} · page "
+            f"{self.canvas._page + 1} of {len(self.canvas._pages)} — "
+            "PgDn new page · W or Esc to leave", anchor=self.toolbar)
+
+    def leave_board(self):
+        self.canvas.set_board(None)
+        self.toolbar.move_back()
+        self.sync_window()
 
     @pyqtSlot()
     def toggle_zoom(self):
@@ -5736,8 +5757,7 @@ class AnnotationOverlay(QWidget):
         elif k == Key.Key_M and not chord:
             self.toggle_zoom()
         elif k == Key.Key_Escape and self.canvas.board is not None:
-            self.canvas.set_board(None)          # first Esc leaves the board
-            self.sync_window()
+            self.leave_board()                   # first Esc leaves the board
         elif k == Key.Key_Escape:
             # Esc means "stop taking my clicks", not "disappear" — the marks
             # stay up and the dock stays reachable.

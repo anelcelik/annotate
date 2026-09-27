@@ -49,6 +49,7 @@ def test_gpu_only_for_one_screen(monkeypatch):
 def test_falls_back_to_cpu_when_the_gpu_path_gives_up(A, overlay, monkeypatch):
     rc = overlay.recording
     monkeypatch.setattr(A, "gpu_recording_possible", lambda n: True)
+    overlay.settings.set("rec_hardware", True)
     started = []
     monkeypatch.setattr(rc._gpu, "start", lambda *a: started.append("gpu") or True)
     monkeypatch.setattr(rc._cpu, "start", lambda *a, **k: started.append("cpu") or True)
@@ -59,10 +60,11 @@ def test_falls_back_to_cpu_when_the_gpu_path_gives_up(A, overlay, monkeypatch):
     assert not rc.gpu_eligible()                     # not again this session
 
 
-def test_gpu_recording_can_be_switched_off(A, overlay, monkeypatch):
+def test_gpu_recording_is_opt_in_for_now(A, overlay, monkeypatch):
     monkeypatch.setattr(A, "gpu_recording_possible", lambda n: True)
-    overlay.settings.set("rec_hardware", False)
-    assert not overlay.recording.gpu_eligible()
+    assert not overlay.recording.gpu_eligible()          # off by default (beta)
+    overlay.settings.set("rec_hardware", True)
+    assert overlay.recording.gpu_eligible()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Desktop Duplication is Windows-only")
@@ -84,8 +86,20 @@ def test_gpu_command_records_on_real_windows(tmp_path):
         if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
             assert VR.probe_duration(str(out)) > 0.5
             return
-        errors.append(f"hardware={hardware}: {r.stderr.strip()[-300:]}")
-    pytest.skip("no desktop duplication here:\n" + "\n".join(errors))
+        errors.append(f"hardware={hardware}: {r.stderr.strip()[-900:]}")
+    # Which half fails here — the capture, or the encoder?
+    probes = {
+        "capture only": [ffmpeg, "-hide_banner", "-loglevel", "error", "-filter_complex",
+                         "ddagrab=output_idx=0:framerate=5,hwdownload,format=bgra",
+                         "-t", "1", "-f", "null", "-"],
+        "encoder only": [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                         "-i", "testsrc2=size=640x360:rate=15", "-t", "1",
+                         "-pix_fmt", "nv12", "-c:v", "h264_mf", "-f", "null", "-"],
+    }
+    for name, probe in probes.items():
+        r = subprocess.run(probe, capture_output=True, text=True, timeout=60)
+        errors.append(f"{name}: rc={r.returncode} {r.stderr.strip()[-300:]}")
+    pytest.skip("GPU recording can't run on this machine:\n" + "\n".join(errors))
 
 
 # ── zoom ──────────────────────────────────────────────────────────────────────

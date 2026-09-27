@@ -81,8 +81,9 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 **Version 5.4 — Recording on the graphics chip, and zoom**
 
-- Recording now runs on your PC's graphics chip: far less CPU, heat and battery, smooth 4K — and it falls back by itself where it can't
 - Zoom: press M to magnify the screen around your cursor; the mouse wheel zooms up to 8×
+- Whiteboard opens and closes with one key, in white or dark (Settings), and brings the dock along
+- New (beta): record with your PC's graphics chip for far less CPU, heat and battery — Settings → Recording
 
 
 **Version 5.3 — For presenters**

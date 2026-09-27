@@ -100,10 +100,13 @@ def key(overlay, k):
                                     Qt.KeyboardModifier.NoModifier))
 
 
-def test_w_cycles_boards_and_esc_leaves_first(A, overlay):
+def test_w_opens_and_closes_the_board_in_the_chosen_style(A, overlay):
     key(overlay, Qt.Key.Key_W)
     assert overlay.canvas.board == "white" and overlay.isVisible()
     assert not overlay.passthrough
+    key(overlay, Qt.Key.Key_W)                      # one key: closes again
+    assert overlay.canvas.board is None
+    overlay.settings.set("board_style", "black")
     key(overlay, Qt.Key.Key_W)
     assert overlay.canvas.board == "black"
     key(overlay, Qt.Key.Key_PageDown)
@@ -112,6 +115,20 @@ def test_w_cycles_boards_and_esc_leaves_first(A, overlay):
     assert overlay.canvas.board is None and not overlay.passthrough
     key(overlay, Qt.Key.Key_Escape)
     assert overlay.passthrough
+
+
+def test_the_dock_comes_onto_the_board_and_goes_back(A, overlay):
+    from PyQt6.QtWidgets import QApplication
+    dock = overlay.toolbar
+    dock._collapse()                                # tucked away as a puck
+    before = dock._anchor
+    key(overlay, Qt.Key.Key_W)
+    screen = QApplication.primaryScreen().availableGeometry()
+    assert not dock._collapsed and dock.isVisible()
+    assert screen.contains(dock.frameGeometry().center())
+    assert dock.frameGeometry().bottom() > screen.center().y()   # bottom half
+    key(overlay, Qt.Key.Key_W)
+    assert dock._collapsed and dock._anchor == before
 
 
 # ── presenter effects ────────────────────────────────────────────────────────

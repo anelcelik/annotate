@@ -925,8 +925,8 @@ class Toolbar(QWidget):
         zm.clicked.connect(self.overlay.toggle_zoom)
         row1.addWidget(zm)
 
-        bd = ActionButton("board", "Whiteboard — W  (again for a blackboard · "
-                                   "PgDn/PgUp pages · Esc leaves)")
+        bd = ActionButton("board", "Whiteboard — W  (white or dark: Settings · "
+                                   "PgDn/PgUp pages · W or Esc leaves)")
         bd.clicked.connect(self.overlay.cycle_board)
         row1.addWidget(bd)
 
@@ -1335,6 +1335,35 @@ class Toolbar(QWidget):
     def set_record_shortcut(self, text: str):
         self._state["rec_label"] = text
         self._rec_btn.set_shortcut_label(text)
+
+    def move_onto(self, area: QRect):
+        """Bring the dock onto a board: expanded, bottom-centre of `area`.
+        Where it was is remembered for move_back()."""
+        if getattr(self, "_before_board", None) is None:
+            self._before_board = (self._collapsed, self._anchor)
+        if self._collapsed:
+            self._expand()
+        self.adjustSize()
+        self._anchor = QPoint(area.center().x(),
+                              area.bottom() - self.height() // 2 - 24)
+        self.move(self._anchor.x() - self.width() // 2,
+                  self._anchor.y() - self.height() // 2)
+        self.raise_()
+
+    def move_back(self):
+        """Put the dock back where it was before the board."""
+        saved = getattr(self, "_before_board", None)
+        if saved is None:
+            return
+        self._before_board = None
+        was_collapsed, anchor = saved
+        self._anchor = anchor
+        if anchor is not None:
+            self.move(anchor.x() - self.width() // 2, anchor.y() - self.height() // 2)
+        else:
+            self._position()
+        if was_collapsed:
+            self._collapse()
 
     def apply_scale(self, scale: float):
         """Resize the dock now — every cell's size is fixed when it is built,
