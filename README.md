@@ -87,6 +87,7 @@ Windows — offline, instant, in every language you have installed.
 - **Webcam bubble** — you in a circle on top of everything, in your recordings too
 - **Fading ink** — marks that disappear by themselves after a few seconds
 - **Hover hints** on every button, and a 3-2-1 countdown before recording
+- **A searchable Guide** to every feature — Settings → ⓘ Guide, or `F1`
 
 ## Record
 

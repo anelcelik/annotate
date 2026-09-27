@@ -96,12 +96,30 @@ def test_black_box_style_follows_the_tool(A, overlay, monkeypatch):
 
 
 def test_copy_puts_the_file_on_the_clipboard(A, tmp_path):
-    from PySide6.QtWidgets import QApplication
+    import sys
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"x")
-    A.copy_file_to_clipboard(str(f))
-    urls = QApplication.clipboard().mimeData().urls()
-    assert urls == [QUrl.fromLocalFile(str(f))]
+    if sys.platform != "win32":
+        from PySide6.QtWidgets import QApplication
+        assert A.copy_file_to_clipboard(str(f))
+        assert QApplication.clipboard().mimeData().urls() == [QUrl.fromLocalFile(str(f))]
+        return
+    import ctypes
+    from ctypes import wintypes
+    if not A.copy_file_to_clipboard(str(f)):
+        pytest.skip("this session has no clipboard")
+    user32, shell32 = ctypes.windll.user32, ctypes.windll.shell32
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT,
+                                       wintypes.LPWSTR, wintypes.UINT]
+    assert user32.OpenClipboard(None)
+    try:
+        h = user32.GetClipboardData(15)
+        buf = ctypes.create_unicode_buffer(520)
+        shell32.DragQueryFileW(h, 0, buf, 520)
+    finally:
+        user32.CloseClipboard()
+    assert buf.value.lower() == str(f).lower()
 
 
 # ── the Guide ─────────────────────────────────────────────────────────────────

@@ -263,6 +263,7 @@ English, Bosnian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, R
 | `Ctrl + Y` | Redo (restore undone shape) |
 | `C` | Clear all shapes (`Ctrl + Z` brings them back) |
 | `Esc` | Drop into click-through — marks stay up, the dock stays reachable |
+| `F1` | The Guide: every feature step by step, by topic, with search (also Settings → ⓘ Guide) |
 
 Up to 5.0 the defaults were `Ctrl+T` (Snip & Read) and `Ctrl+Shift+R`
 (record) — new tab and hard reload in every browser, so pressing either one

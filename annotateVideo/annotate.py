@@ -3686,13 +3686,68 @@ class RecordingHUD(QWidget):
         p.end()
 
 
-def copy_file_to_clipboard(path: str):
+def copy_file_to_clipboard(path: str) -> bool:
     """The file itself on the clipboard, as Explorer copies it — so Ctrl+V
-    in Teams, Slack, Discord, an email or a folder pastes the video or GIF."""
+    in Teams, Slack, Discord, an email or a folder pastes the video or GIF.
+
+    On Windows this goes straight to the clipboard (CF_HDROP) rather than
+    through Qt: Qt keeps owning data it put there, and handing it over as
+    the app shuts down crashed Python on exit. Windows owns what's put here
+    directly, and it stays pasteable after the app is closed."""
+    if IS_WIN:
+        return _win_copy_files([os.path.abspath(path)])
     from PySide6.QtCore import QMimeData
     data = QMimeData()
     data.setUrls([QUrl.fromLocalFile(path)])
     QApplication.clipboard().setMimeData(data)
+    return True
+
+
+def _win_copy_files(paths: list[str]) -> bool:
+    import ctypes
+    import struct
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+
+    def global_copy(data: bytes):
+        h = kernel32.GlobalAlloc(0x0002, len(data))         # GMEM_MOVEABLE
+        if not h:
+            return None
+        ctypes.memmove(kernel32.GlobalLock(h), data, len(data))
+        kernel32.GlobalUnlock(h)
+        return h
+
+    # DROPFILES: offset of the list, a point, fNC, fWide — then the paths.
+    files = struct.pack("<IiiII", 20, 0, 0, 0, 1) + \
+        ("\0".join(paths) + "\0\0").encode("utf-16-le")
+    drop = global_copy(files)
+    effect = global_copy(struct.pack("<I", 1))               # DROPEFFECT_COPY
+    if not drop or not user32.OpenClipboard(None):
+        for h in (drop, effect):
+            if h:
+                kernel32.GlobalFree(h)
+        return False
+    try:
+        user32.EmptyClipboard()
+        ok = bool(user32.SetClipboardData(15, drop))          # CF_HDROP
+        if not ok:
+            kernel32.GlobalFree(drop)
+        if effect and not user32.SetClipboardData(
+                user32.RegisterClipboardFormatW("Preferred DropEffect"), effect):
+            kernel32.GlobalFree(effect)
+        return ok
+    finally:
+        user32.CloseClipboard()
 
 
 class _WordScan(QObject):
