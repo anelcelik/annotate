@@ -20,9 +20,12 @@ Qt 6                        GNU Lesser General Public License v3
   https://www.qt.io/licensing/open-source-lgpl-obligations
   Source: https://download.qt.io/official_releases/qt/
 
-PyQt6                       GNU General Public License v3
-  Riverbank Computing Limited
-  https://www.riverbankcomputing.com/software/pyqt/
+Qt for Python (PySide6,      GNU Lesser General Public License v3
+Shiboken6)
+  The Qt Company Ltd. The Qt and PySide6 libraries ship as separate files
+  in the installed app, so they can be replaced with a modified version.
+  https://doc.qt.io/qtforpython-6/licenses.html
+  Source: https://code.qt.io/cgit/pyside/pyside-setup.git/
 
 Python 3.12                 Python Software Foundation License
   https://docs.python.org/3/license.html

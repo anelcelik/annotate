@@ -147,10 +147,10 @@ def test_pynput_backend_skips_invalid_combos(monkeypatch):
 @pytest.mark.skipif(sys.platform != "win32", reason="RegisterHotKey is Windows-only")
 def test_win32_backend_registers_and_dispatches(qapp):
     """The part that can only be checked on real Windows: RegisterHotKey plus
-    the PyQt6 native event filter (signature, return value) delivering
+    the Qt native event filter (signature, return value) delivering
     WM_HOTKEY to the callback."""
     import ctypes
-    from PyQt6.QtCore import QCoreApplication
+    from PySide6.QtCore import QCoreApplication
     b = H._Win32Backend()
     fired = []
     try:

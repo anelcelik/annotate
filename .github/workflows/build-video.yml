@@ -56,7 +56,7 @@ env:
 jobs:
   # ── Tests on real Windows ───────────────────────────────────────────────────
   # The same suite that runs anywhere, plus what only Windows can check:
-  # RegisterHotKey delivering WM_HOTKEY through PyQt6's native event filter,
+  # RegisterHotKey delivering WM_HOTKEY through the Qt native event filter,
   # and the WinRT names platform_win.py calls.
   tests:
     runs-on: windows-latest
@@ -68,7 +68,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install dependencies
-        run: pip install PyQt6 pynput pytest ${{ env.WINRT_PACKAGES }}
+        run: pip install PySide6-Essentials pynput pytest ${{ env.WINRT_PACKAGES }}
       # The recording tests (GPU command, exports) need the same ffmpeg the
       # app ships.
       - name: Fetch the pinned ffmpeg.exe
@@ -127,7 +127,7 @@ jobs:
       # No Pillow here: only the EasyOCR path uses it, and the build must not
       # carry it (create_icons.py draws with Qt).
       - name: Install core dependencies
-        run: pip install PyQt6 pynput pyinstaller ${{ env.WINRT_PACKAGES }}
+        run: pip install PySide6-Essentials pynput pyinstaller ${{ env.WINRT_PACKAGES }}
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Generate icons
@@ -253,7 +253,7 @@ jobs:
           & annotateVideo\vendor\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       - name: Install dependencies
-        run: pip install PyQt6 pynput pyinstaller ${{ env.WINRT_PACKAGES }}
+        run: pip install PySide6-Essentials pynput pyinstaller ${{ env.WINRT_PACKAGES }}
 
       - name: Generate icons
         working-directory: annotateVideo

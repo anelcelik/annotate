@@ -512,9 +512,9 @@ def exclude_from_capture(widget, on: bool = True) -> bool:
 
 # ── Qt half: grab, composite, feed ────────────────────────────────────────────
 
-from PyQt6.QtCore import QObject, QRect, QPointF, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF, QCursor
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QObject, QRect, QPointF, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF, QCursor
+from PySide6.QtWidgets import QApplication
 
 
 def _even(n: int) -> int:
@@ -662,11 +662,11 @@ class ScreenRecorder(QObject):
     has to know whether ffmpeg is still chewing on the file.
     """
 
-    started  = pyqtSignal(str)      # output path
-    tick     = pyqtSignal(float)    # elapsed seconds
-    finishing = pyqtSignal()        # pipe closed, ffmpeg flushing
-    finished = pyqtSignal(str)      # output path, file is on disk
-    failed   = pyqtSignal(str)      # human-readable reason
+    started  = Signal(str)      # output path
+    tick     = Signal(float)    # elapsed seconds
+    finishing = Signal()        # pipe closed, ffmpeg flushing
+    finished = Signal(str)      # output path, file is on disk
+    failed   = Signal(str)      # human-readable reason
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -980,9 +980,7 @@ class ScreenRecorder(QObject):
                 self._draw_cursor(p)
             p.end()
 
-        ptr = img.bits()
-        ptr.setsize(img.sizeInBytes())
-        self._writer.set_frame(bytes(ptr))
+        self._writer.set_frame(bytes(img.constBits()))
 
     def _draw_cursor(self, p: QPainter):
         """A stylised pointer at the live cursor position.
@@ -1082,12 +1080,12 @@ class HardwareRecorder(QObject):
     """ffmpeg capturing and encoding on the GPU by itself. Same signals as
     ScreenRecorder, plus `fell_back` when it can't run on this machine."""
 
-    started   = pyqtSignal(str)
-    tick      = pyqtSignal(float)
-    finishing = pyqtSignal()
-    finished  = pyqtSignal(str)
-    failed    = pyqtSignal(str)
-    fell_back = pyqtSignal(str)        # gave up early: use the CPU recorder
+    started   = Signal(str)
+    tick      = Signal(float)
+    finishing = Signal()
+    finished  = Signal(str)
+    failed    = Signal(str)
+    fell_back = Signal(str)        # gave up early: use the CPU recorder
 
     EARLY_MS = 2000
 
@@ -1320,9 +1318,9 @@ def probe_duration(path: str) -> float:
 class MediaConverter(QObject):
     """Runs one ffmpeg conversion off the GUI thread, reporting progress."""
 
-    progress = pyqtSignal(float)     # 0.0 – 1.0, or -1 when it cannot be known
-    done     = pyqtSignal(str)       # output path
-    failed   = pyqtSignal(str)
+    progress = Signal(float)     # 0.0 – 1.0, or -1 when it cannot be known
+    done     = Signal(str)       # output path
+    failed   = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)

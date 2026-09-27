@@ -1,7 +1,7 @@
 """Drawing model and compositing: undo history, numbering, eraser, blur, DPR."""
-from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication
 
 
 def make_canvas(A):
@@ -63,7 +63,7 @@ def test_delete_is_undoable_in_place(A):
 
 
 def test_move_is_undoable(A, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
     cv = make_canvas(A)
     cv.tool = "redact"
     shape = A.RedactShape(QPointF(10, 10), QPointF(60, 60))

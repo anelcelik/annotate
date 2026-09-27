@@ -21,9 +21,9 @@ import sys, math, io
 sys.stdout.reconfigure(encoding='utf-8')
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt, QRectF, QPointF, QByteArray, QBuffer, QIODeviceBase
-from PyQt6.QtGui import (
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QRectF, QPointF, QByteArray, QBuffer, QIODeviceBase
+from PySide6.QtGui import (
     QPainter, QPen, QColor, QBrush, QPixmap,
     QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont,
     QFontMetrics,
