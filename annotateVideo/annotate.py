@@ -1028,9 +1028,13 @@ class HintSwitch(QObject):
             top = obj.window()
             sheet = (f"QToolTip{{background:{DLG_SURFACE};color:{DLG_INK};"
                      f"border:1px solid {DLG_MUTED};padding:5px 7px;font-size:12px;}}")
-            own = top.styleSheet()
+            # App level: on Windows Qt gives a tooltip no parent at all, so
+            # this is the only style sheet that reaches it there. A tooltip
+            # with no opaque background of its own comes out black.
+            app = QApplication.instance()
+            own = app.styleSheet()
             if own != sheet and (not own or own.startswith("QToolTip{")):
-                top.setStyleSheet(sheet)
+                app.setStyleSheet(sheet)
             QToolTip.showText(event.globalPos(), obj.toolTip(), top,
                               QRect(obj.mapTo(top, QPoint(0, 0)), obj.size()))
             return True

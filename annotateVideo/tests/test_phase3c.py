@@ -195,8 +195,8 @@ def test_hints_are_parented_to_the_window_not_the_see_through_button(A, overlay,
     assert A.HintSwitch(settings).eventFilter(btn, ev)
     tip = next(w for w in QApplication.allWidgets()
                if w.metaObject().className() == "QTipLabel")
-    assert tip.parent() is overlay.toolbar
-    assert "QToolTip{background:" in overlay.toolbar.styleSheet()
+    assert tip.parent() in (None, overlay.toolbar)       # Windows: no parent
+    assert "QToolTip{background:" in QApplication.instance().styleSheet()
     QToolTip.hideText()
 
 
