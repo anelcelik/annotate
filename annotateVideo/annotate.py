@@ -45,7 +45,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
-    QKeyCombination, QMargins,
+    QKeyCombination, QMargins, QSizeF,
     pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
@@ -127,7 +127,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.2.0"
+VERSION = "5.3.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -144,6 +144,9 @@ _DEFAULT_SETTINGS: dict = {
     "ocr_hotkey":    "<ctrl>+<alt>+t",
     "hotkeys_version": 2,
     "text_box":       False,           # Text tool: plate behind the text
+    "fade_ink":       False,           # marks disappear after a few seconds
+    "fx_halo":        False,           # highlight around the cursor
+    "fx_ripples":     False,           # ripple on every click
     "eraser_mode":    "shapes",        # shapes | pixels
     "start_on_boot":  False,
     "theme":          "light",
@@ -1019,6 +1022,33 @@ class Canvas(QWidget):
         self._editor: "InlineTextEditor | None" = None
         self._editing: TextShape | None = None
 
+        # Fading ink: marks drawn while it is on disappear by themselves
+        self.fade_ink = False
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setInterval(50)
+        self._fade_timer.timeout.connect(self._fade_tick)
+
+        # Whiteboard / blackboard: its own pages of marks; the desktop's marks
+        # wait aside until you leave the board.
+        self.board: str | None = None           # None | "white" | "black"
+        self.board_rect = QRectF()
+        self._desktop_space: tuple | None = None
+        self._pages: list[tuple] = []
+        self._page = 0
+
+        # Presenter effects — they follow the real cursor, so they work in
+        # click-through mode too, and they are part of what gets recorded.
+        self.spotlight = False
+        self.halo = False
+        self.ripples = False
+        self.spot_radius = 140
+        self._fx_pos: QPointF | None = None
+        self._ripple_list: list[tuple] = []     # (pos, started)
+        self._button_down = False
+        self._fx_timer = QTimer(self)
+        self._fx_timer.setInterval(16)
+        self._fx_timer.timeout.connect(self._fx_tick)
+
     def has_marks(self) -> bool:
         return bool(self._shapes)
 
@@ -1026,6 +1056,14 @@ class Canvas(QWidget):
         if self.eraser_mode == "pixels":
             return max(self.pen_width * 4, 20) / 2
         return max(self.pen_width * 2, 10)
+
+    def wheelEvent(self, e):
+        if self.spotlight:                      # the wheel sizes the spotlight
+            step = 15 if e.angleDelta().y() > 0 else -15
+            self.spot_radius = max(60, min(400, self.spot_radius + step))
+            self.update()
+            return
+        super().wheelEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() != MB.LeftButton: return
@@ -1380,8 +1418,159 @@ class Canvas(QWidget):
     # ── history ────────────────────────────────────────────────────────────
     def _commit(self, shape: Shape):
         """Add a shape (undoable)."""
+        # Redactions never fade — a blur that disappears would show what it hid.
+        if self.fade_ink and not isinstance(
+                shape, (BlurShape, PixelShape, RedactShape, EraserShape)):
+            shape.fades = True
+            shape.born = time.monotonic()
+            self._fade_timer.start()
         self._shapes.append(shape)
         self._record(("add", shape))
+
+    # ── fading ink ─────────────────────────────────────────────────────────
+    FADE_AFTER = 3.0        # seconds fully visible
+    FADE_FOR = 1.0          # seconds to fade out
+
+    def _fade_factor(self, shape, now: float) -> float:
+        if not getattr(shape, "fades", False):
+            return 1.0
+        age = now - shape.born
+        if age <= self.FADE_AFTER:
+            return 1.0
+        return max(0.0, 1.0 - (age - self.FADE_AFTER) / self.FADE_FOR)
+
+    def _fade_tick(self):
+        now = time.monotonic()
+        fading = [sh for sh in self._shapes if getattr(sh, "fades", False)]
+        if not fading:
+            self._fade_timer.stop()
+            return
+        gone = [sh for sh in fading if self._fade_factor(sh, now) <= 0]
+        for sh in fading:
+            if now - sh.born > self.FADE_AFTER:
+                self._update_area(sh.bounding_rect(), margin=40)
+        if gone:
+            for sh in gone:
+                self._shapes.remove(sh)
+            # A mark that faded away is not something Ctrl+Z should step over.
+            self._undo = [a for a in self._undo if not (a[0] == "add" and a[1] in gone)]
+            self._redo = [a for a in self._redo if not (a[0] == "add" and a[1] in gone)]
+            self._changed()
+
+    # ── whiteboard / blackboard ────────────────────────────────────────────
+    def _space(self) -> tuple:
+        return (self._shapes, self._undo, self._redo)
+
+    def _load_space(self, space: tuple):
+        self._shapes, self._undo, self._redo = space
+        self._selected = None
+
+    def set_board(self, kind: str | None, rect: QRectF | None = None):
+        """Show a whiteboard or blackboard over `rect` (one screen), or go back
+        to the desktop. Boards have their own pages; switching colour keeps
+        them."""
+        self.finish_editing()
+        if kind == self.board:
+            return
+        if self.board is None:                   # entering: park the desktop
+            self._desktop_space = self._space()
+            if not self._pages:
+                self._pages = [([], [], [])]
+            self._load_space(self._pages[self._page])
+        elif kind is None:                        # leaving: put it back
+            self._pages[self._page] = self._space()
+            self._load_space(self._desktop_space or ([], [], []))
+            self._desktop_space = None
+        if rect is not None:
+            self.board_rect = rect
+        self.board = kind
+        self._changed()
+
+    def board_page(self, delta: int) -> int:
+        """Next / previous page (a new blank one past the last). 1-based."""
+        if self.board is None:
+            return 0
+        self.finish_editing()
+        self._pages[self._page] = self._space()
+        self._page = max(0, self._page + delta)
+        if self._page >= len(self._pages):
+            self._pages.append(([], [], []))
+            self._page = len(self._pages) - 1
+        self._load_space(self._pages[self._page])
+        self._changed()
+        return self._page + 1
+
+    def _paint_board(self, p: QPainter):
+        if self.board is not None and not self.board_rect.isNull():
+            p.fillRect(self.board_rect, QColor("#FAFAF7" if self.board == "white"
+                                               else "#1E2023"))
+
+    # ── presenter effects ──────────────────────────────────────────────────
+    def effects_on(self) -> bool:
+        return self.spotlight or self.halo or self.ripples
+
+    def set_effect(self, name: str, on: bool):
+        setattr(self, name, on)
+        if self.effects_on() or self._ripple_list:
+            self._fx_timer.start()
+        else:
+            self._fx_timer.stop()
+            self._fx_pos = None
+        self.update()
+
+    def _fx_area(self, pos: QPointF | None) -> QRectF:
+        if pos is None:
+            return QRectF()
+        r = 30.0
+        if self.spotlight:
+            r = max(r, self.spot_radius + 6)
+        return self._ring(pos, r)
+
+    def _left_button_down(self) -> bool:
+        if IS_WIN:
+            try:
+                import ctypes
+                return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+            except Exception:
+                return False
+        return bool(QApplication.mouseButtons() & MB.LeftButton)
+
+    def _fx_tick(self):
+        pos = QPointF(self.mapFromGlobal(QCursor.pos()))
+        if pos != self._fx_pos:
+            old, self._fx_pos = self._fx_pos, pos
+            self._update_area(self._fx_area(old), self._fx_area(pos))
+        now = time.monotonic()
+        if self.ripples:
+            # Polled, not hooked: works while clicks go to the app underneath.
+            down = self._left_button_down()
+            if down and not self._button_down:
+                self._ripple_list.append((pos, now))
+            self._button_down = down
+        for rpos, _t in self._ripple_list:
+            self._update_area(self._ring(rpos, 48))
+        self._ripple_list = [(rp, t) for rp, t in self._ripple_list if now - t < 0.5]
+        if not self.effects_on() and not self._ripple_list:
+            self._fx_timer.stop()
+
+    def _paint_effects(self, p: QPainter):
+        pos = self._fx_pos
+        if pos is not None and self.spotlight:
+            path = QPainterPath()
+            path.setFillRule(Qt.FillRule.OddEvenFill)
+            path.addRect(QRectF(self.rect()))
+            path.addEllipse(pos, self.spot_radius, self.spot_radius)
+            p.fillPath(path, QColor(0, 0, 0, 150))
+        if pos is not None and self.halo:
+            p.setPen(PS.NoPen)
+            p.setBrush(QColor(255, 214, 10, 90))
+            p.drawEllipse(pos, 26, 26)
+        now = time.monotonic()
+        for rpos, t in self._ripple_list:
+            k = min(1.0, (now - t) / 0.5)
+            p.setBrush(BS.NoBrush)
+            p.setPen(QPen(QColor(10, 132, 255, int(220 * (1 - k))), 3))
+            p.drawEllipse(rpos, 10 + 34 * k, 10 + 34 * k)
 
     def _record(self, action: tuple):
         self._undo.append(action)
@@ -1515,6 +1704,7 @@ class Canvas(QWidget):
         p.setCompositionMode(CM.CompositionMode_SourceOver)
         if IS_WIN:
             p.fillRect(area, QColor(0, 0, 0, 1))
+        self._paint_board(p)
         if not self._has_eraser():
             self.render_annotations(p, area=QRectF(area))
         else:
@@ -1551,6 +1741,7 @@ class Canvas(QWidget):
         into a layer of their own first; erasing then only ever removes marks.
         `width_px`/`height_px` are the target's size in device pixels.
         """
+        self._paint_board(p)
         if not self._has_eraser():
             self._layers.clear()
             self.render_annotations(p, selection=selection, live=live)
@@ -1587,13 +1778,21 @@ class Canvas(QWidget):
         everything `live` — the half-drawn stroke and the laser dot.
         """
         p.setRenderHint(RHint.Antialiasing)
+        now = time.monotonic()
         for shape in self._shapes:
             if shape is self._editing:          # its editor shows it instead
                 continue
             if area is not None and not shape.bounding_rect().adjusted(
                     -60, -60, 60, 60).intersects(area):
                 continue                        # nowhere near the repaint
-            shape.draw(p)
+            fade = self._fade_factor(shape, now)
+            if fade < 1.0:
+                p.save()
+                p.setOpacity(fade)
+                shape.draw(p)
+                p.restore()
+            else:
+                shape.draw(p)
         if not live:
             return
         if self.tool == "pen"    and self._pen_shape:    self._pen_shape.draw(p)
@@ -1616,6 +1815,8 @@ class Canvas(QWidget):
             p.setPen(QPen(QColor("#0A84FF"), 1, PS.DashLine))
             p.setBrush(BS.NoBrush)
             p.drawRect(self._selected.bounding_rect().adjusted(-3,-3,3,3))
+
+        self._paint_effects(p)
 
         # ── Laser pointer ──────────────────────────────────────────────────
         if self.tool == "laser" and self._laser_pos:
@@ -3584,6 +3785,8 @@ class HelpDialog(QDialog):
         ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
         ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
         ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
+        ("▢",  "Whiteboard",      "W",  "Board over this screen · W again: blackboard · PgDn/PgUp: pages · Esc leaves"),
+        ("◎",  "Spotlight",       "F",  "Dims everything but the cursor · mouse wheel sizes it"),
     ]
 
     _TIPS = [
@@ -5038,6 +5241,7 @@ class AnnotationOverlay(QWidget):
         self.canvas.text_box = bool(settings_mgr.get("text_box"))
         self.canvas.eraser_mode = ("pixels" if settings_mgr.get("eraser_mode") == "pixels"
                                    else "shapes")
+        self.canvas.fade_ink = bool(settings_mgr.get("fade_ink"))
         self.toolbar = Toolbar(self.canvas, self, settings_mgr, hotkey_mgr)
         self.canvas.setCursor(_cross_cursor())
         self.toolbar.set_mode_shortcut(hotkeys.display(settings_mgr.get("hotkey")))
@@ -5048,6 +5252,9 @@ class AnnotationOverlay(QWidget):
         self.recording.state_changed.connect(self.toolbar.set_recording)
         self.recording.ticked.connect(self.toolbar.set_record_elapsed)
         self.canvas.shapes_changed.connect(self.sync_window)
+        for fx in ("halo", "ripples"):
+            if settings_mgr.get(f"fx_{fx}"):
+                self.canvas.set_effect(fx, True)
 
         # Cover all monitors and react to any display configuration change
         self._fit_to_screens()
@@ -5088,7 +5295,9 @@ class AnnotationOverlay(QWidget):
         also stops full-screen games and video from bypassing composition.
         """
         needed = self._wanted and (not self._passthrough
-                                   or self.canvas.has_marks() or self._pinned)
+                                   or self.canvas.has_marks() or self._pinned
+                                   or self.canvas.board is not None
+                                   or self.canvas.effects_on())
         if needed:
             self._release_timer.stop()
         if needed and not self.isVisible():
@@ -5260,6 +5469,43 @@ class AnnotationOverlay(QWidget):
                 self.activateWindow()
             self.toolbar.raise_chrome()
 
+    # ── Whiteboard / presenter effects ─────────────────────────────────────────
+    @pyqtSlot()
+    def cycle_board(self):
+        """Off → whiteboard → blackboard → off, on the screen under the cursor."""
+        nxt = {None: "white", "white": "black", "black": None}[self.canvas.board]
+        rect = None
+        if nxt is not None:
+            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            g = scr.geometry()
+            rect = QRectF(QPointF(self.canvas.mapFromGlobal(g.topLeft())),
+                          QSizeF(g.size()))
+            if not self._wanted:
+                self._wanted = True
+                self.toolbar.set_chrome_visible(True)
+            self.set_passthrough(False)          # a board is for drawing on
+        self.canvas.set_board(nxt, rect)
+        self.sync_window()
+        if nxt is not None:
+            self.toast.show_message(
+                f"{'Whiteboard' if nxt == 'white' else 'Blackboard'} · page "
+                f"{self.canvas._page + 1} of {len(self.canvas._pages)} — "
+                "PgDn new page · W again to switch · Esc to leave",
+                anchor=self.toolbar)
+
+    def turn_page(self, delta: int):
+        page = self.canvas.board_page(delta)
+        if page:
+            self.toast.show_message(f"Page {page} of {len(self.canvas._pages)}",
+                                    anchor=self.toolbar)
+
+    def set_effect(self, name: str, on: bool):
+        self.canvas.set_effect(name, on)
+        if name in ("halo", "ripples"):
+            self.settings.set(f"fx_{name}", on)
+            self.settings.save()
+        self.sync_window()
+
     # ── Destructive actions, made recoverable ──────────────────────────────────
     def clear_marks(self):
         """Clear all — undoable, and it says so, with a button to prove it."""
@@ -5320,10 +5566,19 @@ class AnnotationOverlay(QWidget):
             self._hotkeys.trigger(name)
             return
 
-        if k == Key.Key_Escape:
+        if k == Key.Key_Escape and self.canvas.board is not None:
+            self.canvas.set_board(None)          # first Esc leaves the board
+            self.sync_window()
+        elif k == Key.Key_Escape:
             # Esc means "stop taking my clicks", not "disappear" — the marks
             # stay up and the dock stays reachable.
             self.set_passthrough(True)
+        elif k == Key.Key_W and not chord:
+            self.cycle_board()
+        elif k == Key.Key_F and not chord:
+            self.set_effect("spotlight", not self.canvas.spotlight)
+        elif k in (Key.Key_PageDown, Key.Key_PageUp) and self.canvas.board:
+            self.turn_page(1 if k == Key.Key_PageDown else -1)
         elif k == Key.Key_Z and ctrl:
             self.canvas.undo()
         elif k == Key.Key_Y and ctrl:

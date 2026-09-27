@@ -55,6 +55,15 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Eraser | `E` | **Shapes** (default): touch a mark to remove it, one undo step per drag · **Pixels**: rub out part of a mark |
 | Laser Pointer | `I` | Real-time glowing dot — no marks left, OS cursor hidden |
 
+### Presenting
+
+| Feature | Key | Description |
+|---|---|---|
+| Whiteboard / blackboard | `W` | Board over the current screen; `W` again for black, again to close · `PgDn`/`PgUp` pages (own undo each) · `Esc` leaves · desktop marks come back afterwards |
+| Spotlight | `F` | Dims everything but the cursor's surroundings · mouse wheel sizes it · also Presenter menu on the dock |
+| Cursor halo · Show clicks | dock → Presenter | Highlight around the cursor, ripple on every click — work in click-through mode and are recorded |
+| Fading ink | FADE on the drawing tools | Marks disappear after ~3 s (fade over 1 s); blur, pixelate and black boxes never fade |
+
 ### Annotation Tools
 
 | Tool | Key | Description |

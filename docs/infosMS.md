@@ -79,6 +79,14 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 5.3 — For presenters**
+
+- Whiteboard and blackboard with pages: press W, draw on a clean board, and your desktop annotations come back when you leave
+- Spotlight: dim everything but the area around your cursor (F; the mouse wheel sizes it)
+- Cursor halo and click ripples — visible in recordings, and they work while you click through to the app underneath
+- Fading ink: marks disappear by themselves after a few seconds (redactions never fade)
+
+
 **Version 5.2 — Snip & Read is back, and drawing got easier**
 
 - Snip & Read: copy text from anything on screen, using the text recognition built into Windows — offline, in every language you have installed, and instant

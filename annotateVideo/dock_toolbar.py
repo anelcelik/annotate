@@ -144,11 +144,11 @@ FONT = "Segoe UI Variable"  # Archivo isn't bundled; this ships with Windows 11
 DOCK_TOOLS = [
     # Draw
     ("select",    "Select",        "V", [],                                 "Drag any existing shape. Delete removes it."),
-    ("pen",       "Pen",           "P", ["color", "stroke", "opacity"],     ""),
-    ("line",      "Line",          "L", ["color", "stroke", "opacity"],     "Hold Shift to snap to 45°."),
-    ("arrow",     "Arrow",         "A", ["color", "stroke", "opacity"],     "Hold Shift to snap to 45°."),
-    ("rect",      "Rectangle",     "R", ["color", "stroke", "opacity"],     "Hold Shift for a perfect square."),
-    ("circle",    "Circle",        "O", ["color", "stroke", "opacity"],     "Hold Shift for a perfect circle."),
+    ("pen",       "Pen",           "P", ["color", "stroke", "opacity", "fade"],     ""),
+    ("line",      "Line",          "L", ["color", "stroke", "opacity", "fade"],     "Hold Shift to snap to 45°."),
+    ("arrow",     "Arrow",         "A", ["color", "stroke", "opacity", "fade"],     "Hold Shift to snap to 45°."),
+    ("rect",      "Rectangle",     "R", ["color", "stroke", "opacity", "fade"],     "Hold Shift for a perfect square."),
+    ("circle",    "Circle",        "O", ["color", "stroke", "opacity", "fade"],     "Hold Shift for a perfect circle."),
     ("ruler",     "Ruler",         "U", ["color", "stroke"],                "Measures in real screen pixels as you drag."),
     ("eraser",    "Eraser",        "E", ["erasemode", "stroke"],            "Shapes: touch a mark to remove it. Pixels: rub out part of one."),
     ("laser",     "Laser pointer", "I", ["color"],                          "Leaves no marks. Hides the OS cursor."),
@@ -326,6 +326,24 @@ def _paint_icon(p: QPainter, tid: str, size: float, color: QColor):
                                (19, 12, 22, 12), (4.9, 4.9, 7, 7), (17, 17, 19.1, 19.1),
                                (19.1, 4.9, 17, 7), (7, 17, 4.9, 19.1)):
             line(x1, y1, x2, y2)
+
+    elif tid == "board":
+        p.drawRect(QRectF(3, 4, 18, 13))
+        line(8, 21, 12, 17)
+        line(16, 21, 12, 17)
+        line(7, 9, 13, 9)
+        line(7, 12.5, 16, 12.5)
+
+    elif tid == "presenter":
+        p.drawEllipse(QPointF(12, 12), 4.0, 4.0)
+        for x1, y1, x2, y2 in ((12, 2, 12, 5), (12, 19, 12, 22), (2, 12, 5, 12),
+                               (19, 12, 22, 12)):
+            line(x1, y1, x2, y2)
+        faint = QPen(color, 1.2)
+        faint.setDashPattern([1.5, 2])
+        p.setPen(faint)
+        p.drawEllipse(QPointF(12, 12), 8.5, 8.5)
+        p.setPen(pen)
 
     elif tid == "pause":
         p.setPen(Qt.PenStyle.NoPen)
@@ -897,6 +915,16 @@ class Toolbar(QWidget):
         self._rec_btn.clicked.connect(self._toggle_recording)
         row1.addWidget(self._rec_btn)
 
+        bd = ActionButton("board", "Whiteboard — W  (again for a blackboard · "
+                                   "PgDn/PgUp pages · Esc leaves)")
+        bd.clicked.connect(self.overlay.cycle_board)
+        row1.addWidget(bd)
+
+        fx = ActionButton("presenter", "Presenter: spotlight, cursor halo, "
+                                       "click ripples")
+        fx.clicked.connect(lambda _c, b=fx: self._presenter_menu(b))
+        row1.addWidget(fx)
+
         st = ActionButton("settings", "Settings")
         st.clicked.connect(self._open_settings)
         row1.addWidget(st)
@@ -983,6 +1011,26 @@ class Toolbar(QWidget):
             b.clicked.connect(lambda _c, v=value: pick(v))
         return box
 
+    def _presenter_menu(self, button):
+        """Spotlight, halo and ripples — on/off, shown with their state."""
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu{{background:{GROUND};color:{INK};border:2px solid {INK};"
+            f"font-family:'{FONT}';font-size:{_fs(10)}pt;padding:4px;}}"
+            "QMenu::item{padding:6px 18px;}"
+            f"QMenu::item:selected{{background:{TINT};}}")
+        cv = self.canvas
+        for name, label in (("spotlight", "Spotlight   F  (wheel sizes it)"),
+                            ("halo", "Cursor halo"),
+                            ("ripples", "Show clicks")):
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(getattr(cv, name))
+            act.toggled.connect(lambda on, n=name: self.overlay.set_effect(n, on))
+        menu.exec(button.mapToGlobal(button.rect().topLeft())
+                  - QPoint(0, menu.sizeHint().height()))
+
     def _set_pref(self, name: str, value):
         """A tool preference that sticks: onto the canvas and into settings."""
         setattr(self.canvas, name, value)
@@ -1064,6 +1112,13 @@ class Toolbar(QWidget):
                 self._choice([("shapes", "Shapes"), ("pixels", "Pixels")],
                              self.canvas.eraser_mode,
                              lambda v: self._set_pref("eraser_mode", v))))
+            self._props_lo.addWidget(_vrule())
+
+        if "fade" in props:
+            self._props_lo.addWidget(self._cell(
+                _label("FADE"),
+                self._choice([(False, "Off"), (True, "On")], self.canvas.fade_ink,
+                             lambda v: self._set_pref("fade_ink", v))))
             self._props_lo.addWidget(_vrule())
 
         if "textbox" in props:
