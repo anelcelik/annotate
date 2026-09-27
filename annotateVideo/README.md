@@ -59,10 +59,11 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 
 | Feature | Key | Description |
 |---|---|---|
-| Whiteboard / blackboard | `W` | Board over the current screen; `W` again for black, again to close · `PgDn`/`PgUp` pages (own undo each) · `Esc` leaves · desktop marks come back afterwards |
+| Whiteboard | `W` | Opens / closes a board over the current screen — white or dark per Settings → General · the dock moves onto it and back · `PgDn`/`PgUp` pages (own undo each) · `Esc` leaves · desktop marks come back afterwards |
 | Spotlight | `F` | Dims everything but the cursor's surroundings · mouse wheel sizes it · also Presenter menu on the dock |
 | Cursor halo · Show clicks | dock → Presenter | Highlight around the cursor, ripple on every click — work in click-through mode and are recorded |
 | Fading ink | FADE on the drawing tools | Marks disappear after ~3 s (fade over 1 s); blur, pixelate and black boxes never fade |
+| Zoom | `M` | Magnifies the current screen around the cursor (a still, marks included) · wheel 1.25×–8× · `Esc`, `M` or right-click leaves · optional global shortcut |
 
 ### Annotation Tools
 
@@ -170,6 +171,7 @@ again would double them up.
 |---|---|---|
 | Area | All monitors · Monitor in use · Pick an area | "Monitor in use" means the one the cursor is on when you hit Record |
 | Keep the dock visible while recording | on / off | Windows 10 2004+ only. On by default; see [What ends up in the frame](#what-ends-up-in-the-frame) |
+| Record with the graphics chip (beta) | on / off | Windows, one screen. ffmpeg captures (Desktop Duplication), converts and encodes (Media Foundation, hardware) on the GPU — Python only starts and stops it. Falls back to the CPU recorder by itself if the PC can't. No pause in this mode yet. Off by default until confirmed on more hardware (CI runners have no GPU) |
 | Frame rate | 15 · 24 · 30 · 60 fps | 30 is the sensible default |
 | Quality | High (CRF 18) · Balanced (23) · Small file (28) | x264, `veryfast` preset |
 | Show the cursor | on / off | A drawn pointer on Windows; the real one on wlroots |

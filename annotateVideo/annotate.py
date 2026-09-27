@@ -57,6 +57,7 @@ from PyQt6.QtGui import (
 
 from video_recorder import (
     FFMPEG_HELP, QUALITY_PRESETS, RecordConfig, ScreenRecorder,
+    HardwareRecorder, gpu_recording_possible, resolve_audio_device,
     can_exclude_from_capture, default_output_dir, exclude_from_capture,
     ffmpeg_version, find_ffmpeg,
     format_elapsed, list_audio_devices, pick_region_natively,
@@ -127,7 +128,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.3.0"
+VERSION = "5.4.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -167,6 +168,7 @@ _DEFAULT_SETTINGS: dict = {
     "review_days":    [],              # distinct days the app did its job
     "rec_hotkey":     "<ctrl>+<alt>+r",
     "screenshot_hotkey": "<ctrl>+<print_screen>",
+    "zoom_hotkey":    "",              # none by default — M in the app
     "shot_dir":       "",              # "" = Pictures\Screenshots
     "tips_done":      False,           # first-run tips shown (or skipped)
     "rec_fps":        30,
@@ -184,6 +186,11 @@ _DEFAULT_SETTINGS: dict = {
     # falls back to the old hide/park behavior automatically. Turn this off
     # if you ever catch the dock in a finished recording despite it.
     "rec_keep_dock_live": True,
+    # Capture + encode on the graphics chip (one screen; falls back to the
+    # CPU recorder by itself if this machine can't). Opt-in while it is new:
+    # CI has no GPU to prove it on.
+    "rec_hardware":   False,
+    "board_style":    "white",         # whiteboard: white | black
 }
 
 def _settings_path() -> Path:
@@ -232,6 +239,7 @@ HOTKEY_SETTINGS = {
     "ocr_hotkey":        ("ocr",        "Snip & Read"),
     "rec_hotkey":        ("record",     "Start / stop recording"),
     "screenshot_hotkey": ("screenshot", "Screenshot"),
+    "zoom_hotkey":       ("zoom",       "Zoom"),
 }
 
 _OLD_DEFAULT_HOTKEYS = {
@@ -1049,6 +1057,12 @@ class Canvas(QWidget):
         self._fx_timer.setInterval(16)
         self._fx_timer.timeout.connect(self._fx_tick)
 
+        # Zoom: a still of one screen, magnified around the cursor
+        self.zoom_pix: QPixmap | None = None
+        self.zoom_rect = QRectF()
+        self.zoom_factor = 2.0
+        self._zoom_cursor = QPointF()
+
     def has_marks(self) -> bool:
         return bool(self._shapes)
 
@@ -1058,6 +1072,11 @@ class Canvas(QWidget):
         return max(self.pen_width * 2, 10)
 
     def wheelEvent(self, e):
+        if self.zoom_pix is not None:
+            k = 1.25 if e.angleDelta().y() > 0 else 1 / 1.25
+            self.zoom_factor = max(self.ZOOM_MIN, min(self.ZOOM_MAX, self.zoom_factor * k))
+            self.update(self.zoom_rect.toAlignedRect())
+            return
         if self.spotlight:                      # the wheel sizes the spotlight
             step = 15 if e.angleDelta().y() > 0 else -15
             self.spot_radius = max(60, min(400, self.spot_radius + step))
@@ -1066,6 +1085,10 @@ class Canvas(QWidget):
         super().wheelEvent(e)
 
     def mousePressEvent(self, e):
+        if self.zoom_pix is not None:           # zoomed: no drawing
+            if e.button() == MB.RightButton:
+                self.stop_zoom()
+            return
         if e.button() != MB.LeftButton: return
         pos = QPointF(e.pos())
         # A click anywhere finishes the text being typed (the canvas never
@@ -1142,6 +1165,11 @@ class Canvas(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = QPointF(e.pos())
+
+        if self.zoom_pix is not None:           # the view follows the cursor
+            self._zoom_cursor = pos
+            self.update(self.zoom_rect.toAlignedRect())
+            return
 
         # Laser tracks freely — no button held needed
         if self.tool == "laser":
@@ -1505,6 +1533,45 @@ class Canvas(QWidget):
             p.fillRect(self.board_rect, QColor("#FAFAF7" if self.board == "white"
                                                else "#1E2023"))
 
+    # ── zoom ───────────────────────────────────────────────────────────────
+    ZOOM_MIN, ZOOM_MAX = 1.25, 8.0
+
+    def start_zoom(self, pix: QPixmap, rect: QRectF, cursor: QPointF):
+        self.finish_editing()
+        self.zoom_pix, self.zoom_rect = pix, rect
+        self.zoom_factor = 2.0
+        self._zoom_cursor = cursor
+        self.update()
+
+    def stop_zoom(self):
+        if self.zoom_pix is None:
+            return
+        self.zoom_pix = None
+        self.update()
+        win = self.window()
+        if hasattr(win, "sync_window"):
+            win.sync_window()
+
+    def zoom_source(self) -> QRectF:
+        """The part of the still shown magnified, in its pixels. The point
+        under the cursor stays under the cursor (ZoomIt's feel): its relative
+        position in the screen equals its relative position in the view."""
+        r, f = self.zoom_rect, self.zoom_factor
+        rel_x = min(max(self._zoom_cursor.x() - r.x(), 0.0), r.width())
+        rel_y = min(max(self._zoom_cursor.y() - r.y(), 0.0), r.height())
+        scale = self.zoom_pix.width() / max(1.0, r.width()) if self.zoom_pix else 1.0
+        return QRectF(rel_x * (1 - 1 / f) * scale, rel_y * (1 - 1 / f) * scale,
+                      r.width() / f * scale, r.height() / f * scale)
+
+    def _paint_zoom(self, p: QPainter) -> bool:
+        if self.zoom_pix is None:
+            return False
+        p.save()
+        p.setRenderHint(RHint.SmoothPixmapTransform)
+        p.drawPixmap(self.zoom_rect, self.zoom_pix, self.zoom_source())
+        p.restore()
+        return True
+
     # ── presenter effects ──────────────────────────────────────────────────
     def effects_on(self) -> bool:
         return self.spotlight or self.halo or self.ripples
@@ -1704,6 +1771,10 @@ class Canvas(QWidget):
         p.setCompositionMode(CM.CompositionMode_SourceOver)
         if IS_WIN:
             p.fillRect(area, QColor(0, 0, 0, 1))
+        if self._paint_zoom(p):         # the still already has the marks
+            self._paint_effects(p)
+            p.end()
+            return
         self._paint_board(p)
         if not self._has_eraser():
             self.render_annotations(p, area=QRectF(area))
@@ -1741,6 +1812,10 @@ class Canvas(QWidget):
         into a layer of their own first; erasing then only ever removes marks.
         `width_px`/`height_px` are the target's size in device pixels.
         """
+        if self._paint_zoom(p):
+            if live:
+                self._paint_effects(p)
+            return
         self._paint_board(p)
         if not self._has_eraser():
             self._layers.clear()
@@ -3160,11 +3235,19 @@ class RecordingController(QObject):
         self._dock_excluded_windows: list = []
         self._quit_when_done = False   # Exit was chosen mid-recording
 
-        self.recorder = ScreenRecorder(self)
-        self.recorder.tick.connect(self._on_tick)
-        self.recorder.finishing.connect(self._on_finishing)
-        self.recorder.finished.connect(self._on_finished)
-        self.recorder.failed.connect(self._on_failed)
+        # Two recorders: the GPU one where this machine can (see
+        # HardwareRecorder in video_recorder.py), the CPU one otherwise.
+        self._cpu = ScreenRecorder(self)
+        self._gpu = HardwareRecorder(self)
+        for rec in (self._cpu, self._gpu):
+            rec.tick.connect(self._on_tick)
+            rec.finishing.connect(self._on_finishing)
+            rec.finished.connect(self._on_finished)
+            rec.failed.connect(self._on_failed)
+        self._gpu.fell_back.connect(self._gpu_fell_back)
+        self._gpu_broken = ""           # why the GPU path failed this session
+        self._pending: tuple | None = None
+        self.recorder = self._cpu
 
     # ── state ─────────────────────────────────────────────────────────────────
     @property
@@ -3225,6 +3308,11 @@ class RecordingController(QObject):
         self._clear_chrome(rect)
         self.overlay.pin_on_screen(True)
 
+        if self._start_on_gpu(cfg, region):
+            self._duration = 0.0
+            self.state_changed.emit(True)
+            return
+        self.recorder = self._cpu
         # The overlay's own ink is still worth excluding where the platform
         # honours it: that lets the recorder draw the shapes itself at full
         # output resolution instead of capturing them pre-resampled.
@@ -3236,6 +3324,46 @@ class RecordingController(QObject):
             return
         self._duration = 0.0
         self.state_changed.emit(True)
+
+    def gpu_eligible(self) -> bool:
+        return (bool(self._settings.get("rec_hardware")) and not self._gpu_broken
+                and gpu_recording_possible(len(QApplication.screens())))
+
+    def _start_on_gpu(self, cfg: RecordConfig, region) -> bool:
+        if not self.gpu_eligible():
+            return False
+        scr = QApplication.primaryScreen()
+        g, dpr = scr.geometry(), scr.devicePixelRatio()
+        crop = None
+        size = (round(g.width() * dpr), round(g.height() * dpr))
+        if region is not None and region.isValid() and region != g:
+            r = region.intersected(g)
+            crop = (round((r.x() - g.x()) * dpr) // 2 * 2,
+                    round((r.y() - g.y()) * dpr) // 2 * 2)
+            size = (round(r.width() * dpr), round(r.height() * dpr))
+        audio = None
+        if cfg.audio:
+            audio = resolve_audio_device(cfg.audio_device)
+            if audio is None:
+                return False            # the CPU path explains the missing mic
+        self._pending = (cfg, region)
+        if not self._gpu.start(cfg, size, crop, audio):
+            return False
+        self.recorder = self._gpu
+        return True
+
+    def _gpu_fell_back(self, reason: str):
+        """The GPU path gave up in its first seconds — carry on on the CPU,
+        and don't try the GPU again this session."""
+        self._gpu_broken = reason or "unavailable"
+        cfg, region = self._pending or (self.config(), None)
+        self.recorder = self._cpu
+        ok = self._cpu.start(self.overlay.canvas, self.overlay, cfg, region,
+                             exclude=(self.overlay,))
+        if not ok:
+            self._teardown_hud()
+            self._restore_chrome()
+            self.state_changed.emit(False)
 
     def _clear_chrome(self, rect: QRect):
         """Get the dock out of the recorded area, hiding it if there is no
@@ -3785,8 +3913,9 @@ class HelpDialog(QDialog):
         ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
         ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
         ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
-        ("▢",  "Whiteboard",      "W",  "Board over this screen · W again: blackboard · PgDn/PgUp: pages · Esc leaves"),
+        ("▢",  "Whiteboard",      "W",  "Board over this screen, white or dark (Settings) · PgDn/PgUp: pages · W or Esc leaves"),
         ("◎",  "Spotlight",       "F",  "Dims everything but the cursor · mouse wheel sizes it"),
+        ("⌕",  "Zoom",            "M",  "Magnifies this screen around the cursor · wheel zooms · Esc leaves"),
     ]
 
     _TIPS = [
@@ -4158,6 +4287,7 @@ class SettingsDialog(QDialog):
         self._add_shortcut(lo, "visibility_hotkey", "")
         self._add_shortcut(lo, "rec_hotkey", "")
         self._add_shortcut(lo, "screenshot_hotkey", "")
+        self._add_shortcut(lo, "zoom_hotkey", "")
         if ocr_available():
             self._add_shortcut(lo, "ocr_hotkey", "")
 
@@ -4203,6 +4333,16 @@ class SettingsDialog(QDialog):
         self._scale_box.setFixedHeight(30)
         self._scale_box.setStyleSheet(_dlg_combo_style())
         lo.addWidget(self._scale_box)
+        lo.addSpacing(6)
+
+        # ── Whiteboard ─────────────────────────────────────────────────────────
+        lo.addWidget(_dlg_section_lbl("Whiteboard style  (W)"))
+        self._board_box = QComboBox()
+        self._board_box.addItems(["White board", "Dark board"])
+        self._board_box.setCurrentIndex(1 if self._settings.get("board_style") == "black" else 0)
+        self._board_box.setFixedHeight(30)
+        self._board_box.setStyleSheet(_dlg_combo_style())
+        lo.addWidget(self._board_box)
         lo.addSpacing(6)
 
         # ── Appearance ─────────────────────────────────────────────────────────
@@ -4312,6 +4452,18 @@ class SettingsDialog(QDialog):
                 "compositor's end is the one thing this can't detect for you.")
             lo.addWidget(self._rec_keep_live_cb)
 
+        self._rec_gpu_cb = None
+        if IS_WIN:
+            self._rec_gpu_cb = QCheckBox("Record with the graphics chip (beta)")
+            self._rec_gpu_cb.setChecked(bool(g("rec_hardware")))
+            self._rec_gpu_cb.setStyleSheet(_dlg_checkbox_style())
+            self._rec_gpu_cb.setToolTip(
+                "Captures and encodes on the GPU — a fraction of the CPU, so "
+                "less heat, fan and battery, and smooth 4K. One screen for "
+                "now; if this PC can't, recording switches to the normal "
+                "recorder by itself. No pause while it's on.")
+            lo.addWidget(self._rec_gpu_cb)
+
         note = QLabel("A screen capture includes every visible window, so "
                       "the dock moves out of the recorded area — or hides, "
                       "if you are recording the whole screen — unless the "
@@ -4394,7 +4546,7 @@ class SettingsDialog(QDialog):
             h.setWordWrap(True)
             h.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
             lo.addWidget(h)
-        lo.addSpacing(8)
+        lo.addSpacing(2)
         self._hk_fields[key] = (field, error)
 
     def _check_shortcuts(self, only: str | None = None) -> bool:
@@ -4459,7 +4611,11 @@ class SettingsDialog(QDialog):
         if self._rec_keep_live_cb is not None:
             self._settings.set("rec_keep_dock_live",
                                self._rec_keep_live_cb.isChecked())
+        if self._rec_gpu_cb is not None:
+            self._settings.set("rec_hardware", self._rec_gpu_cb.isChecked())
 
+        self._settings.set("board_style",
+                           "black" if self._board_box.currentIndex() == 1 else "white")
         new_scale = self._scale_values[self._scale_box.currentIndex()]
         if abs(new_scale - float(self._settings.get("dock_scale") or 1.0)) > 1e-3 \
                 and overlay is not None and hasattr(overlay, "toolbar"):
@@ -5297,7 +5453,8 @@ class AnnotationOverlay(QWidget):
         needed = self._wanted and (not self._passthrough
                                    or self.canvas.has_marks() or self._pinned
                                    or self.canvas.board is not None
-                                   or self.canvas.effects_on())
+                                   or self.canvas.effects_on()
+                                   or self.canvas.zoom_pix is not None)
         if needed:
             self._release_timer.stop()
         if needed and not self.isVisible():
@@ -5472,26 +5629,54 @@ class AnnotationOverlay(QWidget):
     # ── Whiteboard / presenter effects ─────────────────────────────────────────
     @pyqtSlot()
     def cycle_board(self):
-        """Off → whiteboard → blackboard → off, on the screen under the cursor."""
-        nxt = {None: "white", "white": "black", "black": None}[self.canvas.board]
-        rect = None
-        if nxt is not None:
-            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-            g = scr.geometry()
-            rect = QRectF(QPointF(self.canvas.mapFromGlobal(g.topLeft())),
-                          QSizeF(g.size()))
-            if not self._wanted:
-                self._wanted = True
-                self.toolbar.set_chrome_visible(True)
-            self.set_passthrough(False)          # a board is for drawing on
-        self.canvas.set_board(nxt, rect)
+        """Open the board (white or dark, as chosen in Settings) on the screen
+        under the cursor — or close it. One key, one click."""
+        if self.canvas.board is not None:
+            self.leave_board()
+            return
+        style = "black" if self.settings.get("board_style") == "black" else "white"
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.geometry()
+        rect = QRectF(QPointF(self.canvas.mapFromGlobal(g.topLeft())), QSizeF(g.size()))
+        if not self._wanted:
+            self._wanted = True
+            self.toolbar.set_chrome_visible(True)
+        self.set_passthrough(False)              # a board is for drawing on
+        self.canvas.set_board(style, rect)
         self.sync_window()
-        if nxt is not None:
-            self.toast.show_message(
-                f"{'Whiteboard' if nxt == 'white' else 'Blackboard'} · page "
-                f"{self.canvas._page + 1} of {len(self.canvas._pages)} — "
-                "PgDn new page · W again to switch · Esc to leave",
-                anchor=self.toolbar)
+        # The dock comes onto the board, so every tool is right there.
+        self.toolbar.move_onto(scr.availableGeometry())
+        self.toolbar.raise_chrome()
+        self.toast.show_message(
+            f"{'Whiteboard' if style == 'white' else 'Dark board'} · page "
+            f"{self.canvas._page + 1} of {len(self.canvas._pages)} — "
+            "PgDn new page · W or Esc to leave", anchor=self.toolbar)
+
+    def leave_board(self):
+        self.canvas.set_board(None)
+        self.toolbar.move_back()
+        self.sync_window()
+
+    @pyqtSlot()
+    def toggle_zoom(self):
+        """Magnify the screen under the cursor (a still, marks included);
+        again, or Esc, to leave."""
+        if self.canvas.zoom_pix is not None:
+            self.canvas.stop_zoom()
+            self.sync_window()
+            return
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.geometry()
+        pix = self.canvas.capture_annotated(g, marks=self._wanted)
+        rect = QRectF(QPointF(self.canvas.mapFromGlobal(g.topLeft())), QSizeF(g.size()))
+        if not self._wanted:
+            self._wanted = True
+            self.toolbar.set_chrome_visible(True)
+        self.set_passthrough(False)
+        self.canvas.start_zoom(pix, rect, QPointF(self.canvas.mapFromGlobal(QCursor.pos())))
+        self.sync_window()
+        self.toast.show_message("Zoom — mouse wheel to zoom in or out · "
+                                "Esc to leave", anchor=self.toolbar)
 
     def turn_page(self, delta: int):
         page = self.canvas.board_page(delta)
@@ -5566,9 +5751,13 @@ class AnnotationOverlay(QWidget):
             self._hotkeys.trigger(name)
             return
 
-        if k == Key.Key_Escape and self.canvas.board is not None:
-            self.canvas.set_board(None)          # first Esc leaves the board
-            self.sync_window()
+        if k in (Key.Key_Escape, Key.Key_M) and self.canvas.zoom_pix is not None \
+                and not chord:
+            self.toggle_zoom()                   # Esc leaves the zoom first
+        elif k == Key.Key_M and not chord:
+            self.toggle_zoom()
+        elif k == Key.Key_Escape and self.canvas.board is not None:
+            self.leave_board()                   # first Esc leaves the board
         elif k == Key.Key_Escape:
             # Esc means "stop taking my clicks", not "disappear" — the marks
             # stay up and the dock stays reachable.
@@ -5605,7 +5794,7 @@ def _start_hotkeys(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
 
     slots = {"toggle": "toggle_passthrough", "visibility": "toggle",
              "ocr": "activate_ocr", "record": "toggle_recording",
-             "screenshot": "take_screenshot"}
+             "screenshot": "take_screenshot", "zoom": "toggle_zoom"}
     for key, (name, _label) in HOTKEY_SETTINGS.items():
         if name == "ocr" and not ocr_available():
             continue
