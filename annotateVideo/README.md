@@ -64,7 +64,7 @@ The app lives in the system tray and is toggled with a global hotkey (`Ctrl+Shif
 | Cursor halo · Show clicks | dock → Presenter | Highlight around the cursor, ripple on every click — work in click-through mode and are recorded |
 | Show pressed shortcuts | Settings → General or dock → Presenter | A pill near the bottom of the screen shows shortcuts and special keys as you press them (`Ctrl + Shift + Z`, `F5`, `Enter`…) — never plain typing, so passwords stay out of recordings · off by default · recorded |
 | Fading ink | FADE on the drawing tools | Marks disappear after ~3 s (fade over 1 s); blur, pixelate and black boxes never fade |
-| Zoom | `M` | Magnifies the current screen around the cursor (a still, marks included) · wheel 1.25×–8× · `Esc`, `M` or right-click leaves · optional global shortcut |
+| Magnifier | `M` | A round loupe beside the cursor, Greenshot-style — crosshair on the pixel under the cursor, sharp pixels from 4× · wheel 2×–16× · shows a still taken when you press M, marks included · `Esc`, `M` or right-click leaves · optional global shortcut |
 
 ### Annotation Tools
 

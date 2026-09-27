@@ -81,6 +81,7 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 **Version 5.5 — Edit your marks after drawing them**
 
+- New magnifier: a round loupe beside your cursor with a crosshair (M; the mouse wheel zooms 2×–16×)
 - Select a mark to move it, reshape it with its handles, or change its colour, thickness and opacity
 - Select several marks at once; copy, paste and duplicate them (Ctrl+C / Ctrl+V / Ctrl+D)
 - Show the shortcuts you press on screen, great for tutorials (plain typing never shows)

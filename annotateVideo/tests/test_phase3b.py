@@ -116,26 +116,36 @@ def zoomed_canvas(A):
     return cv
 
 
-def test_point_under_the_cursor_stays_under_it(A):
+def test_magnifier_is_centred_on_the_cursor(A):
     cv = zoomed_canvas(A)
-    src = cv.zoom_source()
-    assert (src.width(), src.height()) == (400, 200)          # 2x of an 800px still
-    assert (src.x(), src.y()) == (200, 100)                   # centred
-    cv._zoom_cursor = QPointF(400, 200)                       # bottom-right corner
-    src = cv.zoom_source()
-    assert (src.right(), src.bottom()) == (800, 400)
+    src = cv.zoom_source()                                    # 4x, 2x still
+    side = 2 * cv.LOUPE_R / 4 * 2
+    assert (src.width(), src.center().x(), src.center().y()) == (side, 400, 200)
 
 
-def test_zoom_paints_the_magnified_still(A):
+def test_magnifier_sits_beside_the_cursor_and_flips_at_edges(A):
     cv = zoomed_canvas(A)
-    cv._zoom_cursor = QPointF(400, 200)
+    cv.zoom_rect = QRectF(0, 0, 2000, 1000)
+    cv._zoom_cursor = QPointF(100, 100)
+    box = cv.loupe_rect()
+    assert box.left() > 100 and box.top() > 100               # below-right
+    cv._zoom_cursor = QPointF(1950, 950)
+    box = cv.loupe_rect()
+    assert box.right() < 1950 and box.bottom() < 950          # flipped
+
+
+def test_magnifier_paints_the_magnified_still_over_the_marks(A):
+    cv = zoomed_canvas(A)
+    cv._zoom_cursor = QPointF(390, 190)                       # over the red
     img = QImage(400, 200, QImage.Format.Format_ARGB32)
     img.fill(0)
     p = QPainter(img)
     cv.paint_marks(p, 400, 200, selection=False, live=False)
     p.end()
-    assert img.pixelColor(395, 195).red() > 200               # corner magnified
-    assert img.pixelColor(300, 100).name() == "#ffffff"
+    box = cv.loupe_rect()
+    inside = img.pixelColor(int(box.center().x() + 20), int(box.center().y() + 20))
+    assert inside.red() > 200 and inside.green() < 80         # red, magnified
+    assert img.pixelColor(20, 20).alpha() == 0                # rest untouched
 
 
 def test_wheel_zooms_within_limits(A):

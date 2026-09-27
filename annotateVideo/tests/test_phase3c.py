@@ -184,3 +184,27 @@ def test_hints_show_on_the_dock_and_can_be_switched_off(A, overlay, settings):
     assert not switch.eventFilter(QPushButton(), ev)
     settings.set("show_hints", False)
     assert switch.eventFilter(QPushButton(), ev)                   # swallowed
+
+
+def test_hints_are_parented_to_the_window_not_the_see_through_button(A, overlay, settings):
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QHelpEvent
+    from PyQt6.QtWidgets import QApplication, QToolTip
+    btn = overlay.toolbar._tool_btns["arrow"]
+    ev = QHelpEvent(QEvent.Type.ToolTip, QPoint(5, 5), btn.mapToGlobal(QPoint(5, 5)))
+    assert A.HintSwitch(settings).eventFilter(btn, ev)
+    tip = next(w for w in QApplication.allWidgets()
+               if w.metaObject().className() == "QTipLabel")
+    assert tip.parent() is overlay.toolbar
+    assert "QToolTip{background:" in overlay.toolbar.styleSheet()
+    QToolTip.hideText()
+
+
+def test_numbers_and_ruler_ignore_another_tools_opacity(A):
+    cv = make_canvas(A)
+    cv.pen_alpha = 80                                    # left low on the pen
+    for tool in ("callout", "steps", "ruler"):
+        cv.tool = tool
+        assert QColor(cv._tool_color()).alpha() == 255
+    cv.tool = "highlight"
+    assert QColor(cv._tool_color()).alpha() == 80

@@ -928,7 +928,7 @@ class Toolbar(QWidget):
         self._rec_btn.clicked.connect(self._toggle_recording)
         row1.addWidget(self._rec_btn)
 
-        zm = ActionButton("zoom", "Zoom — M  (mouse wheel zooms · Esc leaves)")
+        zm = ActionButton("zoom", "Magnifier — M  (a loupe next to the cursor · mouse wheel zooms · Esc leaves)")
         zm.clicked.connect(self.overlay.toggle_zoom)
         row1.addWidget(zm)
 

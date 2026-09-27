@@ -36,6 +36,7 @@ import hotkeys
 import ocr_win
 import platform_win
 from PyQt6.QtWidgets import (
+    QToolTip,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
     QGraphicsBlurEffect, QGraphicsScene, QGraphicsPixmapItem,
@@ -128,7 +129,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.5.0"
+VERSION = "5.5.1"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -1015,7 +1016,23 @@ class HintSwitch(QObject):
         self._settings = settings
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.ToolTip and not self._settings.get("show_hints"):
+        if event.type() != QEvent.Type.ToolTip:
+            return False
+        if not self._settings.get("show_hints"):
+            return True
+        # Qt parents a tooltip to the hovered widget, so it inherits that
+        # widget's style sheet — and the dock's buttons are all
+        # "background:transparent", which Windows paints as a black box.
+        # Parent it to the top-level window instead and style it here.
+        if isinstance(obj, QWidget) and obj.toolTip() and not obj.isWindow():
+            top = obj.window()
+            sheet = (f"QToolTip{{background:{DLG_SURFACE};color:{DLG_INK};"
+                     f"border:1px solid {DLG_MUTED};padding:5px 7px;font-size:12px;}}")
+            own = top.styleSheet()
+            if own != sheet and (not own or own.startswith("QToolTip{")):
+                top.setStyleSheet(sheet)
+            QToolTip.showText(event.globalPos(), obj.toolTip(), top,
+                              QRect(obj.mapTo(top, QPoint(0, 0)), obj.size()))
             return True
         return False
 
@@ -1325,7 +1342,7 @@ class Canvas(QWidget):
         if self.zoom_pix is not None:
             k = 1.25 if e.angleDelta().y() > 0 else 1 / 1.25
             self.zoom_factor = max(self.ZOOM_MIN, min(self.ZOOM_MAX, self.zoom_factor * k))
-            self.update(self.zoom_rect.toAlignedRect())
+            self.update(self.loupe_rect().adjusted(-4, -4, 4, 4).toAlignedRect())
             return
         if self.spotlight:                      # the wheel sizes the spotlight
             step = 15 if e.angleDelta().y() > 0 else -15
@@ -1434,9 +1451,10 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, e):
         pos = QPointF(e.pos())
 
-        if self.zoom_pix is not None:           # the view follows the cursor
+        if self.zoom_pix is not None:           # the magnifier follows the cursor
+            old = self.loupe_rect()
             self._zoom_cursor = pos
-            self.update(self.zoom_rect.toAlignedRect())
+            self.update(old.united(self.loupe_rect()).adjusted(-4, -4, 4, 4).toAlignedRect())
             return
 
         # Laser tracks freely — no button held needed
@@ -1586,7 +1604,7 @@ class Canvas(QWidget):
                 if s: self._commit(s)
 
     def _place_point(self, pos: QPointF):
-        col = _with_alpha(self.pen_color, self.pen_alpha)
+        col = self._tool_color()
         t = self.tool
         if t == "text":
             # On an existing label: edit it. Anywhere else: new text, typed
@@ -1610,7 +1628,7 @@ class Canvas(QWidget):
                                   shape.box, shape.text)
         else:
             ed = InlineTextEditor(self, pos,
-                                  _with_alpha(self.pen_color, self.pen_alpha),
+                                  self._tool_color(),
                                   self.font_size, self.text_box)
         ed.committed.connect(self._text_committed)
         ed.cancelled.connect(self._text_cancelled)
@@ -1666,6 +1684,14 @@ class Canvas(QWidget):
                 self._selected = None
             self.update()
 
+    # Tools whose dock row has no opacity slider — they used to inherit
+    # whatever opacity another tool was left at, with no way to see why.
+    OPAQUE_TOOLS = ("callout", "steps", "ruler")
+
+    def _tool_color(self) -> str:
+        alpha = 255 if self.tool in self.OPAQUE_TOOLS else self.pen_alpha
+        return _with_alpha(self.pen_color, alpha)
+
     def _next_number(self, cls) -> int:
         """One past the highest number on screen — worked out from the marks
         themselves, so undoing a 3 makes the next one a 3 again, not a 4."""
@@ -1674,7 +1700,7 @@ class Canvas(QWidget):
 
     def _make_drag(self, p1: QPointF, p2: QPointF) -> Shape | None:
         if abs(p2.x()-p1.x()) < 3 and abs(p2.y()-p1.y()) < 3: return None
-        col   = _with_alpha(self.pen_color, self.pen_alpha)
+        col   = self._tool_color()
         t     = self.tool
         shift = bool(QApplication.queryKeyboardModifiers()
                      & Qt.KeyboardModifier.ShiftModifier)
@@ -1829,12 +1855,13 @@ class Canvas(QWidget):
                                                else "#1E2023"))
 
     # ── zoom ───────────────────────────────────────────────────────────────
-    ZOOM_MIN, ZOOM_MAX = 1.25, 8.0
+    ZOOM_MIN, ZOOM_MAX = 2.0, 16.0
+    LOUPE_R = 110                       # the magnifier's radius
 
     def start_zoom(self, pix: QPixmap, rect: QRectF, cursor: QPointF):
         self.finish_editing()
         self.zoom_pix, self.zoom_rect = pix, rect
-        self.zoom_factor = 2.0
+        self.zoom_factor = 4.0
         self._zoom_cursor = cursor
         self.update()
 
@@ -1847,25 +1874,68 @@ class Canvas(QWidget):
         if hasattr(win, "sync_window"):
             win.sync_window()
 
+    def loupe_rect(self) -> QRectF:
+        """Where the magnifier sits: below-right of the cursor, flipped at the
+        edges of the screen it was opened on (Greenshot's feel)."""
+        if self.zoom_pix is None:
+            return QRectF()
+        r, c, d, gap = self.zoom_rect, self._zoom_cursor, 2.0 * self.LOUPE_R, 28
+        x = c.x() + gap if c.x() + gap + d <= r.right() else c.x() - gap - d
+        y = c.y() + gap if c.y() + gap + d <= r.bottom() else c.y() - gap - d
+        return QRectF(x, y, d, d)
+
     def zoom_source(self) -> QRectF:
-        """The part of the still shown magnified, in its pixels. The point
-        under the cursor stays under the cursor (ZoomIt's feel): its relative
-        position in the screen equals its relative position in the view."""
-        r, f = self.zoom_rect, self.zoom_factor
-        rel_x = min(max(self._zoom_cursor.x() - r.x(), 0.0), r.width())
-        rel_y = min(max(self._zoom_cursor.y() - r.y(), 0.0), r.height())
+        """The part of the still shown in the magnifier, in its pixels —
+        centred on the point under the cursor."""
+        r = self.zoom_rect
         scale = self.zoom_pix.width() / max(1.0, r.width()) if self.zoom_pix else 1.0
-        return QRectF(rel_x * (1 - 1 / f) * scale, rel_y * (1 - 1 / f) * scale,
-                      r.width() / f * scale, r.height() / f * scale)
+        side = 2.0 * self.LOUPE_R / self.zoom_factor * scale
+        cx = (self._zoom_cursor.x() - r.x()) * scale
+        cy = (self._zoom_cursor.y() - r.y()) * scale
+        return QRectF(cx - side / 2, cy - side / 2, side, side)
 
     def _paint_zoom(self, p: QPainter) -> bool:
+        return False                    # the magnifier paints over the marks
+
+    def _paint_loupe(self, p: QPainter):
         if self.zoom_pix is None:
-            return False
+            return
+        box = self.loupe_rect()
+        c, f = box.center(), self.zoom_factor
+        ring = QPainterPath()
+        ring.addEllipse(box)
         p.save()
-        p.setRenderHint(RHint.SmoothPixmapTransform)
-        p.drawPixmap(self.zoom_rect, self.zoom_pix, self.zoom_source())
+        p.setRenderHint(RHint.Antialiasing)
+        p.setClipPath(ring)
+        p.fillRect(box, QColor("#1C1C1E"))
+        # Real pixels, not a blur, once they're big enough to count.
+        p.setRenderHint(RHint.SmoothPixmapTransform, f < 4)
+        p.drawPixmap(box, self.zoom_pix, self.zoom_source())
+        # Crosshair through the pixel under the cursor, open in the middle.
+        half = max(f / 2, 3.0)
+        p.setPen(QPen(QColor(255, 59, 59, 210), 1))
+        p.drawLine(QPointF(box.left(), c.y()), QPointF(c.x() - half, c.y()))
+        p.drawLine(QPointF(c.x() + half, c.y()), QPointF(box.right(), c.y()))
+        p.drawLine(QPointF(c.x(), box.top()), QPointF(c.x(), c.y() - half))
+        p.drawLine(QPointF(c.x(), c.y() + half), QPointF(c.x(), box.bottom()))
+        p.setPen(QPen(QColor(255, 59, 59, 240), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(QRectF(c.x() - half, c.y() - half, 2 * half, 2 * half))
+        label = f"{f:.1f}".rstrip("0").rstrip(".") + "×"
+        p.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        tag = QRectF(c.x() - 24, box.bottom() - 30, 48, 20)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 150))
+        p.drawRoundedRect(tag, 10, 10)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(tag, int(AA.AlignCenter), label)
+        p.setClipping(False)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(0, 0, 0, 120), 5))
+        p.drawEllipse(box)
+        p.setPen(QPen(QColor("#FFFFFF"), 3))
+        p.drawEllipse(box)
         p.restore()
-        return True
 
     # ── presenter effects ──────────────────────────────────────────────────
     def effects_on(self) -> bool:
@@ -2237,6 +2307,7 @@ class Canvas(QWidget):
                 p.restore()
             else:
                 shape.draw(p)
+        self._paint_loupe(p)
         if not live:
             return
         if self.tool == "pen"    and self._pen_shape:    self._pen_shape.draw(p)
@@ -4294,7 +4365,7 @@ class HelpDialog(QDialog):
         ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
         ("▢",  "Whiteboard",      "W",  "Board over this screen, white or dark (Settings) · PgDn/PgUp: pages · W or Esc leaves"),
         ("◎",  "Spotlight",       "F",  "Dims everything but the cursor · mouse wheel sizes it"),
-        ("⌕",  "Zoom",            "M",  "Magnifies this screen around the cursor · wheel zooms · Esc leaves"),
+        ("⌕",  "Zoom",            "M",  "A magnifier next to the cursor · wheel zooms 2×–16× · Esc leaves"),
     ]
 
     _TIPS = [
