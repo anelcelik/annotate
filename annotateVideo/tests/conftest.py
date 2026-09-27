@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if sys.platform == "win32":
+    # Qt's offscreen platform on Windows looks for fonts only in
+    # QT_QPA_FONTDIR or Qt's own fonts folder, which PyQt6 doesn't ship —
+    # without this, text drawn in tests silently comes out blank.
+    os.environ.setdefault("QT_QPA_FONTDIR",
+                          os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 

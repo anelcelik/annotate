@@ -54,6 +54,9 @@ def test_windows_ocr_reads_real_text(qapp):
     p.setFont(QFont("Arial", 28))
     p.drawText(12, 60, "Hello Annotator 2026")
     p.end()
+    dark = sum(1 for x in range(0, 520, 2) for y in range(0, 90, 2)
+               if img.pixelColor(x, y).lightness() < 100)
+    assert dark > 50, "the test text wasn't drawn (no fonts?) — not an OCR problem"
     text = ocr_win.recognize(img, "")
     assert "Hello" in text and "2026" in text
 

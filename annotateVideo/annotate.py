@@ -5470,6 +5470,10 @@ def _self_test(overlay, settings_mgr, hotkey_mgr) -> int:
         p.setFont(QFont("Arial", 28))
         p.drawText(12, 60, "Self test 2026")
         p.end()
+        if img.pixelColor(img.width() // 2, img.height() // 2) == QColor("white") \
+                and all(img.pixelColor(x, 45).lightness() > 200
+                        for x in range(0, 520, 4)):
+            raise RuntimeError("couldn't draw the test text (no fonts found)")
         text = ocr_win.recognize(img, "")
         if "2026" not in text:
             raise RuntimeError(f"read {text!r}")
@@ -5493,6 +5497,11 @@ def main():
     self_test = "--self-test" in sys.argv
     if self_test:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        if IS_WIN:
+            # Offscreen Qt on Windows finds no fonts unless told where they
+            # are, and the OCR check below needs to draw text.
+            os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(
+                os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
     # PassThrough: accept fractional scale factors (125 %, 150 %, etc.) on
     # every platform — not just Windows.  Must be called before QApplication().
     QApplication.setHighDpiScaleFactorRoundingPolicy(

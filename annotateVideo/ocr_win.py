@@ -127,11 +127,16 @@ def recognize(image, language_tag: str = "") -> str:
                          Qt.AspectRatioMode.KeepAspectRatio,
                          Qt.TransformationMode.SmoothTransformation)
     data = img.constBits().asstring(img.sizeInBytes())
-    buf = Buffer(len(data))
-    buf.length = len(data)
-    memoryview(buf)[:len(data)] = data
-    bitmap = SoftwareBitmap.create_copy_from_buffer(
-        buf, BitmapPixelFormat.BGRA8, img.width(), img.height())
+    try:
+        # pywinrt takes any buffer-protocol object where WinRT wants an IBuffer.
+        bitmap = SoftwareBitmap.create_copy_from_buffer(
+            data, BitmapPixelFormat.BGRA8, img.width(), img.height())
+    except TypeError:
+        buf = Buffer(len(data))
+        buf.length = len(data)
+        memoryview(buf)[:len(data)] = data
+        bitmap = SoftwareBitmap.create_copy_from_buffer(
+            buf, BitmapPixelFormat.BGRA8, img.width(), img.height())
     result = engine.recognize_async(bitmap).get()
     lines = [[w.text for w in line.words] for line in result.lines]
     return join_lines(lines, engine.recognizer_language.language_tag)
