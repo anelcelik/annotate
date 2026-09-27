@@ -149,17 +149,17 @@ DOCK_TOOLS = [
     ("arrow",     "Arrow",         "A", ["color", "stroke", "opacity"],     "Hold Shift to snap to 45°."),
     ("rect",      "Rectangle",     "R", ["color", "stroke", "opacity"],     "Hold Shift for a perfect square."),
     ("circle",    "Circle",        "O", ["color", "stroke", "opacity"],     "Hold Shift for a perfect circle."),
-    ("ruler",     "Ruler",         "U", ["color", "stroke"],                "Measures in pixels as you drag."),
-    ("eraser",    "Eraser",        "E", ["stroke"],                         "Erase width is four times the stroke."),
+    ("ruler",     "Ruler",         "U", ["color", "stroke"],                "Measures in real screen pixels as you drag."),
+    ("eraser",    "Eraser",        "E", ["erasemode", "stroke"],            "Shapes: touch a mark to remove it. Pixels: rub out part of one."),
     ("laser",     "Laser pointer", "I", ["color"],                          "Leaves no marks. Hides the OS cursor."),
     # Annotate
-    ("text",      "Text",          "T", ["color", "size", "opacity"],       "Click to place, then type."),
-    ("callout",   "Callout",       "K", ["color", "size"],                  "Numbers itself. Resets on Clear."),
-    ("steps",     "Steps",         "S", ["color", "size"],                  "Numbers itself. Resets on Clear."),
+    ("text",      "Text",          "T", ["color", "size", "opacity", "textbox"], "Click and type. Enter finishes, Shift+Enter adds a line. Click a label to edit it."),
+    ("callout",   "Callout",       "K", ["color", "size"],                  "Numbers itself. SIZE sets how big."),
+    ("steps",     "Steps",         "S", ["color", "size"],                  "Numbers itself. SIZE sets how big."),
     ("highlight", "Highlight",     "H", ["color", "stroke", "opacity"],     ""),
     # Redact
     ("blur",      "Blur",          "Z", ["blur"],                           "Drag a region to blur it."),
-    ("pixel",     "Pixelate",      "X", ["pixel"],                          "Drag a region to pixelate it."),
+    ("pixel",     "Pixelate",      "X", ["pixel"],                          "Drag a region to turn it into large blocks."),
     ("redact",    "Black box",     "D", [],                                 "Drag a region to cover it completely."),
     # Read
     ("ocr",       "Snip & Read",   "J", [],                                 "Drag over text to extract and translate it."),
@@ -460,7 +460,7 @@ class CaptureButton(QPushButton):
         super().__init__(parent)
         self.setFixedSize(_s(118), ROW1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Screenshot — hides the overlay, grabs every monitor")
+        self.setToolTip("Screenshot — drag an area, or click for the whole screen")
         self.setFlat(True)
         self.setStyleSheet("border:none;background:transparent;")
 
@@ -802,6 +802,8 @@ class Toolbar(QWidget):
 
         self._drag_pos   = None
         self._shot_bar   = None      # the capture panel, kept alive (see below)
+        # What the mode / record buttons show, so a rebuild can restore it.
+        self._state: dict = {}
         self._tool_btns  = {}
         self._swatches   = []
         self._active_tid = "pen"
@@ -948,6 +950,46 @@ class Toolbar(QWidget):
         p.end()
 
     # ── contextual property row ───────────────────────────────────────────────
+    def _choice(self, options, current, on_pick) -> QWidget:
+        """Two or three flat segments, one of them on — for settings that are
+        a choice rather than a number."""
+        box = QWidget()
+        box.setStyleSheet("background:transparent;")
+        lo = QHBoxLayout(box)
+        lo.setContentsMargins(0, 0, 0, 0)
+        lo.setSpacing(0)
+        buttons = []
+        for value, text in options:
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setChecked(value == current)
+            b.setFixedHeight(_s(26))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton{{color:{INK};background:transparent;"
+                f"border:1px solid {INK};font-family:'{FONT}';"
+                f"font-size:{_fs(9)}pt;padding:0 {_s(10)}px;}}"
+                f"QPushButton:checked{{background:{ACCENT};color:#FFFFFF;"
+                f"border:1px solid {ACCENT};}}")
+            buttons.append((value, b))
+            lo.addWidget(b)
+
+        def pick(value):
+            for v, b in buttons:
+                b.setChecked(v == value)
+            on_pick(value)
+
+        for value, b in buttons:
+            b.clicked.connect(lambda _c, v=value: pick(v))
+        return box
+
+    def _set_pref(self, name: str, value):
+        """A tool preference that sticks: onto the canvas and into settings."""
+        setattr(self.canvas, name, value)
+        self._settings_mgr.set(name, value)
+        self._settings_mgr.save()
+        self.canvas.update()
+
     def _clear_props(self):
         while self._props_lo.count():
             item = self._props_lo.takeAt(0)
@@ -1016,8 +1058,23 @@ class Toolbar(QWidget):
             self._props_lo.addWidget(self._cell(_label("COLOR"), sw_box))
             self._props_lo.addWidget(_vrule())
 
+        if "erasemode" in props:
+            self._props_lo.addWidget(self._cell(
+                _label("ERASES"),
+                self._choice([("shapes", "Shapes"), ("pixels", "Pixels")],
+                             self.canvas.eraser_mode,
+                             lambda v: self._set_pref("eraser_mode", v))))
+            self._props_lo.addWidget(_vrule())
+
+        if "textbox" in props:
+            self._props_lo.addWidget(self._cell(
+                _label("BOX"),
+                self._choice([(False, "Off"), (True, "On")], self.canvas.text_box,
+                             lambda v: self._set_pref("text_box", v))))
+            self._props_lo.addWidget(_vrule())
+
         if "stroke" in props:
-            cap = {"eraser": "WIDTH", "highlight": "HEIGHT"}.get(tid, "STROKE")
+            cap = {"eraser": "SIZE", "highlight": "HEIGHT"}.get(tid, "STROKE")
             val = _label(f"{self.canvas.pen_width} px", size=8, color=INK)
             val.setFixedWidth(_s(38))
             sld = DockSlider(1, 30, int(self.canvas.pen_width))
@@ -1060,10 +1117,11 @@ class Toolbar(QWidget):
             self._props_lo.addWidget(_vrule())
 
         if "pixel" in props:
-            cur = int(getattr(self.canvas, "pixel_size", 12))
+            # 10 px minimum: small cells over small text can be read back.
+            cur = int(getattr(self.canvas, "pixel_size", 14))
             val = _label(f"{cur} px", size=8, color=INK)
             val.setFixedWidth(_s(38))
-            sld = DockSlider(4, 40, cur)
+            sld = DockSlider(10, 40, cur)
             sld.valueChanged.connect(
                 lambda v, l=val: (setattr(self.canvas, "pixel_size", v),
                                   l.setText(f"{v} px")))
@@ -1121,6 +1179,9 @@ class Toolbar(QWidget):
         import annotate as A
         if tid == "ocr" and not A.ocr_available():
             return
+        self.canvas.finish_editing()
+        if tid != "eraser":
+            self.canvas._eraser_pos = None
         # Reaching for a tool means you want to draw with it — being dropped
         # into click-through and having the first stroke land in the app
         # underneath would be worse than useless.
@@ -1199,13 +1260,56 @@ class Toolbar(QWidget):
         self._parked_from = None
 
     def set_mode(self, passthrough: bool):
+        self._state["passthrough"] = passthrough
         self._mode_btn.set_passthrough(passthrough)
 
     def set_mode_shortcut(self, text: str):
+        self._state["mode_label"] = text
         self._mode_btn.set_shortcut_label(text)
 
     def set_record_shortcut(self, text: str):
+        self._state["rec_label"] = text
         self._rec_btn.set_shortcut_label(text)
+
+    def apply_scale(self, scale: float):
+        """Resize the dock now — every cell's size is fixed when it is built,
+        so rebuild it, then put back what the rebuilt buttons show."""
+        set_dock_scale(scale)
+        old = self.layout()
+        if old is not None:
+            QWidget().setLayout(old)          # detach so it can be collected
+        for child in self.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly):
+            child.hide()
+            child.setParent(None)
+            child.deleteLater()
+        self._tool_btns, self._swatches = {}, []
+        self._built = False
+        self._build()
+        # Children added to a window that is already on screen stay hidden
+        # until they are shown.
+        for child in self.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly):
+            child.show()
+        self._activate(self._active_tid)
+        self._built = True
+        st = self._state
+        if "passthrough" in st:
+            self._mode_btn.set_passthrough(st["passthrough"])
+        if "mode_label" in st:
+            self._mode_btn.set_shortcut_label(st["mode_label"])
+        if "rec_label" in st:
+            self._rec_btn.set_shortcut_label(st["rec_label"])
+        if st.get("recording"):
+            self._rec_btn.set_recording(True)
+        if self._indicator is not None:
+            self._indicator.setFixedSize(*CollapsedIndicator.size_now())
+            self._indicator.update()
+        self.adjustSize()
+        if self._anchor is not None:
+            self.move(self._anchor.x() - self.width() // 2,
+                      self._anchor.y() - self.height() // 2)
+            self._clamp_to_screen()
+        else:
+            self._position()
 
     def _toggle_mode(self):
         self.overlay.toggle_passthrough()
@@ -1240,6 +1344,7 @@ class Toolbar(QWidget):
             target.raise_()
 
     def set_recording(self, on: bool):
+        self._state["recording"] = on
         self._rec_btn.set_recording(on)
 
     def set_record_elapsed(self, seconds: float):
@@ -1252,9 +1357,7 @@ class Toolbar(QWidget):
         self.overlay.recording.toggle()
 
     def _take_screenshot(self):
-        import annotate as A
-        pixmap = self.canvas.capture_annotated()
-        self._shot_bar = A.ScreenshotBar(pixmap, self.overlay)
+        self.overlay.take_screenshot()
 
     def _open_settings(self):
         import annotate as A

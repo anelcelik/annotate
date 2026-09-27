@@ -52,7 +52,7 @@ _DISPLAY = {
     "space": "Space", "left": "Left", "right": "Right", "up": "Up",
     "down": "Down", "home": "Home", "end": "End", "page_up": "PgUp",
     "page_down": "PgDown", "insert": "Ins", "delete": "Del", "tab": "Tab",
-    "enter": "Enter", "backspace": "Backspace", "print_screen": "Print",
+    "enter": "Enter", "backspace": "Backspace", "print_screen": "PrtSc",
     "pause": "Pause", "esc": "Esc",
 }
 _MOD_DISPLAY = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "cmd": "Win"}

@@ -33,6 +33,7 @@ if __name__ == "__main__":
     sys.modules.setdefault("annotate", sys.modules[__name__])
 
 import hotkeys
+import ocr_win
 import platform_win
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -49,7 +50,8 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
-    QPolygonF, QPainterPath, QPainterPathStroker, QFontMetrics, QPixmap, QCursor, QIcon,
+    QPolygonF, QPainterPath, QPainterPathStroker, QFontMetrics, QFontMetricsF,
+    QPixmap, QCursor, QIcon,
     QKeySequence, QDesktopServices, QImage,
 )
 
@@ -125,7 +127,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.1.1"
+VERSION = "5.2.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -141,6 +143,8 @@ _DEFAULT_SETTINGS: dict = {
     # reload in every browser. See _migrate_hotkeys().
     "ocr_hotkey":    "<ctrl>+<alt>+t",
     "hotkeys_version": 2,
+    "text_box":       False,           # Text tool: plate behind the text
+    "eraser_mode":    "shapes",        # shapes | pixels
     "start_on_boot":  False,
     "theme":          "light",
     # Where you last put the dock (or the collapsed puck) — None means
@@ -159,6 +163,9 @@ _DEFAULT_SETTINGS: dict = {
     "review_successes": 0,             # screenshots / recordings that worked
     "review_days":    [],              # distinct days the app did its job
     "rec_hotkey":     "<ctrl>+<alt>+r",
+    "screenshot_hotkey": "<ctrl>+<print_screen>",
+    "shot_dir":       "",              # "" = Pictures\Screenshots
+    "tips_done":      False,           # first-run tips shown (or skipped)
     "rec_fps":        30,
     "rec_quality":    "balanced",      # high | balanced | small
     "rec_area":       "all",           # all | screen | region
@@ -187,6 +194,7 @@ class SettingsManager:
     def __init__(self):
         self._path = _settings_path()
         self._data = dict(_DEFAULT_SETTINGS)
+        self.is_new = not self._path.exists()      # first run on this PC
         self._load()
 
     def _load(self):
@@ -220,6 +228,7 @@ HOTKEY_SETTINGS = {
     "visibility_hotkey": ("visibility", "Show / hide the overlay"),
     "ocr_hotkey":        ("ocr",        "Snip & Read"),
     "rec_hotkey":        ("record",     "Start / stop recording"),
+    "screenshot_hotkey": ("screenshot", "Screenshot"),
 }
 
 _OLD_DEFAULT_HOTKEYS = {
@@ -255,10 +264,11 @@ def shortcut_label(settings: "SettingsManager", key: str) -> str:
 
 
 # ── Snip & Read availability ──────────────────────────────────────────────────
-# The Store package is the lite build: no EasyOCR, no Torch. Offering a tool
-# that can only answer "pip install easyocr" is worse than not offering it, so
-# everything OCR hides itself when the engine isn't there. (Checked with
-# find_spec, which does not import Torch.)
+# On Windows, Snip & Read runs on the OCR engine built into Windows
+# (ocr_win.py) — nothing to bundle, so the Store build has it too. Elsewhere
+# it needs EasyOCR installed. Where neither is there the tool hides itself: a
+# button that can only say "not available" is worse than no button.
+# (find_spec checks for EasyOCR without importing Torch.)
 
 _ocr_available: bool | None = None
 
@@ -267,7 +277,8 @@ def ocr_available() -> bool:
     global _ocr_available
     if _ocr_available is None:
         try:
-            _ocr_available = importlib.util.find_spec("easyocr") is not None
+            _ocr_available = (ocr_win.available()
+                              or importlib.util.find_spec("easyocr") is not None)
         except (ImportError, ValueError):
             _ocr_available = False
     return _ocr_available
@@ -451,11 +462,27 @@ def _blur_pixmap(pixmap: QPixmap, radius: int = 18) -> QPixmap:
 
 
 # ── Shape classes ──────────────────────────────────────────────────────────────
+def _dist_to_segment(pt: QPointF, a: QPointF, b: QPointF) -> float:
+    dx, dy = b.x() - a.x(), b.y() - a.y()
+    length2 = dx * dx + dy * dy
+    if length2 == 0:
+        return math.hypot(pt.x() - a.x(), pt.y() - a.y())
+    t = max(0.0, min(1.0, ((pt.x() - a.x()) * dx + (pt.y() - a.y()) * dy) / length2))
+    return math.hypot(pt.x() - (a.x() + t * dx), pt.y() - (a.y() + t * dy))
+
+
 class Shape:
     def draw(self, p: QPainter): pass
     def move(self, dx: float, dy: float): pass
     def bounding_rect(self) -> QRectF: return QRectF()
     def contains(self, pt: QPointF) -> bool: return self.bounding_rect().contains(pt)
+
+    def hit(self, pt: QPointF, tolerance: float = 6.0) -> bool:
+        """Is `pt` on the visible mark (within `tolerance`)? Filled shapes are
+        hit anywhere inside; outlines only near the line itself — a long
+        diagonal arrow no longer claims every click in its bounding box."""
+        return self.bounding_rect().adjusted(-tolerance, -tolerance,
+                                             tolerance, tolerance).contains(pt)
 
 
 class PenShape(Shape):
@@ -488,6 +515,15 @@ class PenShape(Shape):
         xs = [pt.x() for pt in self.pts]; ys = [pt.y() for pt in self.pts]
         return QRectF(min(xs), min(ys), max(xs)-min(xs), max(ys)-min(ys))
 
+    def hit(self, pt, tolerance=6.0):
+        reach = self.width / 2 + tolerance
+        if not self.bounding_rect().adjusted(-reach, -reach, reach, reach).contains(pt):
+            return False
+        if len(self.pts) == 1:
+            return _dist_to_segment(pt, self.pts[0], self.pts[0]) <= reach
+        return any(_dist_to_segment(pt, a, b) <= reach
+                   for a, b in zip(self.pts, self.pts[1:]))
+
 
 class LineShape(Shape):
     def __init__(self, p1, p2, color, width):
@@ -503,6 +539,9 @@ class LineShape(Shape):
         self.p2 = QPointF(self.p2.x()+dx, self.p2.y()+dy)
 
     def bounding_rect(self): return _norm(self.p1, self.p2).adjusted(-10,-10,10,10)
+
+    def hit(self, pt, tolerance=6.0):
+        return _dist_to_segment(pt, self.p1, self.p2) <= self.width / 2 + tolerance
 
 
 class ArrowShape(Shape):
@@ -545,6 +584,11 @@ class ArrowShape(Shape):
 
     def bounding_rect(self): return _norm(self.p1, self.p2).adjusted(-20,-20,20,20)
 
+    def hit(self, pt, tolerance=6.0):
+        if _dist_to_segment(pt, self.p1, self.p2) <= self.width / 2 + tolerance:
+            return True
+        return self.outline().contains(pt)
+
 
 class RectShape(Shape):
     def __init__(self, p1, p2, color, width):
@@ -561,6 +605,13 @@ class RectShape(Shape):
         self.p2 = QPointF(self.p2.x()+dx, self.p2.y()+dy)
 
     def bounding_rect(self): return _norm(self.p1, self.p2)
+
+    def hit(self, pt, tolerance=6.0):
+        r = _norm(self.p1, self.p2)
+        c = [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()]
+        reach = self.width / 2 + tolerance
+        return any(_dist_to_segment(pt, c[i], c[(i + 1) % 4]) <= reach
+                   for i in range(4))
 
 
 class CircleShape(Shape):
@@ -579,10 +630,27 @@ class CircleShape(Shape):
 
     def bounding_rect(self): return _norm(self.p1, self.p2)
 
+    def hit(self, pt, tolerance=6.0):
+        r = _norm(self.p1, self.p2)
+        a, b = r.width() / 2, r.height() / 2
+        if a < 1 or b < 1:
+            return r.adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(pt)
+        dx, dy = pt.x() - r.center().x(), pt.y() - r.center().y()
+        # Distance from the outline along the ray from the centre: the
+        # ellipse's radius in that direction against the point's distance.
+        theta = math.atan2(dy, dx)
+        radius = a * b / math.hypot(b * math.cos(theta), a * math.sin(theta))
+        return abs(math.hypot(dx, dy) - radius) <= self.width / 2 + tolerance
+
 
 class RulerShape(Shape):
-    def __init__(self, p1, p2, color, width):
+    """Measures in real screen pixels: `scale` is the screen's device pixel
+    ratio, so at 125 % a 100-logical-pixel line reads "125 px" — the number
+    that matches a screenshot or a design file."""
+
+    def __init__(self, p1, p2, color, width, scale: float = 1.0):
         self.p1, self.p2, self.color, self.width = p1, p2, color, width
+        self.scale = scale
 
     def draw(self, p):
         p.setRenderHint(RHint.Antialiasing)
@@ -604,7 +672,7 @@ class RulerShape(Shape):
             path.lineTo(QPointF(pt.x()-nx*tick, pt.y()-ny*tick))
         p.setBrush(BS.NoBrush)
         p.drawPath(path)
-        label = f"{round(length)} px"
+        label = f"{self.length_px()} px"
         mid = QPointF((self.p1.x()+self.p2.x())/2, (self.p1.y()+self.p2.y())/2)
         font = QFont("Arial", 11, QFont.Weight.Bold)
         p.setFont(font)
@@ -621,29 +689,67 @@ class RulerShape(Shape):
 
     def bounding_rect(self): return _norm(self.p1, self.p2).adjusted(-30,-30,30,30)
 
+    def hit(self, pt, tolerance=6.0):
+        return _dist_to_segment(pt, self.p1, self.p2) <= self.width / 2 + tolerance + 8
+
+    def length_px(self) -> int:
+        """Length in real screen pixels."""
+        return round(math.hypot(self.p2.x() - self.p1.x(),
+                                self.p2.y() - self.p1.y()) * self.scale)
+
 
 class TextShape(Shape):
-    def __init__(self, pos, text, color, size):
+    """Text whose top-left corner is `pos`; several lines are fine. `box`
+    puts a rounded plate in the contrasting colour behind it, so a label
+    stays readable on a busy background."""
+
+    PAD_X, PAD_Y = 8, 4
+
+    def __init__(self, pos, text, color, size, box: bool = False):
         self.pos, self.text, self.color, self.size = pos, text, color, size
+        self.box = box
+
+    def font(self) -> QFont:
+        return QFont("Arial", self.size, QFont.Weight.Bold)
+
+    def text_rect(self) -> QRectF:
+        fm = QFontMetricsF(self.font())
+        r = fm.boundingRect(QRectF(0, 0, 1e6, 1e6),
+                            int(AA.AlignLeft | AA.AlignTop), self.text or " ")
+        return QRectF(self.pos, r.size())
 
     def draw(self, p):
         p.setRenderHint(RHint.Antialiasing)
-        p.setFont(QFont("Arial", self.size, QFont.Weight.Bold))
+        r = self.text_rect()
+        if self.box:
+            plate = _contrast(self.color)
+            plate.setAlpha(225)
+            p.setPen(PS.NoPen)
+            p.setBrush(QBrush(plate))
+            p.drawRoundedRect(r.adjusted(-self.PAD_X, -self.PAD_Y,
+                                         self.PAD_X, self.PAD_Y), 6, 6)
+        p.setFont(self.font())
         p.setPen(QPen(QColor(self.color)))
-        p.drawText(self.pos, self.text)
+        p.drawText(r, int(AA.AlignLeft | AA.AlignTop), self.text)
 
     def move(self, dx, dy): self.pos = QPointF(self.pos.x()+dx, self.pos.y()+dy)
 
     def bounding_rect(self):
-        fm = QFontMetrics(QFont("Arial", self.size))
-        return QRectF(self.pos.x(), self.pos.y()-fm.height(),
-                      fm.horizontalAdvance(self.text)+4, fm.height()+4)
+        r = self.text_rect()
+        return r.adjusted(-self.PAD_X, -self.PAD_Y, self.PAD_X, self.PAD_Y) \
+            if self.box else r
+
+
+def _marker_radius(size: int) -> int:
+    """Callout/step radius from the SIZE slider: 20 pt gives the original 16 px."""
+    return max(10, round(size * 0.8))
 
 
 class CalloutShape(Shape):
     """Filled circle with auto-incrementing number."""
-    def __init__(self, pos, number, color):
-        self.pos, self.number, self.color, self.r = pos, number, color, 16
+    def __init__(self, pos, number, color, size: int = 20):
+        self.pos, self.number, self.color = pos, number, color
+        self.r = _marker_radius(size)
 
     def draw(self, p):
         p.setRenderHint(RHint.Antialiasing)
@@ -660,8 +766,9 @@ class CalloutShape(Shape):
 
 class StepShape(Shape):
     """Rounded square with auto-incrementing step number."""
-    def __init__(self, pos, number, color):
-        self.pos, self.number, self.color, self.r = pos, number, color, 16
+    def __init__(self, pos, number, color, size: int = 20):
+        self.pos, self.number, self.color = pos, number, color
+        self.r = _marker_radius(size)
 
     def draw(self, p):
         p.setRenderHint(RHint.Antialiasing)
@@ -726,31 +833,53 @@ class BlurShape(Shape):
 
 
 class PixelShape(Shape):
-    def __init__(self, p1, p2):
+    """A real mosaic of what was underneath: the grab shrunk to one pixel per
+    cell and blown back up without smoothing. Cells never go below
+    PixelShape.MIN_CELL — small cells over small text can be read back.
+    Without a grab (it failed) it falls back to a grey noise block."""
+
+    MIN_CELL = 10
+
+    def __init__(self, p1, p2, mosaic: QPixmap | None = None):
         self.p1, self.p2 = p1, p2
+        self.mosaic = mosaic
 
     def draw(self, p):
         rect = _norm(self.p1, self.p2)
-        pz = getattr(self, "size", 12)
-        rng = _rng.Random(int(rect.left()*100 + rect.top()))
+        if self.mosaic is not None and not self.mosaic.isNull():
+            p.drawPixmap(rect.toRect(), self.mosaic)
+            return
+        pz = max(self.MIN_CELL, getattr(self, "size", 12))
+        rng = _rng.Random(int(rect.width() * 100 + rect.height()))
         p.setPen(PS.NoPen)
         x = rect.left()
         while x < rect.right():
             y = rect.top()
             while y < rect.bottom():
                 g = rng.randint(80, 210)
-                p.setBrush(QBrush(QColor(g, g, g, 220)))
+                p.setBrush(QBrush(QColor(g, g, g, 255)))
                 p.drawRect(QRectF(x, y, min(pz, rect.right()-x), min(pz, rect.bottom()-y)))
                 y += pz
             x += pz
-        p.setPen(QPen(QColor(150,150,150,180), 1, PS.DashLine))
-        p.setBrush(BS.NoBrush); p.drawRect(rect)
 
     def move(self, dx, dy):
         self.p1 = QPointF(self.p1.x()+dx, self.p1.y()+dy)
         self.p2 = QPointF(self.p2.x()+dx, self.p2.y()+dy)
 
     def bounding_rect(self): return _norm(self.p1, self.p2)
+
+
+def _mosaic(raw: QPixmap, cell_px: int) -> QPixmap:
+    """Pixelate a grab: average each cell (smooth downscale), then enlarge
+    with hard edges."""
+    w, h = raw.width(), raw.height()
+    small = raw.scaled(max(1, round(w / cell_px)), max(1, round(h / cell_px)),
+                       Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    out = small.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.FastTransformation)
+    out.setDevicePixelRatio(1.0)
+    return out
 
 
 class RedactShape(Shape):
@@ -770,6 +899,9 @@ class RedactShape(Shape):
 
 class EraserShape(Shape):
     """Freehand eraser — clears pixels using CompositionMode_Clear."""
+
+    def hit(self, pt, tolerance=6.0):
+        return False          # invisible: nothing to select or erase
     def __init__(self, width: int):
         self.pts:  list[QPointF] = []
         self.width = width
@@ -852,11 +984,16 @@ class Canvas(QWidget):
         self.pen_width  = 4
         self.pen_alpha  = 255   # 0-255; baked into colour when shapes are created
         self.font_size  = 20
+        self.text_box   = False       # Text tool: plate behind the text
+        self.eraser_mode = "shapes"   # "shapes": touch a mark to remove it
+                                      # "pixels": rub out part of one
+        self.pixel_size = 14          # Pixelate cell, logical px
 
         self._shapes:      list[Shape] = []
         # Every change is an action, so Clear, Delete and moving a shape undo
         # like drawing one does: ("add", s) · ("clear", [shapes]) ·
-        # ("delete", s, index) · ("move", s, dx, dy)
+        # ("delete", s, index) · ("delete_many", [(s, index), …]) ·
+        # ("move", s, dx, dy) · ("edit", s, old_text, new_text)
         self._undo:        list[tuple] = []
         self._redo:        list[tuple] = []
         self._selected:    Shape | None = None
@@ -875,13 +1012,30 @@ class Canvas(QWidget):
 
         # Laser pointer — tracks mouse position, never commits to _shapes
         self._laser_pos: QPointF | None = None
+        # Object eraser: where its ring is, and what one drag has removed
+        self._eraser_pos: QPointF | None = None
+        self._erased: list[tuple] = []
+        # Text being typed on the canvas, and the label it is editing (if any)
+        self._editor: "InlineTextEditor | None" = None
+        self._editing: TextShape | None = None
 
     def has_marks(self) -> bool:
         return bool(self._shapes)
 
+    def _eraser_radius(self) -> float:
+        if self.eraser_mode == "pixels":
+            return max(self.pen_width * 4, 20) / 2
+        return max(self.pen_width * 2, 10)
+
     def mousePressEvent(self, e):
         if e.button() != MB.LeftButton: return
         pos = QPointF(e.pos())
+        # A click anywhere finishes the text being typed (the canvas never
+        # takes focus, so the editor would not notice on its own).
+        was_editing = self._editor is not None
+        self.finish_editing()
+        if was_editing and self.tool == "text":
+            return                      # that click was "done", not "new text"
         self._start = self._cur = pos
         self._drawing = True
 
@@ -892,7 +1046,7 @@ class Canvas(QWidget):
         if self.tool == "select":
             self._selected = None
             for s in reversed(self._shapes):
-                if s.contains(pos):
+                if s.hit(pos, 6):
                     self._selected = s
                     self._drag_last = self._move_from = pos
                     break
@@ -903,39 +1057,94 @@ class Canvas(QWidget):
             self._pen_shape.pts.append(pos); return
 
         if self.tool == "eraser":
-            self._eraser_shape = EraserShape(max(self.pen_width * 4, 20))
-            self._eraser_shape.pts.append(pos); return
+            if self.eraser_mode == "shapes":
+                self._erased = []
+                self._erase_at(pos)
+            else:
+                self._eraser_shape = EraserShape(max(self.pen_width * 4, 20))
+                self._eraser_shape.pts.append(pos)
+            return
 
         if self.tool in POINT_TOOLS:
             self._place_point(pos)
             self._drawing = False; return
+
+    # ── repainting only what changed ───────────────────────────────────────
+    # Every mouse move used to repaint the whole overlay — every monitor, every
+    # mark — 24-35 ms a frame on two 4K screens with a few dozen marks, a CPU
+    # core pinned while the laser moved. Repainting just the area that changed
+    # is ~2 ms however large the desktop is.
+    def _update_area(self, *rects: QRectF, margin: float = 4):
+        area = QRectF()
+        for r in rects:
+            if r is not None and not r.isNull():
+                area = area.united(r)
+        if not area.isNull():
+            self.update(area.adjusted(-margin, -margin, margin, margin).toAlignedRect())
+
+    @staticmethod
+    def _ring(pos: QPointF | None, r: float) -> QRectF:
+        if pos is None:
+            return QRectF()
+        return QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
+
+    def _preview_area(self) -> QRectF:
+        """Where the drag preview (or the snip rectangle) is drawn now."""
+        if not self._drawing:
+            return QRectF()
+        if self.tool == "ocr":
+            return _norm(self._start, self._cur).adjusted(-3, -3, 3, 3)
+        preview = self._make_drag(self._start, self._cur) \
+            if self.tool in DRAG_TOOLS else None
+        if preview is None:
+            return QRectF()
+        # Arrowheads, stroke width and the ruler's label reach past the ends.
+        m = self.pen_width * 4 + 40
+        return preview.bounding_rect().adjusted(-m, -m, m, m)
 
     def mouseMoveEvent(self, e):
         pos = QPointF(e.pos())
 
         # Laser tracks freely — no button held needed
         if self.tool == "laser":
-            self._laser_pos = pos
-            self.update(); return
+            old, self._laser_pos = self._laser_pos, pos
+            self._update_area(self._ring(old, 24), self._ring(pos, 24))
+            return
+
+        if self.tool == "eraser":           # the eraser's ring follows too
+            r = self._eraser_radius() + 3
+            old, self._eraser_pos = self._eraser_pos, pos
+            if e.buttons() & MB.LeftButton and self.eraser_mode == "shapes":
+                self._erase_at(pos)         # repaints everything if it took any
+            self._update_area(self._ring(old, r), self._ring(pos, r))
 
         if not (e.buttons() & MB.LeftButton): return
+        before = self._preview_area()
+        last = self._cur
         self._cur = pos
 
         if self.tool == "select" and self._selected:
+            m = 40 + getattr(self._selected, "width", 0)
+            old = self._selected.bounding_rect().adjusted(-m, -m, m, m)
             self._selected.move(pos.x()-self._drag_last.x(), pos.y()-self._drag_last.y())
             self._drag_last = pos
-            self.update(); return
+            self._update_area(old, self._selected.bounding_rect().adjusted(-m, -m, m, m))
+            return
 
         if self.tool == "pen" and self._pen_shape:
             self._pen_shape.pts.append(pos)
-            self.update(); return
+            w = self._pen_shape.width
+            self._update_area(QRectF(last, pos).normalized(), margin=w + 2)
+            return
 
         if self.tool == "eraser" and self._eraser_shape:
             self._eraser_shape.pts.append(pos)
-            self.update(); return
+            w = self._eraser_shape.width
+            self._update_area(QRectF(last, pos).normalized(), margin=w + 2)
+            return
 
         if self.tool in DRAG_TOOLS or self.tool == "ocr":
-            self.update()
+            self._update_area(before, self._preview_area())
 
     def mouseReleaseEvent(self, e):
         if e.button() != MB.LeftButton or not self._drawing: return
@@ -959,10 +1168,14 @@ class Canvas(QWidget):
             self._pen_shape = None
             self.update(); return
 
-        if self.tool == "eraser" and self._eraser_shape:
-            if len(self._eraser_shape.pts) > 1:
-                self._commit(self._eraser_shape)
-            self._eraser_shape = None
+        if self.tool == "eraser":
+            if self._erased:
+                erased, self._erased = self._erased, []
+                self._record(("delete_many", erased))
+            elif self._eraser_shape:
+                if len(self._eraser_shape.pts) > 1:
+                    self._commit(self._eraser_shape)
+                self._eraser_shape = None
             self.update(); return
 
         if self.tool == "ocr":
@@ -1002,6 +1215,11 @@ class Canvas(QWidget):
                     blurred = self._blurred_behind(
                         rect, int(getattr(self, "blur_radius", 18)))
                     self._commit(BlurShape(self._start, pos, blurred))
+            elif self.tool == "pixel":
+                rect = _norm(self._start, pos)
+                if rect.width() > 3 and rect.height() > 3:
+                    self._commit(PixelShape(self._start, pos,
+                                            self._pixelated_behind(rect)))
             else:
                 s = self._make_drag(self._start, pos)
                 if s: self._commit(s)
@@ -1010,15 +1228,82 @@ class Canvas(QWidget):
         col = _with_alpha(self.pen_color, self.pen_alpha)
         t = self.tool
         if t == "text":
-            dlg = TextInputDialog(self.window())
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                text = dlg.text()
-                if text:
-                    self._commit(TextShape(pos, text, col, self.font_size))
+            # On an existing label: edit it. Anywhere else: new text, typed
+            # right there — not in a dialog on another monitor.
+            existing = next((s for s in reversed(self._shapes)
+                             if isinstance(s, TextShape) and s.hit(pos, 2)), None)
+            self.begin_text(pos, existing)
         elif t == "callout":
-            self._commit(CalloutShape(pos, self._next_number(CalloutShape), col))
+            self._commit(CalloutShape(pos, self._next_number(CalloutShape), col,
+                                      self.font_size))
         elif t == "steps":
-            self._commit(StepShape(pos, self._next_number(StepShape), col))
+            self._commit(StepShape(pos, self._next_number(StepShape), col,
+                                   self.font_size))
+
+    # ── text typed on the canvas ───────────────────────────────────────────
+    def begin_text(self, pos: QPointF, shape: "TextShape | None" = None):
+        self.finish_editing()
+        if shape is not None:
+            self._editing = shape
+            ed = InlineTextEditor(self, shape.pos, shape.color, shape.size,
+                                  shape.box, shape.text)
+        else:
+            ed = InlineTextEditor(self, pos,
+                                  _with_alpha(self.pen_color, self.pen_alpha),
+                                  self.font_size, self.text_box)
+        ed.committed.connect(self._text_committed)
+        ed.cancelled.connect(self._text_cancelled)
+        self._editor = ed
+        self.update()
+
+    def finish_editing(self):
+        """Commit whatever is being typed (clicking elsewhere, switching tool
+        or mode all count as done)."""
+        if self._editor is not None:
+            self._editor.commit()
+
+    def _close_editor(self):
+        ed, self._editor = self._editor, None
+        self._editing = None
+        if ed is not None:
+            ed.hide()
+            ed.deleteLater()
+        self.update()
+
+    def _text_committed(self, text: str):
+        ed, shape = self._editor, self._editing
+        if ed is None:
+            return
+        pos, color, size, box = ed.origin, ed.color, ed.size, ed.box
+        self._close_editor()
+        if shape is not None:
+            if not text.strip():
+                self._selected = shape
+                self.delete_selected()
+            elif text != shape.text:
+                old = shape.text
+                shape.text = text
+                self._record(("edit", shape, old, text))
+        elif text.strip():
+            self._commit(TextShape(pos, text, color, size, box))
+
+    def _text_cancelled(self):
+        self._close_editor()
+
+    # ── object eraser ──────────────────────────────────────────────────────
+    def _erase_at(self, pos: QPointF):
+        """Remove every visible mark the eraser's ring touches. One drag is
+        one undo step, however many marks it took."""
+        r = self._eraser_radius()
+        for i in range(len(self._shapes) - 1, -1, -1):
+            shape = self._shapes[i]
+            if shape.hit(pos, r):
+                del self._shapes[i]
+                self._erased.append((shape, i))
+        if self._erased:
+            if self._selected is not None and self._selected not in self._shapes:
+                self._selected = None
+            self.update()
 
     def _next_number(self, cls) -> int:
         """One past the highest number on screen — worked out from the marks
@@ -1044,18 +1329,25 @@ class Canvas(QWidget):
         if t == "arrow":     return ArrowShape(p1, p2, col, self.pen_width)
         if t == "rect":      return RectShape(p1, p2, col, self.pen_width)
         if t == "circle":    return CircleShape(p1, p2, col, self.pen_width)
-        if t == "ruler":     return RulerShape(p1, p2, col, self.pen_width)
+        if t == "ruler":
+            scr = self.screen()
+            scale = scr.devicePixelRatio() if scr is not None else 1.0
+            return RulerShape(p1, p2, col, self.pen_width, scale)
         if t == "highlight": return HighlightShape(p1, p2, col)
         if t == "blur":      return BlurShape(p1, p2)
         if t == "pixel":
             s = PixelShape(p1, p2)
-            s.size = getattr(self, "pixel_size", 12)
+            s.size = self.pixel_size
             return s
         if t == "redact":    return RedactShape(p1, p2)
         return None
 
-    def capture_annotated(self) -> QPixmap:
-        """Grab the desktop behind the overlay and composite all shapes on top."""
+    def capture_annotated(self, region: QRect | None = None,
+                          marks: bool = True) -> QPixmap:
+        """Grab the desktop behind the overlay and composite all shapes on top
+        — the whole desktop, or just `region` (global coordinates). `marks`
+        False leaves them out (the overlay is put away, so they aren't on
+        screen either)."""
         overlay = self.window()
         with _ChromeHidden(overlay):
             sr = QApplication.primaryScreen().virtualGeometry()
@@ -1073,8 +1365,16 @@ class Canvas(QWidget):
         p.setRenderHint(RHint.Antialiasing)
         if ratio != 1.0:
             p.scale(ratio, ratio)
-        self.paint_marks(p, bg.width(), bg.height(), selection=False, live=False)
+        if marks:
+            self.paint_marks(p, bg.width(), bg.height(), selection=False, live=False)
         p.end()
+        if region is not None and region.isValid():
+            crop = QRect(round((region.x() - sr.x()) * ratio),
+                         round((region.y() - sr.y()) * ratio),
+                         round(region.width() * ratio),
+                         round(region.height() * ratio)).intersected(bg.rect())
+            if crop.isValid():
+                bg = bg.copy(crop)
         return bg
 
     # ── history ────────────────────────────────────────────────────────────
@@ -1106,8 +1406,13 @@ class Canvas(QWidget):
             self._shapes[:] = shape
         elif kind == "delete":
             self._shapes.insert(min(action[2], len(self._shapes)), shape)
+        elif kind == "delete_many":
+            for s, i in reversed(shape):
+                self._shapes.insert(min(i, len(self._shapes)), s)
         elif kind == "move":
             shape.move(-action[2], -action[3])
+        elif kind == "edit":
+            shape.text = action[2]
         self._redo.append(action)
         self._changed()
         return True
@@ -1124,8 +1429,14 @@ class Canvas(QWidget):
         elif kind == "delete":
             if shape in self._shapes:
                 self._shapes.remove(shape)
+        elif kind == "delete_many":
+            for s, _i in shape:
+                if s in self._shapes:
+                    self._shapes.remove(s)
         elif kind == "move":
             shape.move(action[2], action[3])
+        elif kind == "edit":
+            shape.text = action[3]
         self._undo.append(action)
         self._changed()
         return True
@@ -1170,6 +1481,17 @@ class Canvas(QWidget):
         raw = self._grab_behind(padded)
         return _blur_region(raw, padded, target, radius)
 
+    def _pixelated_behind(self, rect: QRectF) -> QPixmap:
+        """The desktop under `rect`, as a mosaic of pixel_size cells."""
+        target = QRect(self.mapToGlobal(rect.topLeft().toPoint()),
+                       rect.size().toSize())
+        raw = self._grab_behind(target)
+        if raw.isNull() or raw.width() < 1:
+            return QPixmap()
+        device_cell = max(PixelShape.MIN_CELL, self.pixel_size) \
+            * raw.width() / max(1, target.width())
+        return _mosaic(raw, round(device_cell))
+
     def _grab_behind(self, r: QRect) -> QPixmap:
         """Grab the desktop under global rect `r` with the app's own windows
         out of the way. Global, not canvas coordinates: the overlay spans every
@@ -1185,16 +1507,31 @@ class Canvas(QWidget):
         return pix
 
     # ── painting ───────────────────────────────────────────────────────────
-    def paintEvent(self, _):
+    def paintEvent(self, e):
+        area = e.rect()                 # only this part needs repainting
         p = QPainter(self)
         p.setCompositionMode(CM.CompositionMode_Clear)
-        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.fillRect(area, Qt.GlobalColor.transparent)
         p.setCompositionMode(CM.CompositionMode_SourceOver)
         if IS_WIN:
-            p.fillRect(self.rect(), QColor(0, 0, 0, 1))
-        dpr = self.devicePixelRatioF()
-        self.paint_marks(p, round(self.width() * dpr), round(self.height() * dpr),
-                         dpr)
+            p.fillRect(area, QColor(0, 0, 0, 1))
+        if not self._has_eraser():
+            self.render_annotations(p, area=QRectF(area))
+        else:
+            # Eraser strokes must only erase marks (see paint_marks), so the
+            # marks go into a layer first — one the size of the repainted
+            # area, not of the whole desktop.
+            dpr = self.devicePixelRatioF()
+            layer = QImage(max(1, round(area.width() * dpr)),
+                           max(1, round(area.height() * dpr)),
+                           QImage.Format.Format_ARGB32_Premultiplied)
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(0)
+            lp = QPainter(layer)
+            lp.translate(-area.x(), -area.y())
+            self.render_annotations(lp, area=QRectF(area))
+            lp.end()
+            p.drawImage(area.topLeft(), layer)
         p.end()
 
     def _has_eraser(self) -> bool:
@@ -1238,7 +1575,7 @@ class Canvas(QWidget):
         p.restore()
 
     def render_annotations(self, p: QPainter, *, selection: bool = True,
-                           live: bool = True):
+                           live: bool = True, area: QRectF | None = None):
         """Paint every mark onto `p` — committed shapes, the stroke in
         progress, the drag preview, the laser dot.
 
@@ -1250,11 +1587,22 @@ class Canvas(QWidget):
         everything `live` — the half-drawn stroke and the laser dot.
         """
         p.setRenderHint(RHint.Antialiasing)
-        for shape in self._shapes: shape.draw(p)
+        for shape in self._shapes:
+            if shape is self._editing:          # its editor shows it instead
+                continue
+            if area is not None and not shape.bounding_rect().adjusted(
+                    -60, -60, 60, 60).intersects(area):
+                continue                        # nowhere near the repaint
+            shape.draw(p)
         if not live:
             return
         if self.tool == "pen"    and self._pen_shape:    self._pen_shape.draw(p)
         if self.tool == "eraser" and self._eraser_shape: self._eraser_shape.draw(p)
+        if self.tool == "eraser" and self._eraser_pos is not None:
+            r = self._eraser_radius()
+            p.setBrush(QBrush(QColor(255, 255, 255, 40)))
+            p.setPen(QPen(QColor(0, 0, 0, 150), 1.5, PS.DashLine))
+            p.drawEllipse(self._eraser_pos, r, r)
         if self.tool == "ocr" and self._drawing:
             # Dashed blue selection rectangle while user drags the snip area
             p.setRenderHint(RHint.Antialiasing)
@@ -1349,6 +1697,23 @@ class _ChromeHidden:
 
 
 # ── Screenshot result bar ─────────────────────────────────────────────────────
+def screenshot_dir(settings=None) -> str:
+    """Where Save starts: the folder used last, else Pictures\\Screenshots
+    (Windows' own screenshot folder), created if it isn't there yet."""
+    chosen = (settings.get("shot_dir") if settings is not None else "") or ""
+    if chosen and os.path.isdir(chosen):
+        return chosen
+    from PyQt6.QtCore import QStandardPaths
+    pictures = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.PicturesLocation) or os.path.expanduser("~")
+    folder = os.path.join(pictures, "Screenshots")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError:
+        return pictures
+    return folder
+
+
 class ScreenshotBar(QWidget):
     """Floating panel shown after capture: Copy | Save PNG | Discard
 
@@ -1422,17 +1787,20 @@ class ScreenshotBar(QWidget):
 
     def _save(self):
         from datetime import datetime
-        import os
-        default = os.path.expanduser(
-            f"~/annotation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        )
-        path, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", default,
+        settings = getattr(self._overlay, "settings", None)
+        folder = screenshot_dir(settings)
+        name = f"Screenshot {datetime.now().strftime('%Y-%m-%d %H%M%S')}.png"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Screenshot",
+                                              os.path.join(folder, name),
                                               "PNG Images (*.png)")
         saved = False
         if path:
             if not path.lower().endswith(".png"):
                 path += ".png"
             saved = self._pixmap.save(path, "PNG")
+            if saved and settings is not None:
+                settings.set("shot_dir", os.path.dirname(path))  # next time: here
+                settings.save()
         self.close()
         if saved:
             self._succeeded()
@@ -1840,6 +2208,122 @@ class Toast(QWidget):
         _dlg_frame_paint(self)
 
 
+class WelcomeTips(QWidget):
+    """Three steps, once, on a first run: how to draw, how to get your
+    clicks back without losing the marks, and where capture and record are.
+    The app starts in click-through, so without this a new user can see a
+    dock and nothing happening when they click the screen."""
+
+    def __init__(self, overlay):
+        super().__init__(None,
+                         WType.FramelessWindowHint |
+                         WType.WindowStaysOnTopHint |
+                         WType.Tool)
+        self.setAttribute(WAtt.WA_TranslucentBackground, True)
+        self._overlay = overlay
+        settings = overlay.settings
+        toggle = shortcut_label(settings, "hotkey")
+        rec = shortcut_label(settings, "rec_hotkey")
+        shot = shortcut_label(settings, "screenshot_hotkey")
+        self._pages = [
+            ("Draw on anything",
+             f"Press {toggle}, or click \u201cDrawing OFF\u201d on the dock, "
+             "and draw right on top of whatever is on screen. Every tool has "
+             "a one-letter key — P pen, A arrow, T text."),
+            ("Keep working — the marks stay",
+             f"Press Esc (or {toggle} again): your marks stay on screen and "
+             "your mouse goes back to the app underneath. Ctrl+Z undoes "
+             "anything, even Clear all."),
+            ("Capture and record",
+             f"Capture ({shot}) takes a screenshot of an area with your marks; "
+             f"Record ({rec}) makes an MP4 with them. Everything else is in "
+             "Settings."),
+        ]
+        self._page = 0
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(20, 16, 20, 16)
+        lo.setSpacing(8)
+        self._step = QLabel()
+        self._step.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        self._title = QLabel()
+        tf = QFont(DLG_FONT, 12)
+        tf.setBold(True)
+        self._title.setFont(tf)
+        self._title.setStyleSheet(f"color:{DLG_INK};")
+        self._body = QLabel()
+        self._body.setWordWrap(True)
+        self._body.setStyleSheet(f"color:{DLG_INK};font-size:12px;")
+        for w in (self._step, self._title, self._body):
+            lo.addWidget(w)
+        row = QHBoxLayout()
+        skip = QPushButton("Skip")
+        skip.setFixedHeight(30)
+        skip.setCursor(Cursor.PointingHandCursor)
+        skip.setStyleSheet(_dlg_button_style(primary=False))
+        skip.clicked.connect(self._done)
+        self._next = QPushButton()
+        self._next.setFixedHeight(30)
+        self._next.setCursor(Cursor.PointingHandCursor)
+        self._next.setStyleSheet(_dlg_button_style(primary=True))
+        self._next.clicked.connect(self._advance)
+        row.addWidget(skip)
+        row.addStretch()
+        row.addWidget(self._next)
+        lo.addLayout(row)
+        self.setFixedWidth(400)
+        self._show_page()
+
+    def _show_page(self):
+        title, body = self._pages[self._page]
+        self._step.setText(f"{self._page + 1} of {len(self._pages)}")
+        self._title.setText(title)
+        self._body.setText(body)
+        self._next.setText("Done" if self._page == len(self._pages) - 1 else "Next")
+        self.adjustSize()
+        self._place()
+
+    def _place(self):
+        dock = getattr(self._overlay, "toolbar", None)
+        if dock is not None and dock.isVisible():
+            g = dock.frameGeometry()
+            self.move(g.center().x() - self.width() // 2,
+                      g.top() - self.height() - 12)
+        else:
+            _center_on_display1(self)
+
+    def start(self):
+        self.show()
+        self.raise_()
+        exclude_from_capture(self, True)
+
+    def _advance(self):
+        if self._page < len(self._pages) - 1:
+            self._page += 1
+            self._show_page()
+        else:
+            self._done()
+
+    def _done(self):
+        settings = self._overlay.settings
+        settings.set("tips_done", True)
+        settings.save()
+        self.close()
+
+    def paintEvent(self, _):
+        _dlg_frame_paint(self)
+
+
+def maybe_show_welcome(overlay) -> "WelcomeTips | None":
+    """First run on this PC, not started at sign-in, not seen before."""
+    settings = overlay.settings
+    if not getattr(settings, "is_new", False) or settings.get("tips_done") \
+            or not overlay.wanted:
+        return None
+    tips = WelcomeTips(overlay)
+    tips.start()
+    return tips
+
+
 class RegionSelector(QWidget):
     """Full-desktop dimmer: drag out the rectangle to record.
 
@@ -1850,7 +2334,13 @@ class RegionSelector(QWidget):
 
     chosen = pyqtSignal(object)          # QRect in global coords, or None
 
-    def __init__(self):
+    RECORD_HINT = "Drag the area you want to record   ·   Esc to cancel"
+    SHOT_HINT = ("Drag an area to capture   ·   click for this whole screen"
+                 "   ·   Enter for all screens   ·   Esc to cancel")
+
+    def __init__(self, hint: str = RECORD_HINT, click_for_screen: bool = False):
+        self._hint = hint
+        self._click_for_screen = click_for_screen
         super().__init__(None,
                          WType.FramelessWindowHint |
                          WType.WindowStaysOnTopHint |
@@ -1886,6 +2376,11 @@ class RegionSelector(QWidget):
             return
         r = self._local_rect()
         if r.width() < 16 or r.height() < 16:
+            if self._click_for_screen:       # a click: the screen it was on
+                scr = (QApplication.screenAt(e.globalPosition().toPoint())
+                       or QApplication.primaryScreen())
+                self._finish(scr.geometry())
+                return
             self._start = self._cur = None   # too small to be deliberate
             self.update()
             return
@@ -1894,6 +2389,8 @@ class RegionSelector(QWidget):
     def keyPressEvent(self, e):
         if e.key() == Key.Key_Escape:
             self._finish(None)
+        elif self._click_for_screen and e.key() in (Key.Key_Return, Key.Key_Enter):
+            self._finish(virtual_desktop_rect())
 
     def _finish(self, rect):
         if self._done:
@@ -1933,7 +2430,7 @@ class RegionSelector(QWidget):
             p.setPen(QColor("#FFFFFF"))
             p.drawText(box, AA.AlignCenter, size_lbl)
 
-        hint = "Drag the area you want to record   ·   Esc to cancel"
+        hint = self._hint
         f2 = QFont(DLG_FONT, 12)
         f2.setBold(True)
         p.setFont(f2)
@@ -2981,61 +3478,86 @@ def _dlg_tab_style() -> str:
 
 
 # ── Text tool input ───────────────────────────────────────────────────────────
-class TextInputDialog(QDialog):
-    """Flat replacement for QInputDialog.getText() — the native version was
-    the one popup still in the old grey/rounded style. Same shape as the
-    other dialogs: ground/ink chrome, square corners, centered on display 1."""
+class InlineTextEditor(QTextEdit):
+    """A label typed right where it goes, in its own font, colour and size.
 
-    def __init__(self, parent=None):
-        super().__init__(parent,
-                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
-        self.setAttribute(WAtt.WA_TranslucentBackground)
-        self._build()
-        self.setFixedWidth(320)
-        self.adjustSize()
-        _center_on_display1(self)
+    Enter finishes, Shift+Enter starts a new line, Esc throws it away, and a
+    click anywhere else counts as done. It replaced a dialog that always
+    opened in the middle of monitor 1, wherever you had clicked.
+    """
 
-    def _build(self):
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(20, 18, 20, 18)
-        lo.setSpacing(10)
+    committed = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
-        title = QLabel("Add Text")
-        f = QFont(DLG_FONT, 13)
-        f.setBold(True)
-        title.setFont(f)
-        title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
-        lo.addWidget(title)
-        lo.addWidget(_dlg_sep())
+    PAD_X, PAD_Y, BORDER = 8, 4, 1
 
-        self._edit = QLineEdit()
-        self._edit.setFixedHeight(36)
-        self._edit.setStyleSheet(_dlg_input_style())
-        self._edit.returnPressed.connect(self.accept)
-        lo.addWidget(self._edit)
+    def __init__(self, canvas: QWidget, pos: QPointF, color: str, size: int,
+                 box: bool, text: str = ""):
+        super().__init__(canvas)
+        self.origin, self.color, self.size, self.box = QPointF(pos), color, size, box
+        self._done = False
+        self.setAcceptRichText(False)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.document().setDocumentMargin(0)
+        self.setFont(QFont("Arial", size, QFont.Weight.Bold))
+        ink = QColor(color)
+        if box:
+            plate = _contrast(color)
+            bg = f"rgba({plate.red()},{plate.green()},{plate.blue()},225)"
+        else:
+            bg = "transparent"
+        self.setStyleSheet(
+            f"QTextEdit{{color:rgba({ink.red()},{ink.green()},{ink.blue()},"
+            f"{max(ink.alpha(), 60)});background:{bg};"
+            f"border:{self.BORDER}px dashed rgba(10,132,255,230);"
+            f"padding:{self.PAD_Y}px {self.PAD_X}px;}}")
+        self.move(round(pos.x()) - self.PAD_X - self.BORDER,
+                  round(pos.y()) - self.PAD_Y - self.BORDER)
+        self.setPlainText(text)
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+        self.textChanged.connect(self._fit)
+        self._fit()
+        self.show()
+        self.raise_()
+        self.setFocus()
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_row.addStretch()
-        for label, slot, primary in [("Cancel", self.reject, False),
-                                     ("Add",    self.accept, True)]:
-            btn = QPushButton(label)
-            btn.setFixedHeight(34)
-            btn.setCursor(Cursor.PointingHandCursor)
-            btn.setStyleSheet(_dlg_button_style(primary))
-            btn.clicked.connect(slot)
-            btn_row.addWidget(btn)
-        lo.addLayout(btn_row)
+    def _fit(self):
+        doc = self.document()
+        extra_w = 2 * (self.PAD_X + self.BORDER) + 8        # room for the caret
+        extra_h = 2 * (self.PAD_Y + self.BORDER)
+        self.resize(max(60, int(doc.idealWidth()) + extra_w),
+                    int(doc.size().height()) + extra_h)
 
-    def showEvent(self, e):
-        super().showEvent(e)
-        self._edit.setFocus()
+    def keyPressEvent(self, e):
+        if e.key() == Key.Key_Escape:
+            self._finish(keep=False)
+            return
+        if e.key() in (Key.Key_Return, Key.Key_Enter) \
+                and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self._finish(keep=True)
+            return
+        super().keyPressEvent(e)
 
-    def text(self) -> str:
-        return self._edit.text()
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.commit()
 
-    def paintEvent(self, _):
-        _dlg_frame_paint(self)
+    def commit(self):
+        self._finish(keep=True)
+
+    def _finish(self, keep: bool):
+        if self._done:
+            return
+        self._done = True
+        if keep:
+            self.committed.emit(self.toPlainText())
+        else:
+            self.cancelled.emit()
 
 
 # ── Help dialog ───────────────────────────────────────────────────────────────
@@ -3051,14 +3573,14 @@ class HelpDialog(QDialog):
         ("→",  "Arrow",           "A",  "Hold Shift → 45° snap"),
         ("▭",  "Rectangle",       "R",  "Hold Shift → perfect square"),
         ("○",  "Circle",          "O",  "Hold Shift → perfect circle"),
-        ("↔",  "Ruler",           "U",  "Hold Shift → 45° snap  ·  shows pixel length"),
-        ("T",  "Text",            "T",  "Click to place  ·  size set by Text size slider"),
+        ("↔",  "Ruler",           "U",  "Hold Shift → 45° snap  ·  length in real screen pixels"),
+        ("T",  "Text",            "T",  "Click and type  ·  Enter finishes, Shift+Enter adds a line  ·  click a label to edit it"),
         ("①",  "Callout",        "K",  "Auto-numbered filled circles"),
         ("1▸2","Steps",           "S",  "Auto-numbered step squares"),
         ("HL", "Highlight",       "H",  "Semi-transparent colour band"),
-        ("◻",  "Eraser",          "E",  "Freehand erase  ·  width = stroke × 4"),
+        ("◻",  "Eraser",          "E",  "Touch a mark to remove it  ·  or switch to Pixels to rub out part of one"),
         ("⊘",  "Blur",            "Z",  "Gaussian blur over a selected region"),
-        ("PX", "Pixelate",        "X",  "Mosaic / pixel-art redaction"),
+        ("PX", "Pixelate",        "X",  "Turns what's underneath into large blocks"),
         ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
         ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
         ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
@@ -3069,7 +3591,7 @@ class HelpDialog(QDialog):
         ("Text size slider", "Controls the font size of the Text tool."),
         ("Shift while drawing", "Locks lines / arrows / ruler to nearest 45°.\n"
                                 "Locks rectangle / circle to perfect square / circle."),
-        ("Eraser width",     "Follows the Stroke slider × 4 so it's always usable at any scale."),
+        ("Eraser size",      "Follows the Width slider."),
         ("Screenshot",       "Hides the overlay, grabs the full desktop (all monitors), "
                              "then shows Copy / Save PNG / Discard."),
         ("Recording",        "Records the screen to MP4 with your marks in it. The "
@@ -3429,13 +3951,10 @@ class SettingsDialog(QDialog):
             lo.addWidget(note)
 
         self._add_shortcut(lo, "hotkey",
-                           "Switches between drawing on the screen and using "
-                           "your computer normally. Click the box and press a "
-                           "new key combination.")
-        self._add_shortcut(lo, "visibility_hotkey",
-                           "Takes the overlay off the screen entirely, marks "
-                           "and all. The tray icon does the same.")
+                           "Click a box and press the new combination.")
+        self._add_shortcut(lo, "visibility_hotkey", "")
         self._add_shortcut(lo, "rec_hotkey", "")
+        self._add_shortcut(lo, "screenshot_hotkey", "")
         if ocr_available():
             self._add_shortcut(lo, "ocr_hotkey", "")
 
@@ -3481,9 +4000,6 @@ class SettingsDialog(QDialog):
         self._scale_box.setFixedHeight(30)
         self._scale_box.setStyleSheet(_dlg_combo_style())
         lo.addWidget(self._scale_box)
-        scale_hint = QLabel("Applies next time the app starts.")
-        scale_hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(scale_hint)
         lo.addSpacing(6)
 
         # ── Appearance ─────────────────────────────────────────────────────────
@@ -3741,8 +4257,11 @@ class SettingsDialog(QDialog):
             self._settings.set("rec_keep_dock_live",
                                self._rec_keep_live_cb.isChecked())
 
-        self._settings.set("dock_scale",
-                           self._scale_values[self._scale_box.currentIndex()])
+        new_scale = self._scale_values[self._scale_box.currentIndex()]
+        if abs(new_scale - float(self._settings.get("dock_scale") or 1.0)) > 1e-3 \
+                and overlay is not None and hasattr(overlay, "toolbar"):
+            overlay.toolbar.apply_scale(new_scale)      # now, not next launch
+        self._settings.set("dock_scale", new_scale)
         boot_problem = ""
         want_boot = self._boot_cb.isChecked()
         if self._boot_cb.isEnabled() and want_boot != (self._boot_status == "on"):
@@ -3884,6 +4403,8 @@ _ocr_preload_thread = None
 
 def _preload_ocr_reader():
     global _ocr_preload_thread
+    if ocr_win.available():
+        return                      # Windows' engine starts in milliseconds
     if _ocr_reader is not None or _ocr_preload_thread is not None:
         return
     _ocr_preload_thread = OcrPreloadThread()
@@ -3891,97 +4412,66 @@ def _preload_ocr_reader():
 
 
 class OcrThread(QThread):
-    """Runs EasyOCR in a background thread so the UI stays responsive."""
+    """Reads the snip off the GUI thread: Windows' own OCR where it is
+    available (ocr_win.py), EasyOCR otherwise (Linux, from source)."""
     status   = pyqtSignal(str)   # progress updates for the dialog label
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, pixmap: QPixmap):
+    def __init__(self, image: QImage, language: str = ""):
         super().__init__()
-        self._pixmap = pixmap
+        # A QImage, not a QPixmap: pixmaps belong to the GUI thread.
+        self._image = image
+        self._language = language
 
     def run(self):
         try:
-            import io
-            import numpy as np
-            from PIL import Image
-            from PyQt6.QtCore import QByteArray, QBuffer, QIODeviceBase
-
-            # QPixmap → PIL Image
-            ba  = QByteArray()
-            buf = QBuffer(ba)
-            buf.open(QIODeviceBase.OpenModeFlag.WriteOnly)
-            self._pixmap.save(buf, "PNG")
-            buf.close()
-            img = Image.open(io.BytesIO(bytes(ba))).convert("RGB")
-
-            if _ocr_reader is None:
-                if not _ocr_models_present():
-                    self.status.emit(
-                        "Downloading OCR model (~150 MB) — first use only…"
-                    )
-                else:
-                    self.status.emit("Loading OCR engine…")
-            reader = _get_ocr_reader()
-
-            self.status.emit("Reading text…")
-            results = reader.readtext(np.array(img))
-            text    = "\n".join(r[1] for r in results).strip()
+            if ocr_win.available():
+                self.status.emit("Reading text…")
+                text = ocr_win.recognize(self._image, self._language)
+            else:
+                text = self._easyocr()
             self.finished.emit(text or "(no text detected)")
-
         except Exception as exc:
             self.error.emit(str(exc))
 
+    def _easyocr(self) -> str:
+        import numpy as np
+        img = self._image.convertToFormat(QImage.Format.Format_RGB888)
+        w, h, stride = img.width(), img.height(), img.bytesPerLine()
+        raw = np.frombuffer(img.constBits().asstring(img.sizeInBytes()),
+                            dtype=np.uint8).reshape(h, stride)
+        rgb = raw[:, :w * 3].reshape(h, w, 3)
+        if _ocr_reader is None:
+            self.status.emit("Downloading OCR model (~150 MB) — first use only…"
+                             if not _ocr_models_present() else "Loading OCR engine…")
+        reader = _get_ocr_reader()
+        self.status.emit("Reading text…")
+        return "\n".join(r[1] for r in reader.readtext(rgb)).strip()
 
-def _looks_like_error_page(text: str) -> bool:
-    """deep-translator hits Google's translate endpoint directly (no API
-    key). When Google rate-limits or blocks that — or a network in between
-    does, e.g. a corporate proxy — it doesn't always raise; sometimes it just
-    hands back Google's raw HTML error page as if it were the translation.
-    Catch the obvious cases so that never gets shown to the user as a
-    result."""
-    t = text.strip().lower()
-    return (
-        "<html" in t or "<!doctype html" in t
-        or "that's an error" in t or "that's all we know" in t
-        or t.startswith("error 500") or t.startswith("error 429")
-    )
+
+TRANSLATE_URL = "https://translate.google.com/?sl=auto&tl={lang}&text={text}&op=translate"
+TRANSLATE_URL_MAX = 5000      # longer links get cut off; paste instead
 
 
-class TranslateThread(QThread):
-    """Calls Google Translate via deep-translator in a background thread."""
-    finished = pyqtSignal(str)
-    error    = pyqtSignal(str)
-
-    def __init__(self, text: str, lang_code: str):
-        super().__init__()
-        self._text = text
-        self._lang = lang_code
-
-    def run(self):
-        try:
-            from deep_translator import GoogleTranslator
-            result = GoogleTranslator(source="auto", target=self._lang).translate(self._text)
-            if result and _looks_like_error_page(result):
-                self.error.emit(
-                    "Translation service returned an error page instead of a "
-                    "result — likely a temporary block or rate limit from "
-                    "Google, or a network/proxy filtering the request. Wait "
-                    "a moment and try again."
-                )
-                return
-            self.finished.emit(result or "(empty result)")
-        except ImportError:
-            self.error.emit(
-                "Missing dependency: deep-translator\n\n"
-                "Install with:\n  pip install deep-translator"
-            )
-        except Exception as exc:
-            self.error.emit(str(exc))
+def translate_url(text: str, lang_code: str) -> str | None:
+    """Google Translate with the text filled in, or None when the text is too
+    long to travel in a link."""
+    from urllib.parse import quote
+    url = TRANSLATE_URL.format(lang=quote(lang_code), text=quote(text))
+    return url if len(url) <= TRANSLATE_URL_MAX else None
 
 
 class OcrResultDialog(QDialog):
-    """Popup showing OCR text + optional translation with copy buttons."""
+    """The recognised text, editable, with Copy — and a one-click hand-off to
+    Google Translate.
+
+    Translation used to be done in-app by deep-translator, which scrapes
+    Google's web endpoint: rate-limited, CAPTCHA-blocked on some networks,
+    and it sometimes returned Google's error page as the "translation". The
+    browser does the same job reliably, and it is honest about where the
+    text goes.
+    """
 
     def __init__(self, pixmap: QPixmap, parent=None):
         super().__init__(parent,
@@ -3990,16 +4480,16 @@ class OcrResultDialog(QDialog):
                          WType.WindowCloseButtonHint |
                          WType.WindowMinimizeButtonHint |
                          WType.WindowMaximizeButtonHint)
-        self.setWindowTitle("OCR & Translate — Screen Annotator Pro")
+        self.setWindowTitle("Snip & Read — Screen Annotator Pro")
         self.setStyleSheet(
             f"QDialog{{background:{DLG_GROUND};}}"
             f"QLabel{{color:{DLG_INK};background:transparent;font-family:'{DLG_FONT}';}}"
         )
-        self._pixmap       = pixmap
-        self._ocr_thread   = None
-        self._trans_thread = None
+        self._image      = pixmap.toImage()
+        self._ocr_thread = None
+        self._languages  = ocr_win.languages() if ocr_win.available() else []
         self._build()
-        self.resize(520, 480)
+        self.resize(520, 420)
         _center_on_display1(self)
         self._start_ocr()
 
@@ -4009,32 +4499,47 @@ class OcrResultDialog(QDialog):
         lo.setContentsMargins(20, 18, 20, 18)
         lo.setSpacing(10)
 
-        # Status
+        top = QHBoxLayout()
         self._status = QLabel("Reading text…")
         self._status.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(self._status)
+        top.addWidget(self._status, 1)
+        # Which language to read as — only worth offering when there is a
+        # choice (each installed Windows language brings its own recognizer).
+        self._read_as = None
+        if len(self._languages) > 1:
+            lbl = QLabel("Read as")
+            lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:11px;")
+            top.addWidget(lbl)
+            self._read_as = QComboBox()
+            for tag, name in self._languages:
+                self._read_as.addItem(name, tag)
+            default = ocr_win.default_language()
+            idx = self._read_as.findData(default)
+            if idx >= 0:
+                self._read_as.setCurrentIndex(idx)
+            self._read_as.setFixedHeight(28)
+            self._read_as.setStyleSheet(_dlg_combo_style())
+            self._read_as.currentIndexChanged.connect(lambda _i: self._start_ocr())
+            top.addWidget(self._read_as)
+        lo.addLayout(top)
 
-        # OCR text box — grows with window
+        # Editable: fixing one misread letter before copying beats retyping.
         self._ocr_box = QTextEdit()
-        self._ocr_box.setReadOnly(True)
-        self._ocr_box.setMinimumHeight(80)
+        self._ocr_box.setMinimumHeight(120)
         self._ocr_box.setPlaceholderText("Recognized text will appear here…")
         self._ocr_box.setStyleSheet(self._box_style())
         lo.addWidget(self._ocr_box, 1)
 
-        # Copy text button
         copy_ocr = QPushButton("Copy text")
-        copy_ocr.setFixedHeight(30)
+        copy_ocr.setFixedHeight(32)
         copy_ocr.setCursor(Cursor.PointingHandCursor)
-        copy_ocr.setStyleSheet(_dlg_button_style(primary=False))
+        copy_ocr.setStyleSheet(_dlg_button_style(primary=True))
         copy_ocr.clicked.connect(
-            lambda: self._copy_and_flash(copy_ocr, self._ocr_box.toPlainText())
-        )
+            lambda: self._copy_and_flash(copy_ocr, self._ocr_box.toPlainText()))
         lo.addWidget(copy_ocr)
 
         lo.addWidget(_dlg_sep())
 
-        # Translate row
         lang_row = QHBoxLayout()
         lang_lbl = QLabel("Translate to")
         lang_lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:12px;")
@@ -4043,33 +4548,21 @@ class OcrResultDialog(QDialog):
         self._lang_box.setCurrentText("English")
         self._lang_box.setFixedHeight(30)
         self._lang_box.setStyleSheet(_dlg_combo_style())
-        go_btn = QPushButton("Translate")
+        go_btn = QPushButton("Open in Google Translate ↗")
         go_btn.setFixedHeight(30)
         go_btn.setCursor(Cursor.PointingHandCursor)
-        go_btn.setStyleSheet(_dlg_button_style(primary=True))
-        go_btn.clicked.connect(self._start_translate)
+        go_btn.setStyleSheet(_dlg_button_style(primary=False))
+        go_btn.clicked.connect(self._translate)
         lang_row.addWidget(lang_lbl)
         lang_row.addWidget(self._lang_box, 1)
         lang_row.addWidget(go_btn)
         lo.addLayout(lang_row)
 
-        # Translation text box — grows with window
-        self._trans_box = QTextEdit()
-        self._trans_box.setReadOnly(True)
-        self._trans_box.setMinimumHeight(80)
-        self._trans_box.setPlaceholderText("Translation will appear here…")
-        self._trans_box.setStyleSheet(self._box_style())
-        lo.addWidget(self._trans_box, 1)
-
-        # Copy translation button
-        copy_tr = QPushButton("Copy translation")
-        copy_tr.setFixedHeight(30)
-        copy_tr.setCursor(Cursor.PointingHandCursor)
-        copy_tr.setStyleSheet(_dlg_button_style(primary=False))
-        copy_tr.clicked.connect(
-            lambda: self._copy_and_flash(copy_tr, self._trans_box.toPlainText())
-        )
-        lo.addWidget(copy_tr)
+        note = QLabel("Reading happens on this PC. Translating opens your "
+                      "browser and sends the text to Google.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+        lo.addWidget(note)
 
     def _copy_and_flash(self, btn: QPushButton, text: str):
         QApplication.clipboard().setText(text)
@@ -4080,11 +4573,11 @@ class OcrResultDialog(QDialog):
 
     # ── OCR ────────────────────────────────────────────────────────────────────
     def _start_ocr(self):
-        if not _ocr_models_present():
-            self._status.setText(
-                "First use: downloading OCR model (~150 MB)…  Please wait."
-            )
-        self._ocr_thread = OcrThread(self._pixmap)
+        if self._ocr_thread is not None and self._ocr_thread.isRunning():
+            self._ocr_thread.wait(5000)
+        language = self._read_as.currentData() if self._read_as else ""
+        self._status.setText("Reading text…")
+        self._ocr_thread = OcrThread(self._image, language or "")
         self._ocr_thread.status.connect(self._status.setText)
         self._ocr_thread.finished.connect(self._on_ocr_done)
         self._ocr_thread.error.connect(self._on_ocr_error)
@@ -4092,23 +4585,30 @@ class OcrResultDialog(QDialog):
 
     def _on_ocr_done(self, text: str):
         self._ocr_box.setPlainText(text)
-        self._status.setText("Text recognized")
+        self._status.setText("Text recognized — edit it here if a letter is off")
+        overlay = self.parent()
+        settings = getattr(overlay, "settings", None)
+        if settings is not None and text and text != "(no text detected)":
+            note_success(settings)
 
     def _on_ocr_error(self, msg: str):
         self._ocr_box.setPlainText(msg)
         self._status.setText("Could not read text")
 
     # ── Translation ────────────────────────────────────────────────────────────
-    def _start_translate(self):
+    def _translate(self):
         text = self._ocr_box.toPlainText().strip()
         if not text:
             return
         lang = _TRANSLATE_LANGS.get(self._lang_box.currentText(), "en")
-        self._trans_box.setPlainText("Translating…")
-        self._trans_thread = TranslateThread(text, lang)
-        self._trans_thread.finished.connect(self._trans_box.setPlainText)
-        self._trans_thread.error.connect(self._trans_box.setPlainText)
-        self._trans_thread.start()
+        url = translate_url(text, lang)
+        if url is None:
+            # Too long for a link: hand it over through the clipboard.
+            QApplication.clipboard().setText(text)
+            url = TRANSLATE_URL.format(lang=lang, text="")
+            self._status.setText("Too long for a link — the text is on your "
+                                 "clipboard; paste it into Google Translate.")
+        QDesktopServices.openUrl(QUrl(url))
 
     # ── Style helpers ──────────────────────────────────────────────────────────
     def _box_style(self) -> str:
@@ -4535,6 +5035,9 @@ class AnnotationOverlay(QWidget):
         self._release_timer.setInterval(self.RELEASE_AFTER_MS)
         self._release_timer.timeout.connect(self._release_window)
         self.canvas  = Canvas(self)
+        self.canvas.text_box = bool(settings_mgr.get("text_box"))
+        self.canvas.eraser_mode = ("pixels" if settings_mgr.get("eraser_mode") == "pixels"
+                                   else "shapes")
         self.toolbar = Toolbar(self.canvas, self, settings_mgr, hotkey_mgr)
         self.canvas.setCursor(_cross_cursor())
         self.toolbar.set_mode_shortcut(hotkeys.display(settings_mgr.get("hotkey")))
@@ -4635,8 +5138,10 @@ class AnnotationOverlay(QWidget):
             self.toolbar.raise_chrome()
         else:
             # Nothing is being pointed at any more; drop the laser dot rather
-            # than leaving it frozen mid-screen.
+            # than leaving it frozen mid-screen, and finish any typing.
+            self.canvas.finish_editing()
             self.canvas._laser_pos = None
+            self.canvas._eraser_pos = None
             self.canvas.update()
             self.sync_window()
 
@@ -4721,6 +5226,28 @@ class AnnotationOverlay(QWidget):
     @pyqtSlot()
     def toggle_recording(self):
         self.recording.toggle()
+
+    @pyqtSlot()
+    def take_screenshot(self):
+        """Pick an area (or click for a whole screen), then Copy / Save."""
+        if getattr(self, "_selector", None) is not None:
+            return                                  # already picking
+        self.canvas.finish_editing()
+        sel = RegionSelector(RegionSelector.SHOT_HINT, click_for_screen=True)
+        self._selector = sel
+
+        def chosen(rect):
+            self._selector = None
+            if rect is not None:
+                # Give the compositor a moment to take the dimmer off screen.
+                QTimer.singleShot(120, lambda: self._shoot(rect))
+        sel.chosen.connect(chosen)
+        sel.choose()
+
+    def _shoot(self, rect: QRect):
+        # What you see is what you get: marks only while they are on screen.
+        pixmap = self.canvas.capture_annotated(rect, marks=self._wanted)
+        self._shot_bar = ScreenshotBar(pixmap, self)
 
     @pyqtSlot()
     def toggle(self):
@@ -4822,7 +5349,8 @@ def _start_hotkeys(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
             overlay, slot, _Qt.ConnectionType.QueuedConnection)
 
     slots = {"toggle": "toggle_passthrough", "visibility": "toggle",
-             "ocr": "activate_ocr", "record": "toggle_recording"}
+             "ocr": "activate_ocr", "record": "toggle_recording",
+             "screenshot": "take_screenshot"}
     for key, (name, _label) in HOTKEY_SETTINGS.items():
         if name == "ocr" and not ocr_available():
             continue
@@ -4930,6 +5458,23 @@ def _self_test(overlay, settings_mgr, hotkey_mgr) -> int:
     check("startup", platform_win.startup_status)
     check("hotkeys", lambda: f"{hotkey_mgr.available} {hotkey_mgr.failures()}")
     check("ocr", ocr_available)
+
+    def read_text():
+        # Proves the frozen build carries every WinRT module OCR needs.
+        if not ocr_win.available():
+            return f"windows ocr not available ({ocr_win.languages()})"
+        img = QImage(520, 90, QImage.Format.Format_RGB32)
+        img.fill(QColor("white"))
+        p = QPainter(img)
+        p.setPen(QColor("black"))
+        p.setFont(QFont("Arial", 28))
+        p.drawText(12, 60, "Self test 2026")
+        p.end()
+        text = ocr_win.recognize(img, "")
+        if "2026" not in text:
+            raise RuntimeError(f"read {text!r}")
+        return repr(text)
+    check("windows ocr read", read_text)
     check("settings dialog", lambda: SettingsDialog(settings_mgr, hotkey_mgr,
                                                     overlay).close())
     check("help dialog", lambda: HelpDialog(settings_mgr, overlay).close())
@@ -5006,6 +5551,10 @@ def main():
         code = _self_test(overlay, settings_mgr, hotkey_mgr)
         hotkey_mgr.stop()
         sys.exit(code)
+    # Held here: a parentless window with no reference is collected at once.
+    overlay._welcome = None
+    QTimer.singleShot(900, lambda: setattr(overlay, "_welcome",
+                                           maybe_show_welcome(overlay)))
     sys.exit(app.exec())
 
 
