@@ -2,56 +2,70 @@
 
 ---
 
-## For the 5.2 submission — paste these into Partner Center
+## For the 6.2 submission — paste these into Partner Center
 
-Why these changed (2026-09-27 review of the live listing):
-
-- The description began with the bare URL `https://annotator.pro/` — the
-  first line is what search results and the listing preview show. It now
-  leads with what the app does.
-- **Snip & Read is back in the Store package** (5.2 uses the text
-  recognition built into Windows instead of the EasyOCR bundle the Store
-  build never carried), so the copy can promise it again — worded to match
-  what it does: reading is on-device, translation opens Google Translate.
-- Recording was only mentioned as "New:" in the middle; it is one of the two
-  things people search for, so it is in the first sentence.
-- Search terms: no other product's name (the Store's policies don't allow
-  using another app's trademark as a keyword).
-- Other languages: `docs/store-listing/` has this listing translated.
+Plain text on purpose: the Store doesn't render bold or markdown, so the
+sections are headed in capitals. Nothing here names another product (the
+Store's policies don't allow another app's trademark in a listing), and
+recording on the graphics chip isn't advertised until it's been tested on
+real hardware.
 
 ### Description
 
-**Draw on your screen, blur what's private, and record it all — right on top of any app.**
+```
+Draw on your screen, hide what's private, and record it all — right on top of any app.
 
-Screen Annotator Pro puts a transparent drawing layer over your whole desktop. Circle a button, drop numbered steps, type a label right where it belongs, blur an email address before anyone sees it, point with a laser dot — then hit Record and every mark goes into the video at full resolution. No second app, no editing afterwards: stop, and the MP4 is already on disk, with one-click export to GIF or WebM.
+Screen Annotator Pro puts a transparent drawing layer over your whole desktop. Circle a button, drop numbered steps, type a label right where it belongs, point with a laser dot — then hit Record, and every mark goes into the video at full resolution. No second app, no editing afterwards.
 
-Click-through mode keeps your marks on screen while your mouse goes back to the app underneath, so you can keep demoing, typing and switching windows without the overlay getting in the way.
+DRAW AND EDIT
+Pen, lines, curved or double-headed arrows, outlined, tinted or filled boxes and circles, a ruler in real screen pixels, highlighter, speech bubbles, numbered callouts and ✓ ✗ ! ? ★ stamps. Nothing is final: select any mark to move it, reshape it, or change its color, thickness and fill. Save your annotations and open them again later. Works with Surface Pen and Wacom, including pressure and the eraser end.
 
-Snip & Read copies text out of anything on screen — a video, an image, a shared screen — using the text recognition built into Windows, so it works offline. Screenshot any area with your marks in it and copy or save it in a click.
+KEEP WORKING WHILE YOUR MARKS STAY
+Click-through mode keeps everything on screen while your mouse and keyboard go back to the app underneath. Or hold a key to draw for a moment — let go and you're back in your app.
 
-Made for presentations, remote meetings, tutorials, teaching, support calls and bug reports. Works across all your monitors, at every display scaling from 100 % to 400 %. No account, no cloud, no upload — everything stays on your PC.
+HIDE PRIVATE INFO IN ONE KEY
+Blur, pixelate or black out anything with one drag — or press B, and every email address, phone number, card number, IBAN, API key and password on the screen is found and hidden at once. It all happens on your PC.
 
-### Product features (one per line in Partner Center)
+PRESENT LIKE A PRO
+Whiteboard and blackboard with pages, a spotlight that dims everything but your cursor, a magnifier that follows your cursor, cursor halo and click ripples, on-screen display of the shortcuts you press, fading ink, and a webcam bubble that puts you in a circle on top of everything.
 
-- Draw on top of any app, on every monitor — pen, line, arrow, rectangle, circle, highlighter and a ruler in real screen pixels
-- Record your screen to MP4 with every annotation baked in, then export to GIF or WebM in one click
-- Click-through mode: your marks stay on screen while your mouse and keyboard go back to the app underneath
-- Blur, pixelate or black-box passwords, emails and faces before you share your screen or a screenshot
-- Snip & Read: drag over any text on screen and copy it out — works offline, in every language installed in Windows
-- Translate what you snipped in one click (opens Google Translate)
-- Screenshot an area or a whole screen with your annotations, then copy or save it
-- Type labels right on the screen, with an optional background box so they stay readable
-- Auto-numbered callouts and step markers for tutorials, walkthroughs and bug reports
-- Laser pointer that leaves no marks — perfect for presenting
-- Undo and redo for everything, including Clear all; an eraser that removes whole marks
-- One-key shortcuts for every tool, and global hotkeys you can change
-- Record a whole screen, all monitors, or just the area you pick — with optional microphone audio
-- Light and dark theme, a dock that collapses to a single icon, and a size you can change
-- Fully offline: no account, no cloud, no upload
+RECORD, TRIM, SHARE
+Record all monitors, one monitor, an area or a single window to MP4 — with your microphone, your PC's sound, or both. A 3-2-1 countdown gets you ready. When you stop: trim the start and end, make a GIF, export to WebM, or copy the video and paste it straight into Teams, Slack, Discord or an email.
+
+CAPTURE AND READ TEXT
+Screenshot any area with your marks in it. Snip & Read copies text out of anything on screen — a video, an image, a shared screen — using the text recognition built into Windows, offline, and translates it in one click.
+
+Made for presentations, online meetings, tutorials, teaching, support and bug reports. Works across all your monitors and at every display scaling from 100% to 400%. A searchable guide inside explains every feature (press F1). No account, no cloud, no subscription — everything stays on your PC.
+```
+
+### Product features (one per line in Partner Center — 20 max, 200 characters each)
+
+```
+Draw on top of any app, on every monitor — pen, lines, arrows, boxes, circles, highlighter and ruler
+Edit marks after drawing: move, reshape, recolor, copy, paste and duplicate
+Filled shapes, curved and double arrows, speech bubbles and ✓ ✗ ! ? ★ stamps
+Click-through mode: your marks stay on screen while you keep working in the app underneath
+Press B to hide every email, phone number, card number, IBAN, key and password on screen
+Blur, pixelate or black out anything with one drag
+Record your screen to MP4 with every annotation in it
+Record your microphone and your PC's sound, mixed together
+Record all monitors, one monitor, an area or a single window, with a 3-2-1 countdown
+Trim recordings, make GIFs, export WebM, or copy the video straight into a chat
+Whiteboard and blackboard with pages
+Spotlight, magnifier, cursor halo, click ripples and on-screen shortcuts for presenting
+Webcam bubble: you in a circle, on top of everything and in your recordings
+Snip & Read: copy and translate text from anything on screen, offline
+Screenshot any area with your annotations, then copy or save it
+Pen pressure and eraser support for Surface Pen and Wacom
+Save your annotations and open them again later
+Undo and redo everything, one-key shortcuts for every tool, and global hotkeys you can change
+Light and dark theme, a searchable built-in guide, and hover hints on every button
+Fully offline: no account, no cloud, no subscription
+```
 
 ### Short description (if the field is shown)
 
-Draw on your screen, blur private info, copy text off any image, and record it all to MP4.
+Draw on your screen, hide private info in one key, and record it all to MP4 — offline.
 
 ### Search terms (Partner Center allows 7)
 
