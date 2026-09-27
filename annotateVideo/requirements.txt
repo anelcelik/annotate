@@ -3,6 +3,13 @@ Pillow>=9.0.0
 pynput>=1.7.0
 easyocr>=1.7.0
 deep-translator>=1.11.0
+# Windows only: start-with-Windows and the Store rating dialog in the Store
+# package (imported lazily — the app runs without them)
+winrt-runtime>=3.2; sys_platform == "win32"
+winrt-Windows.Foundation>=3.2; sys_platform == "win32"
+winrt-Windows.ApplicationModel>=3.2; sys_platform == "win32"
+winrt-Windows.ApplicationModel.Activation>=3.2; sys_platform == "win32"
+winrt-Windows.Services.Store>=3.2; sys_platform == "win32"
 
 # Recording is done by ffmpeg, a separate binary rather than a Python package:
 #   Windows   winget install Gyan.FFmpeg   (or drop ffmpeg.exe in vendor/)

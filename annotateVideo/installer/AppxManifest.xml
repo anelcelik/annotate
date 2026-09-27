@@ -20,12 +20,13 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  IgnorableNamespaces="uap rescap uap5">
 
   <Identity
     Name="Casultra.ScreenAnnotatorPro"
     Publisher="CN=BD1D6788-5A7D-4A7F-9751-817381E6C28C"
-    Version="5.0.1.0"
+    Version="5.1.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
@@ -68,6 +69,25 @@
           ShortName="Annotator Pro" />
         <uap:SplashScreen Image="Assets\SplashScreen.scale-100.png" />
       </uap:VisualElements>
+      <!--
+        Start with Windows. A packaged app's writes to the HKCU Run key land in
+        its private copy of the registry, which nothing reads at sign-in — so
+        the old Run-key toggle did nothing in the Store build. The task starts
+        disabled; Settings switches it with Windows.ApplicationModel.StartupTask
+        (platform_win.py), and the user can also flip it in Settings → Apps →
+        Startup. TaskId must match platform_win.STARTUP_TASK_ID.
+      -->
+      <Extensions>
+        <uap5:Extension
+          Category="windows.startupTask"
+          Executable="ScreenAnnotatorPro.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask
+            TaskId="ScreenAnnotatorProStartup"
+            Enabled="false"
+            DisplayName="Screen Annotator Pro" />
+        </uap5:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

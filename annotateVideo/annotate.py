@@ -21,7 +21,19 @@ Windows notes
 """
 
 import sys, os, json, math, random as _rng, shutil, subprocess, threading, time, platform
+import importlib.util
+from datetime import date
 from pathlib import Path
+
+# Run as a script this module is "__main__", and dock_toolbar's
+# `import annotate` would load a second, independent copy of it — one whose
+# dialog theme was never applied, so Settings opened from the dock came up
+# light in dark mode. Register this copy under its real name first.
+if __name__ == "__main__":
+    sys.modules.setdefault("annotate", sys.modules[__name__])
+
+import hotkeys
+import platform_win
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QSlider, QLabel, QColorDialog, QGraphicsDropShadowEffect,
@@ -32,13 +44,13 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QUrl, QThread, QTimer,
-    QKeyCombination,
+    QKeyCombination, QMargins,
     pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QFont, QBrush,
     QPolygonF, QPainterPath, QFontMetrics, QPixmap, QCursor, QIcon,
-    QKeySequence, QDesktopServices,
+    QKeySequence, QDesktopServices, QImage,
 )
 
 from video_recorder import (
@@ -55,6 +67,16 @@ from video_recorder import (
 def _resource(rel: str) -> str:
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
+
+
+def _third_party_notices() -> str:
+    """Path of the bundled open-source notices ("" if this copy has none)."""
+    for rel in (os.path.join("licenses", "THIRD_PARTY_NOTICES.txt"),
+                "THIRD_PARTY_NOTICES.txt"):
+        path = _resource(rel)
+        if os.path.isfile(path):
+            return path
+    return ""
 
 
 # ── Custom cursors ─────────────────────────────────────────────────────────────
@@ -103,7 +125,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "5.0.1"
+VERSION = "5.1.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -115,7 +137,10 @@ _DEFAULT_SETTINGS: dict = {
     "hotkey":         "<ctrl>+<shift>+a",
     # Takes the overlay off the screen entirely, marks and all.
     "visibility_hotkey": "<ctrl>+<shift>+h",
-    "ocr_hotkey":    "<ctrl>+t",
+    # Ctrl+T and Ctrl+Shift+R were the defaults until 5.1 — new tab and hard
+    # reload in every browser. See _migrate_hotkeys().
+    "ocr_hotkey":    "<ctrl>+<alt>+t",
+    "hotkeys_version": 2,
     "start_on_boot":  False,
     "theme":          "light",
     # Where you last put the dock (or the collapsed puck) — None means
@@ -131,7 +156,9 @@ _DEFAULT_SETTINGS: dict = {
     "review_state":   "pending",       # pending | later | never | done
     "review_after":   0,               # epoch seconds; stays quiet until then
     "usage_seconds":  0,               # time the app has actually been in use
-    "rec_hotkey":     "<ctrl>+<shift>+r",
+    "review_successes": 0,             # screenshots / recordings that worked
+    "review_days":    [],              # distinct days the app did its job
+    "rec_hotkey":     "<ctrl>+<alt>+r",
     "rec_fps":        30,
     "rec_quality":    "balanced",      # high | balanced | small
     "rec_area":       "all",           # all | screen | region
@@ -167,6 +194,7 @@ class SettingsManager:
             try:
                 saved = json.loads(self._path.read_text(encoding="utf-8"))
                 self._data = {**_DEFAULT_SETTINGS, **saved}
+                _migrate_hotkeys(self._data, saved)
             except Exception:
                 pass
 
@@ -181,141 +209,68 @@ class SettingsManager:
         self._data[key] = value
 
 
-# ── Hotkey format helpers ──────────────────────────────────────────────────────
+# ── Hotkeys ────────────────────────────────────────────────────────────────────
+# The format, validation and the per-platform registration live in hotkeys.py.
 
-def _pynput_to_ks(s: str) -> str:
-    """'<ctrl>+<shift>+a' → 'Ctrl+Shift+A' for QKeySequence."""
-    out = []
-    for p in s.split("+"):
-        p = p.strip()
-        if p == "<ctrl>":    out.append("Ctrl")
-        elif p == "<shift>": out.append("Shift")
-        elif p == "<alt>":   out.append("Alt")
-        elif p == "<cmd>":   out.append("Meta")
-        else:                out.append(p.upper())
-    return "+".join(out)
+HotkeyManager = hotkeys.HotkeyManager
 
-def _ks_to_pynput(s: str) -> str:
-    """'Ctrl+Shift+A' → '<ctrl>+<shift>+a' for pynput."""
-    out = []
-    for p in s.split("+"):
-        p = p.strip()
-        low = p.lower()
-        if low == "ctrl":    out.append("<ctrl>")
-        elif low == "shift": out.append("<shift>")
-        elif low == "alt":   out.append("<alt>")
-        elif low == "meta":  out.append("<cmd>")
-        else:                out.append(low)
-    return "+".join(out)
+# settings key → (hotkey name, label shown in Settings / Help / errors)
+HOTKEY_SETTINGS = {
+    "hotkey":            ("toggle",     "Draw / click-through"),
+    "visibility_hotkey": ("visibility", "Show / hide the overlay"),
+    "ocr_hotkey":        ("ocr",        "Snip & Read"),
+    "rec_hotkey":        ("record",     "Start / stop recording"),
+}
+
+_OLD_DEFAULT_HOTKEYS = {
+    "ocr_hotkey": "<ctrl>+t",               # new browser tab
+    "rec_hotkey": "<ctrl>+<shift>+r",       # hard reload in browsers
+}
 
 
-# ── Boot-startup helpers (Windows registry) ───────────────────────────────────
+def _migrate_hotkeys(data: dict, saved: dict):
+    """Once, on the first 5.1 launch: move people off the two defaults that
+    collided with browsers, and repair combos older versions stored in a form
+    pynput rejected ("<ctrl>+f5") — one of those used to kill every shortcut.
 
-def _startup_exe() -> str:
-    return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
-
-def _set_startup(enable: bool):
-    if not IS_WIN:
-        return
-    try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0, winreg.KEY_SET_VALUE | winreg.KEY_READ,
-        )
-        if enable:
-            winreg.SetValueEx(key, "ScreenAnnotatorPro", 0,
-                              winreg.REG_SZ, f'"{_startup_exe()}" --minimized')
-        else:
-            try:
-                winreg.DeleteValue(key, "ScreenAnnotatorPro")
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
-    except Exception as e:
-        pass  # registry write failed — non-fatal
-
-def _is_startup_enabled() -> bool:
-    if not IS_WIN:
-        return False
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run")
-        winreg.QueryValueEx(key, "ScreenAnnotatorPro")
-        winreg.CloseKey(key)
-        return True
-    except (FileNotFoundError, OSError):
-        return False
-
-
-# ── Hotkey manager ─────────────────────────────────────────────────────────────
-
-class HotkeyManager:
-    """Global hotkeys, kept as one named table.
-
-    pynput can only hold one listener at a time, so every binding lives in
-    `_binds` and any change rebuilds the single listener from all of them.
+    settings.json holds every key after the first save, so a value equal to
+    the old default can't be told apart from a deliberate choice; it is
+    treated as the default, which it almost always is.
     """
+    if int(saved.get("hotkeys_version", 1) or 1) >= 2:
+        return
+    for key, old in _OLD_DEFAULT_HOTKEYS.items():
+        if data.get(key) == old:
+            data[key] = _DEFAULT_SETTINGS[key]
+    for key in HOTKEY_SETTINGS:
+        fixed = hotkeys.canonical(data.get(key))
+        if fixed:
+            data[key] = fixed
+    data["hotkeys_version"] = 2
 
-    def __init__(self):
-        self._listener = None
-        self._binds: dict[str, tuple[str, object]] = {}   # name → (combo, cb)
 
-    def bind(self, name: str, pynput_str: str, callback):
-        self._binds[name] = (pynput_str, callback)
-        self._restart()
+def shortcut_label(settings: "SettingsManager", key: str) -> str:
+    """How a configured shortcut reads in the UI ("Ctrl+Alt+R", or "no shortcut")."""
+    return hotkeys.display(settings.get(key)) or "no shortcut"
 
-    def rebind(self, name: str, pynput_str: str):
-        if name in self._binds:
-            self._binds[name] = (pynput_str, self._binds[name][1])
-            self._restart()
 
-    # Named wrappers — the call sites read better than bind("ocr", …) would.
-    def start(self, pynput_str: str, callback):
-        self.bind("toggle", pynput_str, callback)
+# ── Snip & Read availability ──────────────────────────────────────────────────
+# The Store package is the lite build: no EasyOCR, no Torch. Offering a tool
+# that can only answer "pip install easyocr" is worse than not offering it, so
+# everything OCR hides itself when the engine isn't there. (Checked with
+# find_spec, which does not import Torch.)
 
-    def update(self, pynput_str: str):
-        self.rebind("toggle", pynput_str)
+_ocr_available: bool | None = None
 
-    def start_ocr(self, pynput_str: str, callback):
-        self.bind("ocr", pynput_str, callback)
 
-    def update_ocr(self, pynput_str: str):
-        self.rebind("ocr", pynput_str)
-
-    def start_visibility(self, pynput_str: str, callback):
-        self.bind("visibility", pynput_str, callback)
-
-    def update_visibility(self, pynput_str: str):
-        self.rebind("visibility", pynput_str)
-
-    def start_rec(self, pynput_str: str, callback):
-        self.bind("record", pynput_str, callback)
-
-    def update_rec(self, pynput_str: str):
-        self.rebind("record", pynput_str)
-
-    def _restart(self):
-        if self._listener:
-            try: self._listener.stop()
-            except Exception: pass
-            self._listener = None
-        on_wayland = (os.environ.get("WAYLAND_DISPLAY") or
-                      os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
-        if on_wayland:
-            return
-        mapping = {combo: cb for combo, cb in self._binds.values() if combo and cb}
-        if not mapping:
-            return
+def ocr_available() -> bool:
+    global _ocr_available
+    if _ocr_available is None:
         try:
-            from pynput import keyboard as kb
-            self._listener = kb.GlobalHotKeys(mapping)
-            self._listener.daemon = True
-            self._listener.start()
-        except (ImportError, Exception):
-            pass
+            _ocr_available = importlib.util.find_spec("easyocr") is not None
+        except (ImportError, ValueError):
+            _ocr_available = False
+    return _ocr_available
 
 # ── Click-through ──────────────────────────────────────────────────────────────
 # The overlay covers the whole desktop, so while it accepts input nothing
@@ -514,6 +469,13 @@ class PenShape(Shape):
         p.setPen(_pen(self.color, self.width))
         if len(self.pts) == 1:
             p.drawPoint(self.pts[0])
+        elif QColor(self.color).alpha() < 255:
+            # One polyline is stroked as one outline, so where segments meet
+            # nothing is painted twice. Separate segments each blend their
+            # round cap over the last, and a see-through stroke came out as a
+            # string of darker beads. Opaque strokes keep the separate
+            # segments: they look the same and paint about twice as fast.
+            p.drawPolyline(QPolygonF(self.pts))
         else:
             for i in range(1, len(self.pts)):
                 p.drawLine(self.pts[i-1], self.pts[i])
@@ -808,7 +770,45 @@ class EraserShape(Shape):
 
 
 # ── Canvas ─────────────────────────────────────────────────────────────────────
+def _global_desktop_rect() -> QRect:
+    rect = QRect()
+    for scr in QApplication.screens():
+        rect = rect.united(scr.geometry())
+    return rect
+
+
+def _blur_region(raw: QPixmap, padded: QRect, target: QRect, radius: int) -> QPixmap:
+    """Blur `raw` (a grab of `padded`) and return just the `target` part of it,
+    fully opaque.
+
+    The padding is the point. A blur spreads every pixel `radius` wide, and at
+    the edge of the grab there is nothing to spread in from — Qt fills it with
+    transparency, so the outer band of a blur box used to be only half
+    covered and whatever it was hiding stayed readable there. Blurring a
+    larger area and cropping keeps real, blurred content all the way to the
+    edge; the opaque base underneath catches whatever the padding couldn't
+    (a box drawn against the edge of the desktop).
+    """
+    blurred = _blur_pixmap(raw, radius)
+    sx = blurred.width() / max(1, padded.width())
+    sy = blurred.height() / max(1, padded.height())
+    crop = QRect(round((target.x() - padded.x()) * sx),
+                 round((target.y() - padded.y()) * sy),
+                 max(1, round(target.width() * sx)),
+                 max(1, round(target.height() * sy)))
+    part = blurred.copy(crop)
+    out = QPixmap(part.size())
+    out.fill(QColor(128, 128, 128))
+    p = QPainter(out)
+    p.drawPixmap(0, 0, part)
+    p.end()
+    return out
+
+
 class Canvas(QWidget):
+    # Anything that changes which marks exist: add, undo, redo, clear, delete.
+    shapes_changed = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(WAtt.WA_TransparentForMouseEvents, False)
@@ -824,9 +824,14 @@ class Canvas(QWidget):
         self.font_size  = 20
 
         self._shapes:      list[Shape] = []
-        self._redo_stack:  list[Shape] = []
+        # Every change is an action, so Clear, Delete and moving a shape undo
+        # like drawing one does: ("add", s) · ("clear", [shapes]) ·
+        # ("delete", s, index) · ("move", s, dx, dy)
+        self._undo:        list[tuple] = []
+        self._redo:        list[tuple] = []
         self._selected:    Shape | None = None
         self._drag_last    = QPointF()
+        self._move_from    = QPointF()
 
         self._drawing      = False
         self._start        = QPointF()
@@ -834,11 +839,15 @@ class Canvas(QWidget):
         self._pen_shape:   PenShape | None = None
         self._eraser_shape = None   # filled when tool == "eraser"
 
-        self._callout_n  = 1
-        self._step_n     = 1
+        # Offscreen layers the marks are painted into when an eraser stroke
+        # exists — keyed by (w, h, dpr), see paint_marks().
+        self._layers: dict[tuple, QImage] = {}
 
         # Laser pointer — tracks mouse position, never commits to _shapes
         self._laser_pos: QPointF | None = None
+
+    def has_marks(self) -> bool:
+        return bool(self._shapes)
 
     def mousePressEvent(self, e):
         if e.button() != MB.LeftButton: return
@@ -855,7 +864,7 @@ class Canvas(QWidget):
             for s in reversed(self._shapes):
                 if s.contains(pos):
                     self._selected = s
-                    self._drag_last = pos
+                    self._drag_last = self._move_from = pos
                     break
             self.update(); return
 
@@ -906,6 +915,14 @@ class Canvas(QWidget):
         if self.tool == "laser":
             return  # laser never commits shapes
 
+        if self.tool == "select":
+            if self._selected is not None:
+                dx = pos.x() - self._move_from.x()
+                dy = pos.y() - self._move_from.y()
+                if dx or dy:
+                    self._record(("move", self._selected, dx, dy))
+            return
+
         if self.tool == "pen" and self._pen_shape:
             if len(self._pen_shape.pts) > 1:
                 self._commit(self._pen_shape)
@@ -938,7 +955,10 @@ class Canvas(QWidget):
                 )
                 dlg = OcrResultDialog(pixmap)
                 dlg.exec()
-                overlay.show()
+                if hasattr(overlay, "sync_window"):
+                    overlay.sync_window()
+                else:
+                    overlay.show()
                 overlay.raise_()
                 overlay.activateWindow()
             else:
@@ -949,8 +969,8 @@ class Canvas(QWidget):
             if self.tool == "blur":
                 rect = _norm(self._start, pos)
                 if rect.width() > 3 and rect.height() > 3:
-                    raw = self._grab_behind(rect)
-                    blurred = _blur_pixmap(raw, getattr(self, "blur_radius", 18))
+                    blurred = self._blurred_behind(
+                        rect, int(getattr(self, "blur_radius", 18)))
                     self._commit(BlurShape(self._start, pos, blurred))
             else:
                 s = self._make_drag(self._start, pos)
@@ -966,11 +986,15 @@ class Canvas(QWidget):
                 if text:
                     self._commit(TextShape(pos, text, col, self.font_size))
         elif t == "callout":
-            self._commit(CalloutShape(pos, self._callout_n, col))
-            self._callout_n += 1
+            self._commit(CalloutShape(pos, self._next_number(CalloutShape), col))
         elif t == "steps":
-            self._commit(StepShape(pos, self._step_n, col))
-            self._step_n += 1
+            self._commit(StepShape(pos, self._next_number(StepShape), col))
+
+    def _next_number(self, cls) -> int:
+        """One past the highest number on screen — worked out from the marks
+        themselves, so undoing a 3 makes the next one a 3 again, not a 4."""
+        return max((s.number for s in self._shapes if isinstance(s, cls)),
+                   default=0) + 1
 
     def _make_drag(self, p1: QPointF, p2: QPointF) -> Shape | None:
         if abs(p2.x()-p1.x()) < 3 and abs(p2.y()-p1.y()) < 3: return None
@@ -1009,54 +1033,128 @@ class Canvas(QWidget):
                 0, sr.x(), sr.y(), sr.width(), sr.height()
             )
 
+        # grabWindow returns device pixels, and at 125 %/150 % Qt tags the
+        # pixmap with that ratio — which QPainter then applies by itself. Our
+        # shapes are in logical pixels, so the scale must be applied exactly
+        # once: drop the tag and scale explicitly, whatever grabWindow did.
+        ratio = bg.devicePixelRatio()
+        bg.setDevicePixelRatio(1.0)
         p = QPainter(bg)
         p.setRenderHint(RHint.Antialiasing)
-        # grabWindow returns a pixmap at physical resolution (DPR ≥ 1).
-        # Our shapes are stored in logical pixels (canvas coordinates).
-        # Scaling the painter by DPR maps logical → physical so annotations
-        # align perfectly with the screenshot at 125 %, 150 %, 200 %, 400 % etc.
-        ratio = bg.devicePixelRatio()
         if ratio != 1.0:
             p.scale(ratio, ratio)
-        for shape in self._shapes:
-            shape.draw(p)
+        self.paint_marks(p, bg.width(), bg.height(), selection=False, live=False)
         p.end()
         return bg
 
+    # ── history ────────────────────────────────────────────────────────────
     def _commit(self, shape: Shape):
-        """Append a shape and clear the redo stack."""
+        """Add a shape (undoable)."""
         self._shapes.append(shape)
-        self._redo_stack.clear()
+        self._record(("add", shape))
+
+    def _record(self, action: tuple):
+        self._undo.append(action)
+        self._redo.clear()
+        self._changed()
+
+    def _changed(self):
+        if self._selected is not None and self._selected not in self._shapes:
+            self._selected = None
         self.update()
+        self.shapes_changed.emit()
 
-    def undo(self):
-        if self._shapes:
-            self._redo_stack.append(self._shapes.pop())
-            self.update()
+    def undo(self) -> bool:
+        if not self._undo:
+            return False
+        action = self._undo.pop()
+        kind, shape = action[0], action[1]
+        if kind == "add":
+            if shape in self._shapes:
+                self._shapes.remove(shape)
+        elif kind == "clear":
+            self._shapes[:] = shape
+        elif kind == "delete":
+            self._shapes.insert(min(action[2], len(self._shapes)), shape)
+        elif kind == "move":
+            shape.move(-action[2], -action[3])
+        self._redo.append(action)
+        self._changed()
+        return True
 
-    def redo(self):
-        if self._redo_stack:
-            self._shapes.append(self._redo_stack.pop())
-            self.update()
+    def redo(self) -> bool:
+        if not self._redo:
+            return False
+        action = self._redo.pop()
+        kind, shape = action[0], action[1]
+        if kind == "add":
+            self._shapes.append(shape)
+        elif kind == "clear":
+            self._shapes.clear()
+        elif kind == "delete":
+            if shape in self._shapes:
+                self._shapes.remove(shape)
+        elif kind == "move":
+            shape.move(action[2], action[3])
+        self._undo.append(action)
+        self._changed()
+        return True
 
-    def clear(self):
+    def clear(self) -> int:
+        """Remove every mark — undoable. Returns how many were removed."""
+        if not self._shapes:
+            return 0
+        before = list(self._shapes)
         self._shapes.clear()
-        self._redo_stack.clear()
-        self._callout_n = self._step_n = 1
         self._selected = None
-        self.update()
+        self._record(("clear", before))
+        return len(before)
 
-    def _grab_behind(self, rect: QRectF) -> QPixmap:
+    def undo_clear(self) -> bool:
+        """The toast's Undo: only if Clear is still the last thing done, so a
+        late click can't undo something drawn since."""
+        if self._undo and self._undo[-1][0] == "clear":
+            return self.undo()
+        return False
+
+    def delete_selected(self) -> bool:
+        s = self._selected
+        if s is None or s not in self._shapes:
+            return False
+        index = self._shapes.index(s)
+        self._shapes.remove(s)
+        self._selected = None
+        self._record(("delete", s, index))
+        return True
+
+    # ── blur ───────────────────────────────────────────────────────────────
+    def _blurred_behind(self, rect: QRectF, radius: int) -> QPixmap:
+        """The desktop under `rect` (canvas coordinates), blurred edge to edge."""
+        target = QRect(self.mapToGlobal(rect.topLeft().toPoint()),
+                       rect.size().toSize())
+        pad = radius * 2 + 4
+        padded = target.adjusted(-pad, -pad, pad, pad)
+        desktop = _global_desktop_rect()
+        if desktop.isValid():
+            padded = padded.intersected(desktop)
+        raw = self._grab_behind(padded)
+        return _blur_region(raw, padded, target, radius)
+
+    def _grab_behind(self, r: QRect) -> QPixmap:
+        """Grab the desktop under global rect `r` with the app's own windows
+        out of the way. Global, not canvas coordinates: the overlay spans every
+        monitor and starts at a negative position when one sits left of or
+        above the main screen, so canvas (0, 0) is not desktop (0, 0)."""
         # Same reason as capture_annotated: without hiding the dock, a blur or
         # pixelate region drawn under it would sample the dock itself.
         overlay = self.window()
         with _ChromeHidden(overlay):
-            r = rect.toRect()
             pix = QApplication.primaryScreen().grabWindow(
                 0, r.x(), r.y(), max(r.width(), 1), max(r.height(), 1)
             )   # grabWindow with explicit coords works across the virtual desktop
         return pix
 
+    # ── painting ───────────────────────────────────────────────────────────
     def paintEvent(self, _):
         p = QPainter(self)
         p.setCompositionMode(CM.CompositionMode_Clear)
@@ -1064,10 +1162,53 @@ class Canvas(QWidget):
         p.setCompositionMode(CM.CompositionMode_SourceOver)
         if IS_WIN:
             p.fillRect(self.rect(), QColor(0, 0, 0, 1))
-        self.render_annotations(p)
+        dpr = self.devicePixelRatioF()
+        self.paint_marks(p, round(self.width() * dpr), round(self.height() * dpr),
+                         dpr)
         p.end()
 
-    def render_annotations(self, p: QPainter, *, selection: bool = True):
+    def _has_eraser(self) -> bool:
+        return (any(isinstance(s, EraserShape) for s in self._shapes)
+                or (self.tool == "eraser" and self._eraser_shape is not None))
+
+    def paint_marks(self, p: QPainter, width_px: int, height_px: int,
+                    dpr: float = 1.0, *, selection: bool = True,
+                    live: bool = True):
+        """render_annotations(), made safe to paint over something.
+
+        An eraser stroke clears pixels. Drawn straight onto a screenshot or a
+        video frame it cleared the *desktop* too — a black streak in every
+        MP4, a hole in every PNG — and on the overlay itself it wiped out the
+        near-invisible fill that makes the window clickable, so clicks fell
+        through wherever you had erased. With an eraser present the marks go
+        into a layer of their own first; erasing then only ever removes marks.
+        `width_px`/`height_px` are the target's size in device pixels.
+        """
+        if not self._has_eraser():
+            self._layers.clear()
+            self.render_annotations(p, selection=selection, live=live)
+            return
+        key = (width_px, height_px, dpr)
+        layer = self._layers.get(key)
+        if layer is None:
+            if len(self._layers) >= 2:          # overlay + one recording size
+                self._layers.clear()
+            layer = QImage(width_px, height_px,
+                           QImage.Format.Format_ARGB32_Premultiplied)
+            layer.setDevicePixelRatio(dpr)
+            self._layers[key] = layer
+        layer.fill(0)
+        lp = QPainter(layer)
+        lp.setTransform(p.transform())
+        self.render_annotations(lp, selection=selection, live=live)
+        lp.end()
+        p.save()
+        p.resetTransform()
+        p.drawImage(0, 0, layer)
+        p.restore()
+
+    def render_annotations(self, p: QPainter, *, selection: bool = True,
+                           live: bool = True):
         """Paint every mark onto `p` — committed shapes, the stroke in
         progress, the drag preview, the laser dot.
 
@@ -1075,10 +1216,13 @@ class Canvas(QWidget):
         same content onto every captured frame. One code path, so a recording
         can never disagree with what the presenter had on screen. The selection
         outline is the one thing a recording leaves out: it is an editing
-        affordance, not an annotation.
+        affordance, not an annotation. A still screenshot also leaves out
+        everything `live` — the half-drawn stroke and the laser dot.
         """
         p.setRenderHint(RHint.Antialiasing)
         for shape in self._shapes: shape.draw(p)
+        if not live:
+            return
         if self.tool == "pen"    and self._pen_shape:    self._pen_shape.draw(p)
         if self.tool == "eraser" and self._eraser_shape: self._eraser_shape.draw(p)
         if self.tool == "ocr" and self._drawing:
@@ -1190,6 +1334,7 @@ class ScreenshotBar(QWidget):
                          WType.Tool)
         self.setAttribute(WAtt.WA_NoSystemBackground, True)
         self._pixmap = pixmap
+        self._overlay = parent
         self._build()
         self.adjustSize()
         # Centered on display 1 in global coordinates — the overlay spans every
@@ -1199,6 +1344,13 @@ class ScreenshotBar(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def _succeeded(self):
+        """The shot went somewhere — a moment the review prompt may follow."""
+        settings = getattr(self._overlay, "settings", None)
+        if settings is not None:
+            note_success(settings)
+            ask_for_review_soon(self._overlay)
 
     def _build(self):
         lo = QVBoxLayout(self)
@@ -1236,6 +1388,7 @@ class ScreenshotBar(QWidget):
     def _copy(self):
         QApplication.clipboard().setPixmap(self._pixmap)
         self.close()
+        self._succeeded()
 
     def _save(self):
         from datetime import datetime
@@ -1245,11 +1398,14 @@ class ScreenshotBar(QWidget):
         )
         path, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", default,
                                               "PNG Images (*.png)")
+        saved = False
         if path:
             if not path.lower().endswith(".png"):
                 path += ".png"
-            self._pixmap.save(path, "PNG")
+            saved = self._pixmap.save(path, "PNG")
         self.close()
+        if saved:
+            self._succeeded()
 
     def paintEvent(self, _):
         _dlg_frame_paint(self)
@@ -1262,8 +1418,12 @@ class ScreenshotBar(QWidget):
 #
 # The rules below exist because a badly-timed review prompt is the fastest way
 # to make someone resent an app they otherwise liked:
-#   · not until the app has been genuinely used for eight hours in total
-#   · never mid-task — not while drawing is armed, not while recording
+#   · only right after the app just did its job — a screenshot copied or
+#     saved, a recording saved — never on a timer, so never in the middle of
+#     a presentation (the old eight-hours-of-use timer could fire mid-talk,
+#     and almost nobody ever reached it: 0 ratings in four months)
+#   · and only once it has done so a few times, on more than one day
+#   · never while recording, never over another dialog
 #   · "later" means a fortnight of silence, not the next launch
 #   · "don't ask again" is permanent, and it is on the dialog, not buried
 #   · Esc means later, never never — dismissing must not be punishing
@@ -1271,21 +1431,54 @@ class ScreenshotBar(QWidget):
 STORE_ID           = "9NS87MQB29C7"
 STORE_REVIEW_URI   = f"ms-windows-store://review/?ProductId={STORE_ID}"
 STORE_WEB_URL      = f"https://apps.microsoft.com/detail/{STORE_ID}"
-REVIEW_MIN_SECONDS = 8 * 3600   # eight hours of use before asking, ever
+REVIEW_MIN_SUCCESSES = 3        # screenshots / recordings that worked
+REVIEW_MIN_DAYS    = 2          # …spread over at least this many days
 REVIEW_SNOOZE_DAYS = 14
+REVIEW_DELAY_MS    = 1500       # after the result panel closes
 USAGE_TICK_SECONDS = 60         # how often usage time is counted up
 
 
-def open_store_review() -> bool:
-    """Send the user to the Store's review dialog, falling back to the web."""
+def note_success(settings: SettingsManager, today: str | None = None):
+    """Count one moment the app did what it is for."""
+    settings.set("review_successes", int(settings.get("review_successes") or 0) + 1)
+    day = today or date.today().isoformat()
+    days = [d for d in (settings.get("review_days") or []) if d != day]
+    settings.set("review_days", (days + [day])[-30:])
+    settings.save()
+
+
+def review_due(settings: SettingsManager, now: float | None = None) -> bool:
+    """Has the app earned asking, and is the answer not already given?"""
+    if settings.get("review_state") in ("never", "done"):
+        return False
+    if (now or time.time()) < float(settings.get("review_after") or 0):
+        return False
+    return (int(settings.get("review_successes") or 0) >= REVIEW_MIN_SUCCESSES
+            and len(settings.get("review_days") or []) >= REVIEW_MIN_DAYS)
+
+
+def ask_for_review_soon(overlay):
+    """Give the moment a beat to settle, then maybe ask."""
+    settings = getattr(overlay, "settings", None)
+    if settings is None or not review_due(settings):
+        return
+    QTimer.singleShot(REVIEW_DELAY_MS,
+                      lambda: maybe_ask_for_review(settings, overlay))
+
+
+def open_store_review(owner: QWidget | None = None) -> bool:
+    """The Store's own rating dialog over our window where the package allows
+    it, otherwise the Store app's review page, otherwise the web listing."""
+    if IS_WIN and owner is not None:
+        try:
+            if platform_win.request_store_rating(int(owner.winId()),
+                                                 lambda _rated: None):
+                return True
+        except Exception:
+            pass
     if IS_WIN and QDesktopServices.openUrl(QUrl(STORE_REVIEW_URI)):
         return True
     return QDesktopServices.openUrl(QUrl(STORE_WEB_URL))
-
-
-def format_usage(seconds: float) -> str:
-    h, m = divmod(int(seconds) // 60, 60)
-    return f"{h} h {m:02d} m" if h else f"{m} m"
 
 
 class UsageClock(QObject):
@@ -1312,7 +1505,7 @@ class UsageClock(QObject):
         return float(self._settings.get("usage_seconds") or 0)
 
     def _in_use(self) -> bool:
-        return (self._overlay.isVisible()
+        return (getattr(self._overlay, "wanted", self._overlay.isVisible())
                 or self._overlay.recording.active)
 
     def _tick(self):
@@ -1323,7 +1516,6 @@ class UsageClock(QObject):
         if self._unsaved >= 5:              # don't touch the disk every minute
             self._settings.save()
             self._unsaved = 0
-        maybe_ask_for_review(self._settings, self._overlay)
 
     def flush(self):
         if self._unsaved:
@@ -1335,17 +1527,14 @@ def maybe_ask_for_review(settings: SettingsManager, overlay):
     """Ask for a Store review — but only if this is a fair moment to ask."""
     if not IS_WIN:
         return                                    # no Store to review on
-    if settings.get("review_state") in ("never", "done"):
+    if not review_due(settings):
         return
-    if float(settings.get("usage_seconds") or 0) < REVIEW_MIN_SECONDS:
+    # Not while they are in the middle of something: recording, or another
+    # dialog or menu already open.
+    if overlay.recording.active:
         return
-    if time.time() < float(settings.get("review_after") or 0):
-        return
-    # Not while they are in the middle of something: drawing armed, recording
-    # running, or another dialog already open.
-    if overlay.recording.active or not overlay.passthrough:
-        return
-    if QApplication.activeModalWidget() is not None:
+    if QApplication.activeModalWidget() is not None \
+            or QApplication.activePopupWidget() is not None:
         return
     settings.save()
     ReviewPrompt(settings, overlay).exec()
@@ -1373,11 +1562,10 @@ class ReviewPrompt(QDialog):
         lo.addWidget(title)
         lo.addWidget(_dlg_sep())
 
-        used = format_usage(float(settings.get("usage_seconds") or 0))
         body = QLabel(
-            f"You have been using it for {used} now, so it seems fair to ask: "
-            "a review on the Microsoft Store helps other people find it, and "
-            "it is most of what decides whether they ever do.\n\n"
+            "Glad that worked. If Screen Annotator Pro is useful to you, a "
+            "rating on the Microsoft Store is the biggest help there is — it "
+            "is most of what decides whether other people ever find it.\n\n"
             "It takes about thirty seconds, and this won't ask again "
             "afterwards.")
         body.setWordWrap(True)
@@ -1404,8 +1592,11 @@ class ReviewPrompt(QDialog):
         _center_on_display1(self)
 
     def _rate(self):
-        open_store_review()
         self._finish("done")
+        # Owned by the dock rather than this dialog, which is closing — the
+        # dock is the one window of ours that is reliably on screen.
+        toolbar = getattr(self.parent(), "toolbar", None)
+        open_store_review(toolbar if toolbar is not None else self.parent())
 
     def _later(self):
         self._settings.set("review_after",
@@ -1498,6 +1689,122 @@ class NoticeDialog(QDialog):
         self.setFixedWidth(460)
         self.adjustSize()
         _center_on_display1(self)
+
+    def paintEvent(self, _):
+        _dlg_frame_paint(self)
+
+
+class ConfirmDialog(QDialog):
+    """Two-button question in the app's flat style. exec() == Accepted means go."""
+
+    def __init__(self, title: str, message: str, confirm: str, parent=None,
+                 cancel: str = "Cancel"):
+        super().__init__(parent,
+                         WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
+        self.setAttribute(WAtt.WA_TranslucentBackground)
+        self.setWindowTitle(title)
+
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(24, 20, 24, 20)
+        lo.setSpacing(12)
+
+        t = QLabel(title)
+        tf = QFont(DLG_FONT, 13)
+        tf.setBold(True)
+        t.setFont(tf)
+        t.setStyleSheet(f"color:{DLG_INK};background:transparent;")
+        lo.addWidget(t)
+        lo.addWidget(_dlg_sep())
+
+        body = QLabel(message)
+        body.setWordWrap(True)
+        body.setStyleSheet(
+            f"color:{DLG_INK};font-family:'{DLG_FONT}';font-size:12px;"
+            "background:transparent;")
+        lo.addWidget(body)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch()
+        for label, slot, primary in ((cancel, self.reject, False),
+                                     (confirm, self.accept, True)):
+            b = QPushButton(label)
+            b.setFixedHeight(34)
+            b.setCursor(Cursor.PointingHandCursor)
+            b.setStyleSheet(_dlg_button_style(primary))
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        lo.addLayout(row)
+
+        self.setFixedWidth(430)
+        self.adjustSize()
+        _center_on_display1(self)
+
+    def paintEvent(self, _):
+        _dlg_frame_paint(self)
+
+
+class Toast(QWidget):
+    """A one-line note that fades out by itself, with an optional action —
+    "Cleared 12 marks · Undo". Chrome, like the dock: its own top-level
+    window, and kept out of screen captures on Windows."""
+
+    SHOW_MS = 5000
+
+    def __init__(self):
+        super().__init__(None,
+                         WType.FramelessWindowHint |
+                         WType.WindowStaysOnTopHint |
+                         WType.Tool)
+        self.setAttribute(WAtt.WA_ShowWithoutActivating, True)
+        self.setAttribute(WAtt.WA_TranslucentBackground, True)
+        lo = QHBoxLayout(self)
+        lo.setContentsMargins(16, 8, 8, 8)
+        lo.setSpacing(12)
+        self._label = QLabel()
+        self._label.setStyleSheet(
+            f"color:{DLG_INK};font-family:'{DLG_FONT}';font-size:12px;"
+            "background:transparent;")
+        lo.addWidget(self._label)
+        self._action = QPushButton()
+        self._action.setFixedHeight(28)
+        self._action.setCursor(Cursor.PointingHandCursor)
+        self._action.clicked.connect(self._run_action)
+        lo.addWidget(self._action)
+        self._callback = None
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+
+    def show_message(self, text: str, action: str = "", callback=None,
+                     anchor: QWidget | None = None):
+        self._label.setText(text)
+        self._label.setStyleSheet(
+            f"color:{DLG_INK};font-family:'{DLG_FONT}';font-size:12px;"
+            "background:transparent;")
+        self._action.setStyleSheet(_dlg_button_style(primary=True))
+        self._action.setText(action)
+        self._action.setVisible(bool(action))
+        self._callback = callback
+        self.adjustSize()
+        if anchor is not None and anchor.isVisible():
+            g = anchor.frameGeometry()
+            self.move(g.center().x() - self.width() // 2,
+                      g.top() - self.height() - 10)
+        else:
+            geo = QApplication.primaryScreen().availableGeometry()
+            self.move(geo.center().x() - self.width() // 2,
+                      geo.bottom() - self.height() - 120)
+        self.show()
+        self.raise_()
+        exclude_from_capture(self, True)
+        self._timer.start(self.SHOW_MS)
+
+    def _run_action(self):
+        callback, self._callback = self._callback, None
+        self.hide()
+        if callback:
+            callback()
 
     def paintEvent(self, _):
         _dlg_frame_paint(self)
@@ -1748,12 +2055,22 @@ class RecordingBar(QWidget):
         self._overlay = parent
         self._path = path
         self._duration = duration
+        self._deleted = False
         self._build()
         self.adjustSize()
         _center_on_display1(self)
         self.show()
         self.raise_()
         self.activateWindow()
+        settings = getattr(parent, "settings", None)
+        if settings is not None:
+            note_success(settings)
+
+    def closeEvent(self, e):
+        super().closeEvent(e)
+        # Done with the recording, and kept it: a fair moment to ask.
+        if not self._deleted:
+            ask_for_review_soon(self._overlay)
 
     def _build(self):
         lo = QVBoxLayout(self)
@@ -1783,24 +2100,33 @@ class RecordingBar(QWidget):
         # Two rows: what you probably want to do with it, then housekeeping.
         # GIF gets its own button rather than living behind "Export…" — it is
         # the format people actually reach for after a screen recording, and
-        # burying it meant nobody was offered it at all.
+        # burying it meant nobody was offered it at all. Delete sits at the
+        # far end from Close, where a slip of the mouse can't reach it.
         for buttons in (
             [("Play",           self._play,     True),
              ("Make GIF",       self._make_gif, True),
              ("Export…",        self._export,   False)],
-            [("Show in folder", self._reveal,   False),
+            [("Delete",         self._delete,   False),
+             None,
+             ("Show in folder", self._reveal,   False),
              ("Save as…",       self._save_as,  False),
-             ("Delete",         self._delete,   False),
              ("Close",          self.close,     False)],
         ):
             row = QHBoxLayout()
             row.setSpacing(8)
-            for label, fn, primary in buttons:
+            for spec in buttons:
+                if spec is None:
+                    row.addStretch()
+                    continue
+                label, fn, primary = spec
                 b = QPushButton(label)
                 b.setFixedHeight(34)
                 b.setCursor(Cursor.PointingHandCursor)
                 b.setStyleSheet(_dlg_button_style(primary))
                 b.clicked.connect(fn)
+                if fn == self._delete:
+                    b.setToolTip("Moves the file to the Recycle Bin" if IS_WIN
+                                 else "Moves the file to the Trash")
                 row.addWidget(b)
             lo.addLayout(row)
 
@@ -1848,11 +2174,28 @@ class RecordingBar(QWidget):
         self.close()
 
     def _delete(self):
-        try:
-            os.remove(self._path)
-        except OSError:
-            pass
+        """To the Recycle Bin, not gone: one misclick used to cost the take."""
+        from PyQt6.QtCore import QFile
+        ok, _where = QFile.moveToTrash(self._path)
+        if not ok and os.path.exists(self._path):
+            if not ConfirmDialog(
+                    "Delete the recording for good?",
+                    "It couldn't be moved to the Recycle Bin, so deleting it "
+                    "can't be undone.", "Delete", self).exec():
+                return
+            try:
+                os.remove(self._path)
+            except OSError as e:
+                NoticeDialog("Could not delete the file", str(e), self).exec()
+                return
+            ok = False
+        self._deleted = True
         self.close()
+        toast = getattr(self._overlay, "toast", None)
+        if toast is not None and ok:
+            toast.show_message("Recording moved to the Recycle Bin" if IS_WIN
+                               else "Recording moved to the Trash",
+                               anchor=getattr(self._overlay, "toolbar", None))
 
     def paintEvent(self, _):
         _dlg_frame_paint(self)
@@ -2023,6 +2366,9 @@ class ExportDialog(QDialog):
 
     def _on_done(self, path: str):
         self._out = path
+        settings = getattr(self.parent(), "settings", None)
+        if settings is not None:
+            note_success(settings)
         try:
             size = f"{os.path.getsize(path) / (1024 * 1024):.1f} MB"
         except OSError:
@@ -2084,6 +2430,7 @@ class RecordingController(QObject):
         self._dock_parked = False
         self._dock_excluded = False    # WDA_EXCLUDEFROMCAPTURE path
         self._dock_excluded_windows: list = []
+        self._quit_when_done = False   # Exit was chosen mid-recording
 
         self.recorder = ScreenRecorder(self)
         self.recorder.tick.connect(self._on_tick)
@@ -2148,6 +2495,7 @@ class RecordingController(QObject):
         # the same way every other platform already has to.
         rect = region if region and region.isValid() else virtual_desktop_rect()
         self._clear_chrome(rect)
+        self.overlay.pin_on_screen(True)
 
         # The overlay's own ink is still worth excluding where the platform
         # honours it: that lets the recorder draw the shapes itself at full
@@ -2199,8 +2547,8 @@ class RecordingController(QObject):
             "This recording covers the whole screen, and on this platform a "
             "screen capture includes every visible window — so the dock would "
             "end up in the video. It comes back the moment you stop.\n\n"
-            "To stop: press Ctrl+Shift+R, or use the tray icon → Stop "
-            "recording.\n\n"
+            f"To stop: press {shortcut_label(self._settings, 'rec_hotkey')}, "
+            "or use the tray icon → Stop recording.\n\n"
             "Recording an area instead of the whole screen keeps the dock "
             "on screen and out of the frame.",
             self.overlay).exec()
@@ -2211,6 +2559,11 @@ class RecordingController(QObject):
             return
         self._duration = self.recorder.elapsed()
         self.recorder.stop()
+
+    def stop_and_quit(self):
+        """Exit without losing the take: let ffmpeg finish the file first."""
+        self._quit_when_done = True
+        self.stop()
 
     def pause(self, on: bool):
         self.recorder.pause(on)
@@ -2233,6 +2586,9 @@ class RecordingController(QObject):
     def _on_finished(self, path: str):
         self._teardown_hud()
         self._restore_chrome()
+        if self._quit_when_done:
+            QApplication.quit()
+            return
         # Held, not dropped: these are parentless top-level windows now, so
         # nothing but this reference keeps them alive — an unassigned one is
         # collected the moment this method returns and the panel never appears.
@@ -2243,6 +2599,8 @@ class RecordingController(QObject):
         self._restore_chrome()
         self.state_changed.emit(False)
         NoticeDialog("Recording stopped", message, self.overlay).exec()
+        if self._quit_when_done:
+            QApplication.quit()
 
     def _restore_chrome(self):
         """Put back only what we took away — the dock may legitimately be
@@ -2260,9 +2618,7 @@ class RecordingController(QObject):
         if self._dock_parked:
             self.overlay.toolbar.restore_from_parking()
             self._dock_parked = False
-        if not self.overlay.isVisible():
-            self.overlay.show()
-            self.overlay.raise_()
+        self.overlay.pin_on_screen(False)
 
     def _teardown_hud(self):
         if self._hud:
@@ -2455,9 +2811,9 @@ class ShortcutCapture(QLineEdit):
     a theme switch either, so this sidesteps the whole class: a plain
     QLineEdit reliably respects `color` in a stylesheet, always. It only
     reimplements the one bit of QKeySequenceEdit this app actually uses —
-    show a single key(+modifiers) combo, capture the next one on a
-    keypress — and exposes it the same way (`.keySequence()`), so nothing
-    else about SettingsDialog needs to change.
+    show a single key(+modifiers) combo, capture the next one on a keypress.
+
+    It holds the combo in the stored format (hotkeys.py), "" for none.
     """
     _IGNORED = {
         Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Alt,
@@ -2465,27 +2821,68 @@ class ShortcutCapture(QLineEdit):
         Qt.Key.Key_unknown,
     }
 
-    def __init__(self, initial: QKeySequence, parent=None):
+    changed = pyqtSignal()
+
+    def __init__(self, combo: str, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._seq = initial
+        self.setPlaceholderText("No shortcut — click here and press keys")
+        self._combo = hotkeys.canonical(combo)
         self._refresh()
 
     def _refresh(self):
-        self.setText(self._seq.toString())
+        self.setText(hotkeys.display(self._combo))
 
-    def keySequence(self) -> QKeySequence:
-        return self._seq
+    def combo(self) -> str:
+        return self._combo
+
+    def set_combo(self, combo: str):
+        self._combo = hotkeys.canonical(combo)
+        self._refresh()
+        self.changed.emit()
 
     def keyPressEvent(self, e):
         key = Qt.Key(e.key())
         if key in self._IGNORED:
             e.accept()
             return
-        self._seq = QKeySequence(QKeyCombination(e.modifiers(), key))
-        self._refresh()
+        mods = e.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        text = QKeySequence(QKeyCombination(mods, key)).toString()
+        self.set_combo(hotkeys.canonical(text) or text)
         e.accept()
+
+
+def shortcut_row(combo: str) -> tuple[QWidget, "ShortcutCapture", QLabel]:
+    """A shortcut field, its clear button and the line under it that explains
+    what is wrong with it (hidden while nothing is)."""
+    box = QWidget()
+    outer = QVBoxLayout(box)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(4)
+    row = QHBoxLayout()
+    row.setSpacing(6)
+    field = ShortcutCapture(combo)
+    field.setFixedHeight(36)
+    field.setStyleSheet(_dlg_input_style("QLineEdit"))
+    row.addWidget(field, 1)
+    clear = QPushButton("✕")
+    clear.setFixedSize(36, 36)
+    clear.setCursor(Cursor.PointingHandCursor)
+    clear.setToolTip("No shortcut for this")
+    clear.setStyleSheet(
+        f"QPushButton{{color:{DLG_INK};background:transparent;"
+        f"border:2px solid {DLG_INK};font-size:13px;padding:0;}}"
+        f"QPushButton:hover{{background:{DLG_SURFACE};}}")
+    clear.clicked.connect(lambda: field.set_combo(""))
+    row.addWidget(clear)
+    outer.addLayout(row)
+    error = QLabel()
+    error.setWordWrap(True)
+    error.setStyleSheet("color:#FF3B3B;font-size:10px;background:transparent;")
+    error.hide()
+    outer.addWidget(error)
+    return box, field, error
 
 
 def _dlg_input_style(widget_cls: str = "QLineEdit") -> str:
@@ -2634,15 +3031,7 @@ class HelpDialog(QDialog):
         ("PX", "Pixelate",        "X",  "Mosaic / pixel-art redaction"),
         ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
         ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
-    ]
-
-    _SHORTCUTS = [
-        ("Ctrl + Z",       "Undo last shape"),
-        ("Ctrl + Y",       "Redo (restore undone shape)"),
-        ("C",              "Clear all shapes"),
-        ("Esc",            "Hide overlay (stays in tray)"),
-        ("Delete",         "Remove selected shape (Select tool)"),
-        ("Ctrl + Shift + A","Toggle overlay (default hotkey — customisable in Settings)"),
+        ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
     ]
 
     _TIPS = [
@@ -2653,18 +3042,45 @@ class HelpDialog(QDialog):
         ("Eraser width",     "Follows the Stroke slider × 4 so it's always usable at any scale."),
         ("Screenshot",       "Hides the overlay, grabs the full desktop (all monitors), "
                              "then shows Copy / Save PNG / Discard."),
+        ("Recording",        "Records the screen to MP4 with your marks in it. The "
+                             "Record button on the dock turns red and counts up; "
+                             "press it again to stop."),
         ("Multi-monitor",    "The overlay covers all connected displays automatically."),
-        ("Start on boot",    "Writes to the Windows registry Run key.  "
-                             "The app starts hidden in the tray (--minimized flag)."),
+        ("Start on boot",    "Starts Screen Annotator Pro hidden in the tray when "
+                             "you sign in to Windows."),
     ]
 
-    def __init__(self, parent=None):
+    def __init__(self, settings: "SettingsManager | None" = None, parent=None):
         super().__init__(parent,
                          WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
         self.setAttribute(WAtt.WA_TranslucentBackground)
+        self._settings = settings
         self._build()
         self.adjustSize()
         _center_on_display1(self)
+
+    def _tools(self) -> list:
+        return [t for t in self._TOOLS if t[1] != "Snip & Read" or ocr_available()]
+
+    def _shortcuts(self) -> list:
+        """Read from the live settings — this list used to be hard-coded and
+        had drifted (Esc was described as hiding the overlay)."""
+        rows = []
+        if self._settings is not None:
+            for key, (name, label) in HOTKEY_SETTINGS.items():
+                if name == "ocr" and not ocr_available():
+                    continue
+                rows.append((shortcut_label(self._settings, key),
+                             f"{label} — change it in Settings"))
+        rows += [
+            ("Ctrl + Z",  "Undo — drawing, moving, deleting and Clear all"),
+            ("Ctrl + Y",  "Redo"),
+            ("C",         "Clear all marks (Ctrl + Z brings them back)"),
+            ("Esc",       "Click-through: the marks stay, your clicks go to "
+                          "the app underneath"),
+            ("Delete",    "Remove the selected shape (Select tool)"),
+        ]
+        return rows
 
     # ── Build ──────────────────────────────────────────────────────────────────
     def _build(self):
@@ -2714,13 +3130,13 @@ class HelpDialog(QDialog):
 
         # ── Tools ──────────────────────────────────────────────────────────────
         cl.addWidget(self._section("Tools"))
-        for icon, name, key, tip in self._TOOLS:
+        for icon, name, key, tip in self._tools():
             cl.addWidget(self._tool_row(icon, name, key, tip))
         cl.addSpacing(10)
 
         # ── Keyboard shortcuts ─────────────────────────────────────────────────
         cl.addWidget(self._section("Keyboard Shortcuts"))
-        for keys, desc in self._SHORTCUTS:
+        for keys, desc in self._shortcuts():
             cl.addWidget(self._shortcut_row(keys, desc))
         cl.addSpacing(10)
 
@@ -2815,6 +3231,43 @@ class HelpDialog(QDialog):
 
 # ── Settings dialog ───────────────────────────────────────────────────────────
 
+class _FitTabWidget(QTabWidget):
+    """A tab widget as tall as the page on show, not the tallest page.
+
+    QTabWidget sizes itself from every page's size hint (their size policies
+    don't enter into it), so the short tabs carried the tall one's empty
+    space and the dialog never shrank on a tab switch.
+    """
+
+    def _fit(self, full, height):
+        pages = [self.widget(i) for i in range(self.count())]
+        if not pages or self.currentWidget() is None:
+            return full
+        tallest = max(w.sizeHint().height() for w in pages)
+        spare = tallest - height(self.currentWidget())
+        return full.shrunkBy(QMargins(0, 0, 0, max(0, spare)))
+
+    def _page_height(self, w) -> int:
+        # Word-wrapped labels make a page's plain size hint a guess at some
+        # arbitrary width; ask for the height at the width it really has.
+        width = w.width()
+        if w.hasHeightForWidth() and width > 0:
+            return max(w.heightForWidth(width), w.minimumSizeHint().height())
+        return w.sizeHint().height()
+
+    def hasHeightForWidth(self):
+        # QStackedLayout answers height-for-width with the tallest page, which
+        # would undo the whole point; _page_height() does that job instead.
+        return False
+
+    def sizeHint(self):
+        return self._fit(super().sizeHint(), self._page_height)
+
+    def minimumSizeHint(self):
+        return self._fit(super().minimumSizeHint(),
+                         lambda w: w.minimumSizeHint().height())
+
+
 class SettingsDialog(QDialog):
     def __init__(self, settings: SettingsManager, hotkey_mgr: HotkeyManager,
                  parent=None):
@@ -2846,11 +3299,14 @@ class SettingsDialog(QDialog):
         # as its own content, and the dialog resizes to match on every switch
         # (see the currentChanged connection below) instead of always paying
         # for the height of everything combined.
-        tabs = QTabWidget()
+        self._hk_fields = {}
+        tabs = _FitTabWidget()
         tabs.setStyleSheet(_dlg_tab_style())
         tabs.addTab(self._build_general_tab(), "General")
+        tabs.addTab(self._build_shortcuts_tab(), "Shortcuts")
         tabs.addTab(self._build_recording_tab(), "Recording")
-        tabs.currentChanged.connect(lambda _i: self.adjustSize())
+        tabs.currentChanged.connect(lambda i, t=tabs: self._fit_tab(t, i))
+        self._fit_tab(tabs, 0)
         lo.addWidget(tabs)
 
         lo.addSpacing(6)
@@ -2876,6 +3332,24 @@ class SettingsDialog(QDialog):
         dev_row.addWidget(dev_btn)
         lo.addLayout(dev_row)
 
+        notices = _third_party_notices()
+        if notices:
+            lic_row = QHBoxLayout()
+            lic_lbl = QLabel("Built with open-source software")
+            lic_lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:11px;")
+            lic_row.addWidget(lic_lbl)
+            lic_row.addStretch()
+            lic_btn = QPushButton("Licenses ↗")
+            lic_btn.setCursor(Cursor.PointingHandCursor)
+            lic_btn.setStyleSheet(
+                f"QPushButton{{color:{DLG_ACCENT};background:transparent;border:none;"
+                "font-size:11px;}"
+                f"QPushButton:hover{{color:{DLG_ACCENT_600};text-decoration:underline;}}")
+            lic_btn.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(notices)))
+            lic_row.addWidget(lic_btn)
+            lo.addLayout(lic_row)
+
         ver_lbl = QLabel(f"Version {VERSION}")
         ver_lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
         ver_lbl.setAlignment(AA.AlignRight)
@@ -2890,7 +3364,7 @@ class SettingsDialog(QDialog):
         help_btn.setFixedHeight(34)
         help_btn.setCursor(Cursor.PointingHandCursor)
         help_btn.setStyleSheet(_dlg_button_style(primary=False))
-        help_btn.clicked.connect(lambda: HelpDialog(self).exec())
+        help_btn.clicked.connect(lambda: HelpDialog(self._settings, self).exec())
         btn_row.addWidget(help_btn)
         btn_row.addStretch()
 
@@ -2904,64 +3378,66 @@ class SettingsDialog(QDialog):
             btn_row.addWidget(btn)
         lo.addLayout(btn_row)
 
+    def _fit_tab(self, tabs: QTabWidget, index: int):
+        tabs.updateGeometry()
+        self.adjustSize()
+
+    def _build_shortcuts_tab(self) -> QWidget:
+        """All four global shortcuts on one tab — where a clash between two of
+        them, or with another app, can be seen and fixed in one place."""
+        page = QWidget()
+        lo = QVBoxLayout(page)
+        lo.setContentsMargins(0, 12, 0, 2)
+        lo.setSpacing(6)
+
+        if not self._hotkey_mgr.available:
+            note = QLabel("Global shortcuts aren't available on this desktop "
+                          "(Wayland). They still work while the overlay has "
+                          "the keyboard, and the tray icon does the rest.")
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+            lo.addWidget(note)
+
+        self._add_shortcut(lo, "hotkey",
+                           "Switches between drawing on the screen and using "
+                           "your computer normally. Click the box and press a "
+                           "new key combination.")
+        self._add_shortcut(lo, "visibility_hotkey",
+                           "Takes the overlay off the screen entirely, marks "
+                           "and all. The tray icon does the same.")
+        self._add_shortcut(lo, "rec_hotkey", "")
+        if ocr_available():
+            self._add_shortcut(lo, "ocr_hotkey", "")
+
+        reset = QPushButton("Reset shortcuts to the defaults")
+        reset.setCursor(Cursor.PointingHandCursor)
+        reset.setStyleSheet(
+            f"QPushButton{{color:{DLG_ACCENT};background:transparent;border:none;"
+            "font-size:11px;text-align:left;padding:0;}"
+            f"QPushButton:hover{{color:{DLG_ACCENT_600};text-decoration:underline;}}")
+        reset.clicked.connect(self._reset_shortcuts)
+        lo.addWidget(reset)
+        lo.addStretch()
+        return page
+
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
         lo = QVBoxLayout(page)
         lo.setContentsMargins(0, 12, 0, 2)
         lo.setSpacing(10)
 
-        # ── Hotkey ─────────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Draw / click-through shortcut"))
-
-        self._hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(self._settings.get("hotkey")))
-        )
-        self._hk_edit.setFixedHeight(36)
-        self._hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._hk_edit)
-
-        hint = QLabel("Switches between drawing on the screen and using your "
-                      "computer normally. Click the box and press a new key "
-                      "combination.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(hint)
-        lo.addSpacing(6)
-
-        # ── Show / hide ────────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("Show / hide the overlay"))
-
-        self._vis_hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(self._settings.get("visibility_hotkey")))
-        )
-        self._vis_hk_edit.setFixedHeight(36)
-        self._vis_hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._vis_hk_edit)
-
-        hint2 = QLabel("Takes the overlay off the screen entirely, marks and "
-                       "all. The tray icon does the same.")
-        hint2.setWordWrap(True)
-        hint2.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
-        lo.addWidget(hint2)
-        lo.addSpacing(6)
-
-        # ── OCR shortcut ───────────────────────────────────────────────────────
-        lo.addWidget(_dlg_section_lbl("OCR shortcut  (Snip & Read)"))
-
-        self._ocr_hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(self._settings.get("ocr_hotkey")))
-        )
-        self._ocr_hk_edit.setFixedHeight(36)
-        self._ocr_hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._ocr_hk_edit)
-        lo.addSpacing(6)
-
         # ── Boot ───────────────────────────────────────────────────────────────
-        self._boot_cb = QCheckBox("Start on boot  (Windows only)")
-        self._boot_cb.setChecked(_is_startup_enabled())
-        self._boot_cb.setEnabled(IS_WIN)
+        self._boot_status = platform_win.startup_status()
+        self._boot_cb = QCheckBox("Start with Windows, hidden in the tray")
+        self._boot_cb.setChecked(self._boot_status == "on")
+        self._boot_cb.setEnabled(self._boot_status in ("on", "off"))
         self._boot_cb.setStyleSheet(_dlg_checkbox_style())
         lo.addWidget(self._boot_cb)
+        if self._boot_status == "blocked":
+            why = QLabel(platform_win.BLOCKED_MESSAGE)
+            why.setWordWrap(True)
+            why.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+            lo.addWidget(why)
         lo.addSpacing(6)
 
         # ── Dock size ──────────────────────────────────────────────────────────
@@ -3117,13 +3593,6 @@ class SettingsDialog(QDialog):
         dir_row.addWidget(change)
         lo.addLayout(dir_row)
 
-        self._rec_hk_edit = ShortcutCapture(
-            QKeySequence(_pynput_to_ks(g("rec_hotkey")))
-        )
-        self._rec_hk_edit.setFixedHeight(36)
-        self._rec_hk_edit.setStyleSheet(self._input_style())
-        lo.addWidget(self._rec_hk_edit)
-
         ver = ffmpeg_version()
         found = bool(find_ffmpeg())
         status = QLabel(
@@ -3152,35 +3621,82 @@ class SettingsDialog(QDialog):
             self._dir_lbl.setText(self._elide_dir(chosen))
             self._dir_lbl.setToolTip(chosen)
 
+    # ── Shortcuts ──────────────────────────────────────────────────────────────
+    _FAILURE_TEXT = {
+        "taken":   "Another app already uses this combination, so it does "
+                   "nothing right now. Pick a different one.",
+        "invalid": "This key can't be used as a global shortcut.",
+        "failed":  "Windows didn't accept this shortcut. Try a different one.",
+    }
+
+    def _add_shortcut(self, lo: QVBoxLayout, key: str, hint: str):
+        name, label = HOTKEY_SETTINGS[key]
+        lo.addWidget(_dlg_section_lbl(f"{label} shortcut"))
+        box, field, error = shortcut_row(self._settings.get(key))
+        field.changed.connect(lambda k=key: self._check_shortcuts(k))
+        lo.addWidget(box)
+        # What went wrong with the combo that is saved right now, if anything.
+        why = self._hotkey_mgr.failures().get(name)
+        if why in self._FAILURE_TEXT:
+            error.setText(self._FAILURE_TEXT[why])
+            error.show()
+        if hint:
+            h = QLabel(hint)
+            h.setWordWrap(True)
+            h.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
+            lo.addWidget(h)
+        lo.addSpacing(8)
+        self._hk_fields[key] = (field, error)
+
+    def _check_shortcuts(self, only: str | None = None) -> bool:
+        """Show what is wrong with each shortcut; True if they can all be saved.
+        `only` limits the messages to the field just edited (the others keep
+        whatever they were showing), the result always covers all of them."""
+        users: dict[str, list[str]] = {}
+        for key, (field, _error) in self._hk_fields.items():
+            if field.combo():
+                users.setdefault(hotkeys.canonical(field.combo()), []).append(key)
+        ok = True
+        for key, (field, error) in self._hk_fields.items():
+            combo = field.combo()
+            msg = hotkeys.problem(combo)
+            others = [k for k in users.get(hotkeys.canonical(combo), []) if k != key]
+            if not msg and combo and others:
+                # Both fields say so — whichever one you just typed into.
+                msg = "Also set for " + ", ".join(
+                    f"“{HOTKEY_SETTINGS[k][1]}”" for k in others) + "."
+            ok = ok and not msg
+            # Other fields keep a "taken by another app" note from when the
+            # dialog opened, but a clash message comes and goes with the clash.
+            if (only is None or key == only or msg
+                    or error.text().startswith("Also set for")):
+                error.setText(msg)
+                error.setVisible(bool(msg))
+        self.adjustSize()
+        return ok
+
+    def _reset_shortcuts(self):
+        for key, (field, _error) in self._hk_fields.items():
+            field.set_combo(_DEFAULT_SETTINGS[key])
+        self._check_shortcuts()
+
     # ── Helpers ────────────────────────────────────────────────────────────────
     def _input_style(self) -> str:
         return _dlg_input_style("QLineEdit")
 
     def _save(self):
-        ks = self._hk_edit.keySequence().toString()
-        if ks:
-            new_hotkey = _ks_to_pynput(ks)
-            self._settings.set("hotkey", new_hotkey)
-            self._hotkey_mgr.update(new_hotkey)
-            overlay = self.parent()
-            if overlay is not None and hasattr(overlay, "toolbar"):
-                overlay.toolbar.set_mode_shortcut(ks)
-
-        vis_ks = self._vis_hk_edit.keySequence().toString()
-        if vis_ks:
-            new_vis = _ks_to_pynput(vis_ks)
-            self._settings.set("visibility_hotkey", new_vis)
-            self._hotkey_mgr.update_visibility(new_vis)
-        ocr_ks = self._ocr_hk_edit.keySequence().toString()
-        if ocr_ks:
-            new_ocr = _ks_to_pynput(ocr_ks)
-            self._settings.set("ocr_hotkey", new_ocr)
-            self._hotkey_mgr.update_ocr(new_ocr)
-        rec_ks = self._rec_hk_edit.keySequence().toString()
-        if rec_ks:
-            new_rec = _ks_to_pynput(rec_ks)
-            self._settings.set("rec_hotkey", new_rec)
-            self._hotkey_mgr.update_rec(new_rec)
+        if not self._check_shortcuts():
+            return
+        overlay = self.parent()
+        for key, (field, _error) in self._hk_fields.items():
+            name, _label = HOTKEY_SETTINGS[key]
+            combo = field.combo()
+            self._settings.set(key, combo)
+            self._hotkey_mgr.rebind(name, combo)
+        if overlay is not None and hasattr(overlay, "toolbar"):
+            overlay.toolbar.set_mode_shortcut(hotkeys.display(self._settings.get("hotkey")))
+            overlay.toolbar.set_record_shortcut(
+                hotkeys.display(self._settings.get("rec_hotkey")))
 
         self._settings.set("rec_area", self._area_keys[self._rec_area.currentIndex()])
         self._settings.set("rec_fps", self._fps_choices[self._rec_fps.currentIndex()])
@@ -3197,10 +3713,27 @@ class SettingsDialog(QDialog):
 
         self._settings.set("dock_scale",
                            self._scale_values[self._scale_box.currentIndex()])
-        self._settings.set("start_on_boot", self._boot_cb.isChecked())
-        _set_startup(self._boot_cb.isChecked())
+        boot_problem = ""
+        want_boot = self._boot_cb.isChecked()
+        if self._boot_cb.isEnabled() and want_boot != (self._boot_status == "on"):
+            ok, boot_problem = platform_win.set_startup(want_boot)
+            if not ok:
+                want_boot = not want_boot
+        self._settings.set("start_on_boot", want_boot)
         self._settings.save()
         self.accept()
+
+        # Said after the dialog closes, so there is one thing on screen at a time.
+        taken = [HOTKEY_SETTINGS[k][1] + " — " + shortcut_label(self._settings, k)
+                 for k in self._hk_fields
+                 if self._hotkey_mgr.failures().get(HOTKEY_SETTINGS[k][0]) == "taken"]
+        if taken:
+            NoticeDialog("A shortcut is already taken",
+                         "Another app already uses:\n\n  " + "\n  ".join(taken) +
+                         "\n\nThose shortcuts won't do anything until you pick "
+                         "different ones in Settings.", overlay).exec()
+        if boot_problem:
+            NoticeDialog("Start with Windows", boot_problem, overlay).exec()
 
     def _set_theme(self, name: str):
         if name == self._settings.get("theme"):
@@ -3947,6 +4480,8 @@ from dock_toolbar import Toolbar   # noqa: E402 — horizontal dock
 
 # ── Overlay window ─────────────────────────────────────────────────────────────
 class AnnotationOverlay(QWidget):
+    RELEASE_AFTER_MS = 15_000
+
     def __init__(self, settings_mgr: SettingsManager, hotkey_mgr: HotkeyManager):
         super().__init__(None,
                          WType.WindowStaysOnTopHint |
@@ -3955,15 +4490,31 @@ class AnnotationOverlay(QWidget):
         self.setAttribute(WAtt.WA_TranslucentBackground)
         self.setAttribute(WAtt.WA_NoSystemBackground)
 
+        self.settings = settings_mgr
+        self._hotkeys = hotkey_mgr
         self._passthrough = False
+        # Whether the user wants the overlay up at all — the visibility
+        # shortcut and the tray put it away. The window itself is only on
+        # screen while it has something to do; see sync_window().
+        self._wanted = False
+        self._pinned = False          # held on screen while a recording runs
+        # Hiding a window keeps its buffer; letting go of the native window
+        # frees it. Done after a while hidden, so quick toggles stay instant.
+        self._release_timer = QTimer(self)
+        self._release_timer.setSingleShot(True)
+        self._release_timer.setInterval(self.RELEASE_AFTER_MS)
+        self._release_timer.timeout.connect(self._release_window)
         self.canvas  = Canvas(self)
         self.toolbar = Toolbar(self.canvas, self, settings_mgr, hotkey_mgr)
         self.canvas.setCursor(_cross_cursor())
-        self.toolbar.set_mode_shortcut(_pynput_to_ks(settings_mgr.get("hotkey")))
+        self.toolbar.set_mode_shortcut(hotkeys.display(settings_mgr.get("hotkey")))
+        self.toolbar.set_record_shortcut(hotkeys.display(settings_mgr.get("rec_hotkey")))
         self.recording = RecordingController(self, settings_mgr)
         self.usage = UsageClock(self, settings_mgr)
+        self.toast = Toast()
         self.recording.state_changed.connect(self.toolbar.set_recording)
         self.recording.ticked.connect(self.toolbar.set_record_elapsed)
+        self.canvas.shapes_changed.connect(self.sync_window)
 
         # Cover all monitors and react to any display configuration change
         self._fit_to_screens()
@@ -3975,10 +4526,10 @@ class AnnotationOverlay(QWidget):
             _s.geometryChanged.connect(self._on_screen_change)
             _s.logicalDotsPerInchChanged.connect(self._on_dpi_change)
 
-        if "--minimized" not in sys.argv:
-            self.show()
-            self.raise_()
-            self.activateWindow()
+        # Started at sign-in (Run key --minimized, or the Store package's
+        # startup task): stay in the tray until asked.
+        if not platform_win.launched_at_startup():
+            self._wanted = True
             # The dock is its own window now, so it has to be shown explicitly
             # — and it honours the collapsed-to-a-puck state while doing it.
             self.toolbar.set_chrome_visible(True)
@@ -3986,6 +4537,49 @@ class AnnotationOverlay(QWidget):
             # Start out of the way. The app appearing should never be the
             # reason you cannot click something.
             self.set_passthrough(True)
+        self.sync_window()
+
+    # ── On screen or not ───────────────────────────────────────────────────────
+    @property
+    def wanted(self) -> bool:
+        return self._wanted
+
+    def sync_window(self):
+        """Show the window only while it has a job: drawing mode, marks to
+        display, or a recording in progress.
+
+        An empty overlay in click-through mode shows nothing and takes no
+        clicks, but a full-desktop, always-on-top transparent window still
+        holds a buffer the size of every monitor (a second one on Windows)
+        and the compositor blends it over everything on every frame — which
+        also stops full-screen games and video from bypassing composition.
+        """
+        needed = self._wanted and (not self._passthrough
+                                   or self.canvas.has_marks() or self._pinned)
+        if needed:
+            self._release_timer.stop()
+        if needed and not self.isVisible():
+            self.show()
+            # A re-created native window starts without the click-through
+            # style, so put the current mode back on it every time.
+            _set_click_through(self, self._passthrough)
+            self.toolbar.raise_chrome()
+        elif not needed and self.isVisible():
+            self.hide()
+            self._release_timer.start()
+
+    def _release_window(self):
+        """Free the full-desktop buffer (and on Windows the layered-window
+        surface) of an overlay that has been off screen for a while. The next
+        show() creates a fresh native window."""
+        if not self.isVisible() and not self._pinned:
+            self.destroy(True, True)
+
+    def pin_on_screen(self, on: bool):
+        """Keep the window up for a recording, so the capture exclusion is set
+        on a window that is actually on screen, as it always was before."""
+        self._pinned = on
+        self.sync_window()
 
     # ── Draw ⇄ click-through ───────────────────────────────────────────────────
     @property
@@ -4001,7 +4595,8 @@ class AnnotationOverlay(QWidget):
         self.canvas.setAttribute(WAtt.WA_TransparentForMouseEvents, on)
         self.toolbar.set_mode(on)
         if not on:
-            self.show()
+            self._wanted = True
+            self.sync_window()
             self.raise_()
             self.activateWindow()
             self.canvas.setFocus()
@@ -4013,13 +4608,15 @@ class AnnotationOverlay(QWidget):
             # than leaving it frozen mid-screen.
             self.canvas._laser_pos = None
             self.canvas.update()
+            self.sync_window()
 
     @pyqtSlot()
     def toggle_passthrough(self):
-        if not self.isVisible():          # hidden entirely: bring it back armed
-            self.show()
+        if not self._wanted:              # put away entirely: bring it back armed
+            self._wanted = True
             self.toolbar.set_chrome_visible(True)
             self.set_passthrough(False)
+            self.sync_window()
             self.toolbar.raise_chrome()
             return
         self.set_passthrough(not self._passthrough)
@@ -4082,10 +4679,13 @@ class AnnotationOverlay(QWidget):
 
     @pyqtSlot()
     def activate_ocr(self):
-        if not self.isVisible():
-            self.show(); self.raise_()
+        if not ocr_available():
+            return
+        if not self._wanted:
+            self._wanted = True
             self.toolbar.set_chrome_visible(True)
         self.set_passthrough(False)       # you cannot drag a snip through it
+        self.sync_window()
         self.toolbar._activate("ocr")
 
     @pyqtSlot()
@@ -4094,15 +4694,42 @@ class AnnotationOverlay(QWidget):
 
     @pyqtSlot()
     def toggle(self):
-        if self.isVisible():
-            self.hide()
-            self.toolbar.set_chrome_visible(False)
-        else:
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            self.toolbar.set_chrome_visible(True)
+        self._wanted = not self._wanted
+        self.toolbar.set_chrome_visible(self._wanted)
+        self.sync_window()
+        if self._wanted:
+            if self.isVisible():
+                self.raise_()
+                self.activateWindow()
             self.toolbar.raise_chrome()
+
+    # ── Destructive actions, made recoverable ──────────────────────────────────
+    def clear_marks(self):
+        """Clear all — undoable, and it says so, with a button to prove it."""
+        n = self.canvas.clear()
+        if n:
+            self.toast.show_message(
+                f"Cleared {n} mark{'s' if n != 1 else ''}", "Undo",
+                self.canvas.undo_clear, anchor=self.toolbar)
+
+    @pyqtSlot()
+    def request_exit(self):
+        """Exit, but not by accident: a running recording is finished and saved
+        first, and marks on screen (which are not saved anywhere) are asked
+        about."""
+        if self.recording.active:
+            if ConfirmDialog("A recording is running",
+                             "Stop it and save the file, then exit?",
+                             "Stop, save and exit", self).exec():
+                self.recording.stop_and_quit()
+            return
+        n = len(self.canvas._shapes)
+        if n and not ConfirmDialog(
+                "Exit Screen Annotator Pro?",
+                f"The {n} mark{'s' if n != 1 else ''} on screen will be gone — "
+                "they aren't saved anywhere.", "Exit", self).exec():
+            return
+        QApplication.quit()
 
     def changeEvent(self, e):
         super().changeEvent(e)
@@ -4117,42 +4744,74 @@ class AnnotationOverlay(QWidget):
 
     def keyPressEvent(self, e):
         k = e.key()
-        mods = e.modifiers()
+        KM = Qt.KeyboardModifier
+        mods = e.modifiers() & ~KM.KeypadModifier
+        ctrl = bool(mods & KM.ControlModifier)
+        chord = bool(mods & (KM.ControlModifier | KM.AltModifier | KM.MetaModifier))
+
+        # A shortcut the system couldn't register globally (Wayland, or taken
+        # by another app) still works while the overlay has the keyboard. One
+        # that is registered never gets here: Windows takes the key, and on X11
+        # the global listener has already fired, so it must not fire twice —
+        # which is what the old hard-coded Ctrl+Shift+R here used to do.
+        try:
+            pressed = QKeySequence(QKeyCombination(mods, Qt.Key(k))).toString()
+        except ValueError:
+            pressed = ""
+        name = self._hotkeys.local_match(pressed) if pressed else None
+        if name:
+            self._hotkeys.trigger(name)
+            return
+
         if k == Key.Key_Escape:
             # Esc means "stop taking my clicks", not "disappear" — the marks
             # stay up and the dock stays reachable.
             self.set_passthrough(True)
-        elif k == Key.Key_C and not (mods & Qt.KeyboardModifier.ControlModifier):
-            self.canvas.clear()
-        elif k == Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
+        elif k == Key.Key_Z and ctrl:
             self.canvas.undo()
-        elif k == Key.Key_Y and mods & Qt.KeyboardModifier.ControlModifier:
+        elif k == Key.Key_Y and ctrl:
             self.canvas.redo()
-        elif (k == Key.Key_R and mods & Qt.KeyboardModifier.ControlModifier
-              and mods & Qt.KeyboardModifier.ShiftModifier):
-            self.recording.toggle()
-        elif k == Key.Key_Delete and self.canvas._selected:
-            self.canvas._shapes.remove(self.canvas._selected)
-            self.canvas._selected = None
-            self.canvas.update()
-        elif k in KEY_TOOL:
+        elif k == Key.Key_C and not chord:
+            self.clear_marks()
+        elif k == Key.Key_Delete:
+            self.canvas.delete_selected()
+        elif k in KEY_TOOL and not chord:
+            # Bare letters only: Ctrl+S out of habit is not "switch to Steps".
             self.toolbar._activate(KEY_TOOL[k])
 
 
 # ── Global hotkey bootstrap ────────────────────────────────────────────────────
-def _start_hotkey(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
-                  hotkey: str, visibility_hotkey: str):
+def _start_hotkeys(overlay: AnnotationOverlay, hotkey_mgr: HotkeyManager,
+                   settings: SettingsManager):
+    """Bind every configured shortcut. Callbacks are queued onto the GUI
+    thread — pynput calls them from its own thread."""
     from PyQt6.QtCore import QMetaObject, Qt as _Qt
 
-    def on_mode():
-        QMetaObject.invokeMethod(overlay, "toggle_passthrough",
-                                 _Qt.ConnectionType.QueuedConnection)
-    hotkey_mgr.start(hotkey, on_mode)
+    def invoker(slot: str):
+        return lambda: QMetaObject.invokeMethod(
+            overlay, slot, _Qt.ConnectionType.QueuedConnection)
 
-    def on_visibility():
-        QMetaObject.invokeMethod(overlay, "toggle",
-                                 _Qt.ConnectionType.QueuedConnection)
-    hotkey_mgr.start_visibility(visibility_hotkey, on_visibility)
+    slots = {"toggle": "toggle_passthrough", "visibility": "toggle",
+             "ocr": "activate_ocr", "record": "toggle_recording"}
+    for key, (name, _label) in HOTKEY_SETTINGS.items():
+        if name == "ocr" and not ocr_available():
+            continue
+        hotkey_mgr.bind(name, settings.get(key), invoker(slots[name]))
+
+
+def _report_taken_hotkeys(tray: QSystemTrayIcon, hotkey_mgr: HotkeyManager,
+                          settings: SettingsManager):
+    """Say once, at launch, if another app got to a shortcut first — the old
+    behavior was a shortcut that silently did nothing."""
+    taken = [f"{shortcut_label(settings, key)} ({label})"
+             for key, (name, label) in HOTKEY_SETTINGS.items()
+             if hotkey_mgr.failures().get(name) == "taken"]
+    if taken and QSystemTrayIcon.supportsMessages():
+        tray.showMessage(
+            "A shortcut is already taken",
+            "Another app already uses " + ", ".join(taken) +
+            ". Pick a different one in Settings.",
+            QSystemTrayIcon.MessageIcon.Warning, 10000)
 
 
 def _convert_recording(overlay) -> None:
@@ -4205,7 +4864,7 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
 
     menu.addSeparator()
     quit_action = menu.addAction("Exit")
-    quit_action.triggered.connect(QApplication.quit)
+    quit_action.triggered.connect(overlay.request_exit)
 
     tray.setContextMenu(menu)
     tray.activated.connect(
@@ -4217,7 +4876,48 @@ def _setup_tray(overlay: AnnotationOverlay) -> QSystemTrayIcon:
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
+def _self_test(overlay, settings_mgr, hotkey_mgr) -> int:
+    """`--self-test`: CI launches the *finished* build with this, after the
+    spec has stripped everything it thinks is unused. Build every window,
+    touch ffmpeg and the Windows integration, then exit — a module or DLL the
+    spec dropped by mistake fails here, not on a customer's machine.
+    Writes self-test.log to the working directory; the exit code is the verdict."""
+    import hashlib
+    import traceback
+    lines, ok = [f"Screen Annotator Pro {VERSION} self-test"], True
+
+    def check(name, fn):
+        nonlocal ok
+        try:
+            lines.append(f"ok    {name}: {fn()}")
+        except Exception:
+            ok = False
+            lines.append(f"FAIL  {name}\n{traceback.format_exc()}")
+
+    check("ffmpeg", lambda: find_ffmpeg() and ffmpeg_version() or 1 / 0)
+    check("hashlib", lambda: hashlib.sha256(b"x").hexdigest()[:12])
+    check("packaged", platform_win.is_packaged)
+    check("startup", platform_win.startup_status)
+    check("hotkeys", lambda: f"{hotkey_mgr.available} {hotkey_mgr.failures()}")
+    check("ocr", ocr_available)
+    check("settings dialog", lambda: SettingsDialog(settings_mgr, hotkey_mgr,
+                                                    overlay).close())
+    check("help dialog", lambda: HelpDialog(settings_mgr, overlay).close())
+    check("screenshot", lambda: overlay.canvas.capture_annotated().size())
+    check("notices", _third_party_notices)
+    try:
+        with open("self-test.log", "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    print("\n".join(lines))
+    return 0 if ok else 1
+
+
 def main():
+    self_test = "--self-test" in sys.argv
+    if self_test:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
     # PassThrough: accept fractional scale factors (125 %, 150 %, etc.) on
     # every platform — not just Windows.  Must be called before QApplication().
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -4263,25 +4963,19 @@ def main():
     hotkey_mgr   = HotkeyManager()
     overlay      = AnnotationOverlay(settings_mgr, hotkey_mgr)
     tray         = _setup_tray(overlay)
-    _start_hotkey(overlay, hotkey_mgr, settings_mgr.get("hotkey"),
-                  settings_mgr.get("visibility_hotkey"))
+    _start_hotkeys(overlay, hotkey_mgr, settings_mgr)
+    _report_taken_hotkeys(tray, hotkey_mgr, settings_mgr)
 
     # Safety net: catches any exit path that isn't already covered by the
     # dock's own save-on-drag/-collapse/-expand calls.
     app.aboutToQuit.connect(overlay.toolbar._save_dock_state)
     app.aboutToQuit.connect(overlay.usage.flush)
+    app.aboutToQuit.connect(hotkey_mgr.stop)
 
-    from PyQt6.QtCore import QMetaObject, Qt as _Qt
-    def _on_ocr():
-        QMetaObject.invokeMethod(overlay, "activate_ocr",
-                                 _Qt.ConnectionType.QueuedConnection)
-    hotkey_mgr.start_ocr(settings_mgr.get("ocr_hotkey"), _on_ocr)
-
-    def _on_record():
-        QMetaObject.invokeMethod(overlay, "toggle_recording",
-                                 _Qt.ConnectionType.QueuedConnection)
-    hotkey_mgr.start_rec(settings_mgr.get("rec_hotkey"), _on_record)
-
+    if self_test:
+        code = _self_test(overlay, settings_mgr, hotkey_mgr)
+        hotkey_mgr.stop()
+        sys.exit(code)
     sys.exit(app.exec())
 
 

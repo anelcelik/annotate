@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import platform
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -146,18 +147,57 @@ def list_audio_devices(ffmpeg: str | None = None,
     except Exception:
         _audio_devices_cache = []
         return []
+    names = parse_dshow_devices(proc.stderr or "")
+    _audio_devices_cache = names
+    return names
+
+
+_DSHOW_DEVICE = re.compile(r'"([^"]+)"\s*\(([^)]*)\)\s*$')
+
+
+def parse_dshow_devices(listing: str) -> list[str]:
+    """Audio input names out of `ffmpeg -list_devices true -f dshow`.
+
+    ffmpeg 5 changed this listing: there are no "DirectShow audio devices"
+    headers any more, each device carries its type instead —
+        [dshow @ 0000…] "Microphone (Realtek Audio)" (audio)
+    Parsing only the old headers found nothing on every current ffmpeg, so
+    the microphone list was always empty and recording fell back to a device
+    called "default" — which DirectShow does not have. Both formats are read.
+    """
     names, in_audio = [], False
-    for line in (proc.stderr or "").splitlines():
-        if "DirectShow audio devices" in line:
+    for line in listing.splitlines():
+        if "DirectShow audio devices" in line:          # ffmpeg 4 and older
             in_audio = True
             continue
         if "DirectShow video devices" in line:
             in_audio = False
             continue
-        if in_audio and '"' in line and "Alternative name" not in line:
-            names.append(line.split('"')[1])
-    _audio_devices_cache = names
+        if "Alternative name" in line:
+            continue
+        m = _DSHOW_DEVICE.search(line)                  # ffmpeg 5 and newer
+        if m:
+            kinds = [k.strip() for k in m.group(2).split(",")]
+            if "audio" in kinds and m.group(1) not in names:
+                names.append(m.group(1))
+            continue
+        if in_audio and '"' in line:
+            name = line.split('"')[1]
+            if name not in names:
+                names.append(name)
     return names
+
+
+def resolve_audio_device(wanted: str) -> str | None:
+    """The input to record from: the chosen one if it is still there, else
+    the first microphone ffmpeg can see. None when there is no microphone.
+    Only DirectShow needs this — Pulse and AVFoundation have a real default."""
+    if not IS_WIN:
+        return wanted or ""
+    devices = list_audio_devices() or list_audio_devices(refresh=True)
+    if wanted and wanted in devices:
+        return wanted
+    return devices[0] if devices else None
 
 
 # ── Recording configuration ───────────────────────────────────────────────────
@@ -720,10 +760,19 @@ class ScreenRecorder(QObject):
             self.failed.emit(f"Recordings cannot be written to "
                              f"{config.out_dir}\n\n{e}")
             return False
+        audio_device = None
+        if config.audio:
+            audio_device = resolve_audio_device(config.audio_device)
+            if audio_device is None:
+                self._unexclude()
+                self.failed.emit(
+                    "No microphone was found. Plug one in, or turn off "
+                    "\u201cRecord the microphone\u201d in Settings \u2192 Recording.")
+                return False
         self._encoder = FFmpegEncoder(
             ffmpeg, self._path, w, h, config.fps,
             crf=config.crf, preset=config.preset,
-            audio_device=(config.audio_device if config.audio else None))
+            audio_device=audio_device)
         try:
             self._encoder.start()
         except RecorderError as e:
@@ -892,6 +941,11 @@ class ScreenRecorder(QObject):
         if not self._writer:
             return
         img = img.convertToFormat(QImage.Format.Format_ARGB32)
+        # At 125 %/150 % Qt tags the grab with the screen's scale, and QPainter
+        # applies that tag by itself — on top of self._scale below, which is
+        # already worked out from the pixels. Drop the tag so the scale is
+        # applied exactly once and the marks land where they are on screen.
+        img.setDevicePixelRatio(1.0)
         w, h = self._size
         if img.width() != w or img.height() != h:
             # Odd capture sizes get rounded down to even for H.264. Trimming a
@@ -906,14 +960,23 @@ class ScreenRecorder(QObject):
         # the recording either — even though its shapes are still in the model.
         composite = (self._composite and self._canvas is not None
                      and self._overlay is not None and self._overlay.isVisible())
-        if composite or self._cursor:
+        # The laser hides the real pointer on screen; drawing ours on top of
+        # the dot would put back the arrow the presenter just got rid of.
+        laser_live = (composite and self._canvas.tool == "laser"
+                      and self._canvas._laser_pos is not None
+                      and not getattr(self._overlay, "passthrough", False))
+        cursor = self._cursor and not laser_live
+        if composite or cursor:
             p = QPainter(img)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.scale(*self._scale)
             p.translate(-self._origin)
             if composite:
-                self._canvas.render_annotations(p, selection=False)
-            if self._cursor:
+                # paint_marks, not render_annotations: an eraser stroke must
+                # erase marks, never punch a hole in the desktop underneath.
+                self._canvas.paint_marks(p, img.width(), img.height(),
+                                         selection=False)
+            if cursor:
                 self._draw_cursor(p)
             p.end()
 

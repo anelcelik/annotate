@@ -570,6 +570,11 @@ class RecordButton(QPushButton):
         self.setStyleSheet("border:none;background:transparent;")
         self._recording = False
         self._elapsed   = "00:00"
+        self._shortcut  = "Ctrl+Alt+R"
+        self._sync_tip()
+
+    def set_shortcut_label(self, text: str):
+        self._shortcut = text
         self._sync_tip()
 
     def set_recording(self, on: bool):
@@ -584,9 +589,9 @@ class RecordButton(QPushButton):
             self.update()
 
     def _sync_tip(self):
-        self.setToolTip("Stop recording — Ctrl+Shift+R" if self._recording
-                        else "Record the screen with your annotations — "
-                             "Ctrl+Shift+R")
+        key = f" — {self._shortcut}" if self._shortcut else ""
+        self.setToolTip(f"Stop recording{key}" if self._recording
+                        else f"Record the screen with your annotations{key}")
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -839,7 +844,14 @@ class Toolbar(QWidget):
         row1.addWidget(self._grip)
         row1.addWidget(_vrule())
 
+        import annotate as A
         for gi, group in enumerate(GROUPS):
+            # Snip & Read hides itself in a build without the OCR engine (the
+            # Store package): a button that can only say "not available" is
+            # worse than no button.
+            group = [t for t in group if t != "ocr" or A.ocr_available()]
+            if not group:
+                continue
             for tid in group:
                 _, label, key, _props, _tip = TOOL_META[tid]
                 btn = ToolButton(tid, key, f"{label} — {key}")
@@ -858,7 +870,8 @@ class Toolbar(QWidget):
         for tid, tip, fn in (
             ("undo",  "Undo — Ctrl+Z", self.canvas.undo),
             ("redo",  "Redo — Ctrl+Y", self.canvas.redo),
-            ("clear", "Clear all — C", self.canvas.clear),
+            ("clear", "Clear all — C  (Ctrl+Z brings it back)",
+             self.overlay.clear_marks),
         ):
             b = ActionButton(tid, tip)
             b.clicked.connect(fn)
@@ -900,7 +913,7 @@ class Toolbar(QWidget):
 
         row1.addWidget(_vrule())
         ex = ActionButton("close", "Exit", danger=True)
-        ex.clicked.connect(QApplication.quit)
+        ex.clicked.connect(self.overlay.request_exit)
         row1.addWidget(ex)
 
         w1 = QWidget()
@@ -1105,6 +1118,9 @@ class Toolbar(QWidget):
     def _activate(self, tid: str):
         if tid not in TOOL_META:
             return
+        import annotate as A
+        if tid == "ocr" and not A.ocr_available():
+            return
         # Reaching for a tool means you want to draw with it — being dropped
         # into click-through and having the first stroke land in the app
         # underneath would be worse than useless.
@@ -1187,6 +1203,9 @@ class Toolbar(QWidget):
 
     def set_mode_shortcut(self, text: str):
         self._mode_btn.set_shortcut_label(text)
+
+    def set_record_shortcut(self, text: str):
+        self._rec_btn.set_shortcut_label(text)
 
     def _toggle_mode(self):
         self.overlay.toggle_passthrough()
