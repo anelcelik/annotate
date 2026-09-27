@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
 import hotkeys
 import ocr_win
+import redact_finder
 import platform_win
 from PySide6.QtWidgets import (
     QToolTip,
@@ -132,7 +133,7 @@ def _cross_cursor() -> QCursor:
 
 
 # ── App identity ───────────────────────────────────────────────────────────────
-VERSION = "6.1.0"
+VERSION = "6.2.0"
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 IS_WIN = platform.system() == "Windows"
@@ -3685,6 +3686,88 @@ class RecordingHUD(QWidget):
         p.end()
 
 
+def copy_file_to_clipboard(path: str) -> bool:
+    """The file itself on the clipboard, as Explorer copies it — so Ctrl+V
+    in Teams, Slack, Discord, an email or a folder pastes the video or GIF.
+
+    On Windows this goes straight to the clipboard (CF_HDROP) rather than
+    through Qt: Qt keeps owning data it put there, and handing it over as
+    the app shuts down crashed Python on exit. Windows owns what's put here
+    directly, and it stays pasteable after the app is closed."""
+    if IS_WIN:
+        return _win_copy_files([os.path.abspath(path)])
+    from PySide6.QtCore import QMimeData
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(path)])
+    QApplication.clipboard().setMimeData(data)
+    return True
+
+
+def _win_copy_files(paths: list[str]) -> bool:
+    import ctypes
+    import struct
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+
+    def global_copy(data: bytes):
+        h = kernel32.GlobalAlloc(0x0002, len(data))         # GMEM_MOVEABLE
+        if not h:
+            return None
+        ctypes.memmove(kernel32.GlobalLock(h), data, len(data))
+        kernel32.GlobalUnlock(h)
+        return h
+
+    # DROPFILES: offset of the list, a point, fNC, fWide — then the paths.
+    files = struct.pack("<IiiII", 20, 0, 0, 0, 1) + \
+        ("\0".join(paths) + "\0\0").encode("utf-16-le")
+    drop = global_copy(files)
+    effect = global_copy(struct.pack("<I", 1))               # DROPEFFECT_COPY
+    if not drop or not user32.OpenClipboard(None):
+        for h in (drop, effect):
+            if h:
+                kernel32.GlobalFree(h)
+        return False
+    try:
+        user32.EmptyClipboard()
+        ok = bool(user32.SetClipboardData(15, drop))          # CF_HDROP
+        if not ok:
+            kernel32.GlobalFree(drop)
+        if effect and not user32.SetClipboardData(
+                user32.RegisterClipboardFormatW("Preferred DropEffect"), effect):
+            kernel32.GlobalFree(effect)
+        return ok
+    finally:
+        user32.CloseClipboard()
+
+
+class _WordScan(QObject):
+    """Windows text recognition with word positions, off the GUI thread."""
+
+    done = Signal(object)            # lines of (word, box), or an error string
+
+    def run(self, image: QImage):
+        def work():
+            try:
+                result = ocr_win.recognize_words(image)
+            except Exception as e:  # OcrUnavailable, or WinRT failing
+                result = str(e) or "Text recognition failed."
+            try:
+                self.done.emit(result)
+            except RuntimeError:
+                pass
+        threading.Thread(target=work, daemon=True, name="auto-redact").start()
+
+
 class RecordingBar(QWidget):
     """Shown when a recording lands on disk: play, reveal, save elsewhere, bin."""
 
@@ -3753,6 +3836,7 @@ class RecordingBar(QWidget):
              ("Export…",        self._export,   False)],
             [("Delete",         self._delete,   False),
              None,
+             ("Copy",           self._copy,     False),
              ("Show in folder", self._reveal,   False),
              ("Save as…",       self._save_as,  False),
              ("Close",          self.close,     False)],
@@ -3800,6 +3884,13 @@ class RecordingBar(QWidget):
 
     def _trim(self):
         TrimDialog(self._path, self._duration, self._overlay).exec()
+
+    def _copy(self):
+        copy_file_to_clipboard(self._path)
+        btn = self.sender()
+        if isinstance(btn, QPushButton):
+            btn.setText("Copied ✓")
+            btn.setToolTip("Paste it into a chat, an email or a folder")
 
     def _reveal(self):
         _reveal_in_file_manager(self._path)
@@ -4032,6 +4123,12 @@ class ExportDialog(QDialog):
         except TypeError:
             pass
         self._go_btn.clicked.connect(self._reveal)
+        self._cancel_btn.setText("Copy file")
+        try:
+            self._cancel_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._cancel_btn.clicked.connect(self._copy_out)
         self.adjustSize()
 
     def _on_failed(self, message: str):
@@ -4042,6 +4139,11 @@ class ExportDialog(QDialog):
         self._rate.setEnabled(self._kind() == "gif")
         self._cancel_btn.setText("Close")
         self.adjustSize()
+
+    def _copy_out(self):
+        if self._out:
+            copy_file_to_clipboard(self._out)
+            self._cancel_btn.setText("Copied ✓")
 
     def _reveal(self):
         if self._out:
@@ -4433,6 +4535,12 @@ class TrimDialog(QDialog):
         self._go_btn.setEnabled(True)
         self._go_btn.clicked.disconnect()
         self._go_btn.clicked.connect(self._reveal)
+        self._cancel_btn.setText("Copy file")
+        try:
+            self._cancel_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._cancel_btn.clicked.connect(self._copy_out)
         self.adjustSize()
 
     def _on_failed(self, message: str):
@@ -4443,6 +4551,11 @@ class TrimDialog(QDialog):
         self._go_btn.setEnabled(True)
         self._cancel_btn.setText("Close")
         self.adjustSize()
+
+    def _copy_out(self):
+        if self._out:
+            copy_file_to_clipboard(self._out)
+            self._cancel_btn.setText("Copied ✓")
 
     def _reveal(self):
         if self._out:
@@ -5432,47 +5545,152 @@ class InlineTextEditor(QTextEdit):
 # ── Help dialog ───────────────────────────────────────────────────────────────
 
 class HelpDialog(QDialog):
-    """Full feature reference — opened from the Settings dialog."""
+    """The Guide: every feature and how to use it, by topic, searchable.
+    Opened from Settings (ⓘ Guide) and with F1."""
 
-    _TOOLS = [
-        # (icon, name, shortcut, shift_tip)
-        ("↖",  "Select / Move",   "V",  "Drag to reposition any shape"),
-        ("〜", "Pen",             "P",  "Freehand drawing stroke"),
-        ("—",  "Line",            "L",  "Hold Shift → 45° snap"),
-        ("→",  "Arrow",           "A",  "Hold Shift → 45° snap"),
-        ("▭",  "Rectangle",       "R",  "Hold Shift → perfect square"),
-        ("○",  "Circle",          "O",  "Hold Shift → perfect circle"),
-        ("↔",  "Ruler",           "U",  "Hold Shift → 45° snap  ·  length in real screen pixels"),
-        ("T",  "Text",            "T",  "Click and type  ·  Enter finishes, Shift+Enter adds a line  ·  click a label to edit it"),
-        ("①",  "Callout",        "K",  "Auto-numbered filled circles"),
-        ("1▸2","Steps",           "S",  "Auto-numbered step squares"),
-        ("✓",  "Stamp",           "G",  "Click to place ✓ ✗ ! ? or ★"),
-        ("HL", "Highlight",       "H",  "Semi-transparent colour band"),
-        ("◻",  "Eraser",          "E",  "Touch a mark to remove it  ·  or switch to Pixels to rub out part of one"),
-        ("⊘",  "Blur",            "Z",  "Gaussian blur over a selected region"),
-        ("PX", "Pixelate",        "X",  "Turns what's underneath into large blocks"),
-        ("▪",  "Black Box",       "D",  "Solid opaque black redaction"),
-        ("⊙",  "Laser Pointer",   "I",  "No mark left — OS cursor hidden, red dot only"),
-        ("⌗",  "Snip & Read",     "J",  "Drag over text to copy it out, then translate it"),
-        ("▢",  "Whiteboard",      "W",  "Board over this screen, white or dark (Settings) · PgDn/PgUp: pages · W or Esc leaves"),
-        ("◎",  "Spotlight",       "F",  "Dims everything but the cursor · mouse wheel sizes it"),
-        ("⌕",  "Zoom",            "M",  "A magnifier next to the cursor · wheel zooms 2×–16× · Esc leaves"),
-    ]
-
-    _TIPS = [
-        ("Opacity slider",   "Sets transparency for new shapes — existing ones are not affected."),
-        ("Text size slider", "Controls the font size of the Text tool."),
-        ("Shift while drawing", "Locks lines / arrows / ruler to nearest 45°.\n"
-                                "Locks rectangle / circle to perfect square / circle."),
-        ("Eraser size",      "Follows the Width slider."),
-        ("Screenshot",       "Hides the overlay, grabs the full desktop (all monitors), "
-                             "then shows Copy / Save PNG / Discard."),
-        ("Recording",        "Records the screen to MP4 with your marks in it. The "
-                             "Record button on the dock turns red and counts up; "
-                             "press it again to stop."),
-        ("Multi-monitor",    "The overlay covers all connected displays automatically."),
-        ("Start on boot",    "Starts Screen Annotator Pro hidden in the tray when "
-                             "you sign in to Windows."),
+    # (topic, [(title, body), …]) — the body is plain text; "·" separates steps.
+    GUIDE = [
+        ("Start", [
+            ("Two modes: drawing and click-through",
+             "Drawing ON: the mouse draws. Drawing OFF (click-through): your marks stay "
+             "on screen and clicks go to the app underneath, so you can keep working. "
+             "Switch with the mode cell on the dock or Ctrl+Shift+A. Esc always drops "
+             "into click-through."),
+            ("Show or hide everything",
+             "Ctrl+Shift+H puts the overlay and the dock away and brings them back. "
+             "The tray icon (next to the clock) does the same, and has Exit."),
+            ("The dock",
+             "Top row: every tool, always in the same place. Second row: only the "
+             "options the tool in your hand uses. Drag the dotted grip to move the "
+             "dock · double-click it (or press ⌄) to shrink it to one icon · click the "
+             "icon to bring it back. Its size is in Settings → General."),
+            ("Undo anything",
+             "Ctrl+Z undoes drawing, moving, restyling, deleting and even Clear all. "
+             "Ctrl+Y redoes. C clears everything (Ctrl+Z brings it back)."),
+            ("Hover hints",
+             "Hover any button to see what it does and its key. Turn them off in "
+             "Settings → General."),
+        ]),
+        ("Draw", [
+            ("Pen  P", "Freehand. With a pen, lines follow the pressure."),
+            ("Line  L · Arrow  A", "Drag. Hold Shift to snap to 45°. Arrow: HEADS One / "
+             "Both. To curve an arrow, select it and drag its middle handle."),
+            ("Rectangle  R · Circle  O", "Drag. Shift gives a perfect square or circle. "
+             "FILL: Off (outline), Tint (light wash inside) or Solid."),
+            ("Ruler  U", "Drag to measure in real screen pixels. Shift snaps to 45°."),
+            ("Text  T", "Click where the text goes and type. Enter finishes, Shift+Enter "
+             "adds a line, Esc cancels. BOX: Off, Box (a plate behind it) or Bubble (a "
+             "speech bubble — drag its tail with Select). Click a label to edit it."),
+            ("Callout  K · Steps  S", "Click to place a numbered marker; they count up by "
+             "themselves. SIZE sets how big."),
+            ("Stamp  G", "Click to place ✓ ✗ ! ? or ★ — pick which on the dock."),
+            ("Highlight  H", "Drag over text for a see-through marker band."),
+            ("Laser pointer  I", "A glowing red dot that leaves no marks."),
+            ("Eraser  E", "Shapes: touch a mark to remove it. Pixels: rub out part of one."),
+            ("Colour, stroke, opacity", "On the dock's second row for each tool. Tools "
+             "without an opacity slider (callouts, steps, stamps, ruler) are always solid."),
+            ("Fading ink", "FADE: On makes new marks disappear by themselves after a few "
+             "seconds — great for pointing things out. Redactions never fade."),
+        ]),
+        ("Edit", [
+            ("Select a mark  V", "Click a mark to select it · drag to move it · drag its "
+             "white handles to reshape it (an arrow's ends and middle, a box's corners, a "
+             "bubble's tail)."),
+            ("Several at once", "Drag across empty space to frame marks, or Shift-click to "
+             "add and remove. Ctrl+A selects everything."),
+            ("Change the style", "With marks selected, the dock shows their colour, stroke, "
+             "opacity, fill, heads or stamp — change them and the marks change."),
+            ("Copy, paste, duplicate", "Ctrl+C, Ctrl+V, Ctrl+D. Delete removes. The arrow "
+             "keys nudge by 1 px (Shift: 10 px)."),
+            ("Save and open your marks", "Ctrl+S saves everything on screen to a .samarks "
+             "file; Ctrl+O opens one on top of what's there (one Ctrl+Z takes it away). "
+             "Also in the tray menu."),
+        ]),
+        ("Present", [
+            ("Whiteboard  W", "A clean board over the screen you're on — white or dark, "
+             "chosen in Settings → General. PgDn/PgUp flip pages (each has its own undo). "
+             "W or Esc leaves, and your desktop marks come back."),
+            ("Spotlight  F", "Dims everything except around the cursor. The mouse wheel "
+             "sizes it."),
+            ("Cursor halo · Show clicks · Show pressed shortcuts",
+             "In the dock's Presenter menu. They work in click-through and appear in "
+             "recordings. Pressed shortcuts shows combinations like Ctrl+S and keys like "
+             "Enter — never normal typing, so passwords stay private."),
+            ("Magnifier  M", "A round loupe beside the cursor. The wheel zooms 2×–16×; "
+             "Esc, M or a right-click closes it."),
+            ("Webcam bubble", "Presenter menu → Webcam bubble: your camera in a circle on "
+             "top of everything, also in recordings. Drag it, size it with the wheel, "
+             "right-click for mirror / rounded square / close. Pick the camera in "
+             "Settings → Recording."),
+            ("Hold a key to draw", "Settings → Shortcuts → Hold a key to draw: hold Right "
+             "Ctrl (or Right Shift) to draw, let go and you're back in your app."),
+        ]),
+        ("Private", [
+            ("Blur  Z · Pixelate  X · Black box  D", "Drag over anything to hide it before "
+             "it lands in a screenshot, a meeting or a recording."),
+            ("Find private info  B", "Press B (or Find private info on those tools): the "
+             "screen under the cursor is read and every email address, phone number, card "
+             "number, IBAN, API key or token and anything after “Password:”/“PIN:” is "
+             "hidden at once — with the tool's style (blur unless pixelate or black box is "
+             "chosen). They're ordinary marks: move them, or Ctrl+Z to undo. It reads text "
+             "on your PC only (Windows' own text recognition) and sees only what's on "
+             "screen at that moment — check before you share."),
+        ]),
+        ("Capture", [
+            ("Screenshot  Ctrl+PrtSc", "Drag an area · click for the whole screen · Enter "
+             "for all screens. Your marks are in it, the dock isn't. Then Copy or Save PNG "
+             "(starts in Pictures\\Screenshots)."),
+            ("Snip & Read  J  or  Ctrl+Alt+T", "Drag over text you can't select — a video, "
+             "an image, a shared screen — and get it back as text to copy, or open it in "
+             "Google Translate. Works offline in every language installed in Windows "
+             "(Settings → Time & language → Language & region to add one)."),
+        ]),
+        ("Record", [
+            ("Start and stop  Ctrl+Alt+R", "Or the Record cell on the dock (it turns red and "
+             "counts up) or the tray. Press again to stop. A 3-2-1 countdown comes first — "
+             "Record again cancels it; turn it off in Settings → Recording."),
+            ("What gets recorded", "Settings → Recording: all monitors, the monitor in use, "
+             "an area you drag, or a window you click (it comes to the front). Your marks "
+             "are always in the video."),
+            ("Sound", "Record the microphone and/or Record the PC's sound (what plays "
+             "through your speakers) — both together are mixed."),
+            ("Pause", "The Pause button on the recording panel. Paused time isn't in the video."),
+            ("Recording saved", "Play · Make GIF · Trim… (drag the start and end on a "
+             "timeline, saved as a copy) · Export… (WebM or a smaller MP4) · Copy (paste the "
+             "video into Teams, Slack, Discord or an email) · Show in folder · Save as… · "
+             "Delete (to the Recycle Bin)."),
+            ("Where files go", "Videos\\ScreenAnnotatorPro, as annotation_DATE_TIME.mp4. "
+             "Change it in Settings → Recording."),
+            ("Record with the graphics chip (beta)", "Settings → Recording. Far less CPU, "
+             "heat and battery. If a PC can't, it switches to the normal recorder by itself."),
+        ]),
+        ("Pen", [
+            ("Pen and touch", "Surface Pen, Wacom and Windows Ink pens: pressure sets the "
+             "width; flip the pen to erase with its eraser end. A finger on a touch screen "
+             "draws like a mouse."),
+        ]),
+        ("Settings", [
+            ("General", "Start with Windows · dock size · hover hints · show pressed "
+             "shortcuts · whiteboard style · light or dark."),
+            ("Shortcuts", "Click a box and press a new combination (Ctrl, Alt or Win plus a "
+             "key, or an F-key). A red note means another app already uses it. Hold a key "
+             "to draw is here too."),
+            ("Recording", "Area, frame rate, quality, cursor, microphone, the PC's sound, "
+             "countdown, camera, folder, graphics chip."),
+        ]),
+        ("FAQ", [
+            ("A shortcut does nothing", "Another app owns that combination — Settings → "
+             "Shortcuts shows it in red. Pick another one."),
+            ("My recording has no sound", "Turn on Record the microphone / the PC's sound "
+             "in Settings → Recording, and allow microphone access in Windows Settings → "
+             "Privacy & security → Microphone."),
+            ("The dock shows up in recordings", "Turn off Keep the dock visible while "
+             "recording in Settings → Recording."),
+            ("Snip & Read asks for a language", "Add a language with its text recognition "
+             "in Windows Settings → Time & language → Language & region."),
+            ("It doesn't start with Windows", "Check Windows Settings → Apps → Startup — "
+             "Screen Annotator Pro has to be on there too."),
+        ]),
     ]
 
     def __init__(self, settings: "SettingsManager | None" = None, parent=None):
@@ -5480,176 +5698,196 @@ class HelpDialog(QDialog):
                          WType.FramelessWindowHint | WType.WindowStaysOnTopHint)
         self.setAttribute(WAtt.WA_TranslucentBackground)
         self._settings = settings
+        self._rows: list[tuple[QWidget, str, QWidget]] = []   # row, text, section
+        self._sections: dict[str, QWidget] = {}
         self._build()
         self.adjustSize()
         _center_on_display1(self)
 
-    def _tools(self) -> list:
-        return [t for t in self._TOOLS if t[1] != "Snip & Read" or ocr_available()]
+    def _topics(self) -> list:
+        topics = []
+        for topic, rows in self.GUIDE:
+            rows = [r for r in rows if "Snip & Read" not in r[0] or ocr_available()]
+            topics.append((topic, rows))
+        topics.insert(len(topics) - 2, ("Shortcuts", self._shortcuts()))
+        return topics
 
     def _shortcuts(self) -> list:
-        """Read from the live settings — this list used to be hard-coded and
-        had drifted (Esc was described as hiding the overlay)."""
+        """Read from the live settings, so they match what's set."""
         rows = []
         if self._settings is not None:
             for key, (name, label) in HOTKEY_SETTINGS.items():
                 if name == "ocr" and not ocr_available():
                     continue
                 rows.append((shortcut_label(self._settings, key),
-                             f"{label} — change it in Settings"))
+                             f"{label} — works everywhere; change it in Settings"))
         rows += [
-            ("Ctrl + Z",  "Undo — drawing, moving, deleting and Clear all"),
-            ("Ctrl + Y",  "Redo"),
-            ("C",         "Clear all marks (Ctrl + Z brings them back)"),
-            ("Esc",       "Click-through: the marks stay, your clicks go to "
-                          "the app underneath"),
-            ("Delete",    "Remove the selected marks (Select tool)"),
-            ("Ctrl + C / V / D", "Copy, paste, duplicate the selection"),
-            ("Ctrl + S / Ctrl + O", "Save the marks to a file / open saved marks"),
-            ("Ctrl + A",  "Select everything"),
-            ("Arrows",    "Nudge the selection (Shift: 10 px)"),
+            ("F1", "This guide"),
+            ("Ctrl + Z · Ctrl + Y", "Undo · redo"),
+            ("C", "Clear all (Ctrl + Z brings it back)"),
+            ("Esc", "Click-through: the marks stay, clicks go to the app underneath"),
+            ("B", "Find and hide private info on this screen"),
+            ("W · F · M", "Whiteboard · spotlight · magnifier"),
+            ("Ctrl + S · Ctrl + O", "Save the marks · open saved marks"),
+            ("Ctrl + C / V / D · Ctrl + A", "Copy / paste / duplicate · select all"),
+            ("Delete · arrow keys", "Remove the selection · nudge it (Shift: 10 px)"),
+            ("V P L A R O U T K S G H E I Z X D J",
+             "Tools: select, pen, line, arrow, rectangle, circle, ruler, text, callout, "
+             "steps, stamp, highlight, eraser, laser, blur, pixelate, black box, Snip & Read"),
         ]
         return rows
 
-    # ── Build ──────────────────────────────────────────────────────────────────
+    # ── build ────────────────────────────────────────────────────────────────
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setContentsMargins(22, 18, 22, 18)
         outer.setSpacing(10)
 
-        # Title row
         title_row = QHBoxLayout()
-        title = QLabel("Help & Features")
-        tf = QFont(DLG_FONT, 13)
+        title = QLabel("Guide")
+        tf = QFont(DLG_FONT, 14)
         tf.setBold(True)
         title.setFont(tf)
         title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
         title_row.addWidget(title)
-        title_row.addStretch()
+        title_row.addSpacing(12)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search — e.g. blur, record, shortcut, sound")
+        self.search.setFixedHeight(30)
+        self.search.setClearButtonEnabled(True)
+        self.search.setStyleSheet(_dlg_input_style("QLineEdit"))
+        self.search.textChanged.connect(self._filter)
+        title_row.addWidget(self.search, 1)
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(26, 26)
         close_btn.setCursor(Cursor.PointingHandCursor)
         close_btn.setStyleSheet(
             f"QPushButton{{color:{DLG_INK};background:transparent;border:none;font-size:13px;}}"
-            f"QPushButton:hover{{color:{DLG_ACCENT};}}"
-        )
+            f"QPushButton:hover{{color:{DLG_ACCENT};}}")
         close_btn.clicked.connect(self.accept)
         title_row.addWidget(close_btn)
         outer.addLayout(title_row)
+
+        topics = self._topics()
+        chips = QHBoxLayout()
+        chips.setSpacing(4)
+        for topic, _rows in topics:
+            b = QPushButton(topic)
+            b.setCursor(Cursor.PointingHandCursor)
+            b.setFixedHeight(24)
+            b.setStyleSheet(
+                f"QPushButton{{color:{DLG_INK};background:{DLG_SURFACE};border:none;"
+                f"font-family:'{DLG_FONT}';font-size:11px;padding:0 8px;}}"
+                f"QPushButton:hover{{background:{DLG_ACCENT};color:#FFFFFF;}}")
+            b.clicked.connect(lambda _c, name=topic: self.jump(name))
+            chips.addWidget(b)
+        chips.addStretch()
+        outer.addLayout(chips)
         outer.addWidget(_dlg_sep())
 
-        # Scroll area
         from PySide6.QtWidgets import QScrollArea
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setFixedHeight(460)
-        scroll.setStyleSheet(
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scr = self.screen() or QApplication.primaryScreen()
+        avail = scr.availableGeometry().height() if scr else 800
+        self.scroll.setFixedHeight(max(280, min(540, int(avail * 0.62) - 170)))
+        self.scroll.setStyleSheet(
             "QScrollArea{background:transparent;border:none;}"
             f"QScrollBar:vertical{{background:{DLG_SURFACE};width:8px;border-radius:0;}}"
             f"QScrollBar::handle:vertical{{background:{DLG_MUTED};border-radius:0;min-height:20px;}}"
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
-        )
-
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
         content = QWidget()
         content.setStyleSheet("background:transparent;")
         cl = QVBoxLayout(content)
-        cl.setContentsMargins(0, 0, 8, 0)
+        cl.setContentsMargins(0, 0, 10, 0)
         cl.setSpacing(0)
-
-        # ── Tools ──────────────────────────────────────────────────────────────
-        cl.addWidget(self._section("Tools"))
-        for icon, name, key, tip in self._tools():
-            cl.addWidget(self._tool_row(icon, name, key, tip))
-        cl.addSpacing(10)
-
-        # ── Keyboard shortcuts ─────────────────────────────────────────────────
-        cl.addWidget(self._section("Keyboard Shortcuts"))
-        for keys, desc in self._shortcuts():
-            cl.addWidget(self._shortcut_row(keys, desc))
-        cl.addSpacing(10)
-
-        # ── Tips ───────────────────────────────────────────────────────────────
-        cl.addWidget(self._section("Tips"))
-        for heading, body in self._TIPS:
-            cl.addWidget(self._tip_row(heading, body))
-
+        for topic, rows in topics:
+            head = self._section(topic)
+            self._sections[topic] = head
+            cl.addWidget(head)
+            for title_text, body in rows:
+                row = self._row(title_text, body, keys=topic == "Shortcuts")
+                self._rows.append((row, f"{topic} {title_text} {body}".lower(), head))
+                cl.addWidget(row)
+            cl.addSpacing(8)
+        self.nothing = QLabel("Nothing found — try another word.")
+        self.nothing.setStyleSheet(f"color:{DLG_MUTED};font-size:12px;padding:20px 4px;")
+        self.nothing.hide()
+        cl.addWidget(self.nothing)
         cl.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll)
-
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll)
         outer.addWidget(_dlg_sep())
 
-        # Close button
         close2 = QPushButton("Close")
         close2.setFixedHeight(34)
         close2.setCursor(Cursor.PointingHandCursor)
         close2.setStyleSheet(_dlg_button_style(primary=False))
         close2.clicked.connect(self.accept)
         outer.addWidget(close2)
+        self.setFixedWidth(660)
 
-        self.setFixedWidth(420)
+    # ── behaviour ────────────────────────────────────────────────────────────
+    def jump(self, topic: str):
+        self.search.clear()
+        head = self._sections.get(topic)
+        if head is not None:
+            self.scroll.verticalScrollBar().setValue(head.y())
 
-    # ── Row builders ───────────────────────────────────────────────────────────
+    def _filter(self, text: str):
+        words = text.lower().split()
+        shown_sections = set()
+        for row, hay, head in self._rows:
+            hit = all(w in hay for w in words)
+            row.setVisible(hit)
+            if hit:
+                shown_sections.add(id(head))
+        for head in self._sections.values():
+            head.setVisible(not words or id(head) in shown_sections)
+        self.nothing.setVisible(bool(words) and not shown_sections)
+        self.scroll.verticalScrollBar().setValue(0)
+
+    def visible_titles(self) -> list[str]:
+        return [row.property("title") for row, _hay, _h in self._rows if not row.isHidden()]
+
+    def keyPressEvent(self, e):
+        if e.key() == Key.Key_Escape and self.search.text():
+            self.search.clear()
+            return
+        super().keyPressEvent(e)
+
+    # ── rows ─────────────────────────────────────────────────────────────────
     def _section(self, text: str) -> QLabel:
         lbl = _dlg_section_lbl(text)
-        lbl.setStyleSheet(lbl.styleSheet() + "padding:8px 0 4px 0;")
+        lbl.setStyleSheet(lbl.styleSheet() + "padding:10px 0 4px 0;")
         return lbl
 
-    def _tool_row(self, icon: str, name: str, key: str, tip: str) -> QWidget:
-        w  = QWidget()
+    def _row(self, title_text: str, body: str, keys: bool = False) -> QWidget:
+        w = QWidget()
+        w.setProperty("title", title_text)
+        if keys:
+            lo = QHBoxLayout(w)
+            lo.setContentsMargins(4, 4, 4, 4)
+            k = QLabel(title_text)
+            k.setFixedWidth(200)
+            k.setWordWrap(True)
+            k.setStyleSheet(f"color:{DLG_INK};font-size:11px;background:{DLG_SURFACE};"
+                            "padding:2px 6px;font-family:Consolas,monospace;")
+            d = QLabel(body)
+            d.setWordWrap(True)
+            d.setStyleSheet(f"color:{DLG_MUTED};font-size:11px;")
+            lo.addWidget(k, 0, AA.AlignTop)
+            lo.addWidget(d, 1)
+            return w
         lo = QVBoxLayout(w)
-        lo.setContentsMargins(4, 3, 4, 3)
-        lo.setSpacing(1)
-
-        top = QHBoxLayout()
-        icon_lbl = QLabel(icon)
-        icon_lbl.setFixedWidth(28)
-        icon_lbl.setStyleSheet(f"color:{DLG_ACCENT};font-size:13px;font-weight:600;")
-        name_lbl = QLabel(name)
-        name_lbl.setStyleSheet(f"color:{DLG_INK};font-size:12px;")
-        key_lbl  = QLabel(key)
-        key_lbl.setStyleSheet(
-            f"color:{DLG_MUTED};font-size:10px;background:{DLG_SURFACE};padding:1px 5px;"
-        )
-        top.addWidget(icon_lbl)
-        top.addWidget(name_lbl)
-        top.addStretch()
-        top.addWidget(key_lbl)
-        lo.addLayout(top)
-
-        tip_lbl = QLabel(tip)
-        tip_lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;padding-left:28px;")
-        lo.addWidget(tip_lbl)
-        return w
-
-    def _shortcut_row(self, keys: str, desc: str) -> QWidget:
-        w  = QWidget()
-        lo = QHBoxLayout(w)
-        lo.setContentsMargins(4, 4, 4, 4)
-        keys_lbl = QLabel(keys)
-        keys_lbl.setFixedWidth(160)
-        keys_lbl.setStyleSheet(
-            f"color:{DLG_INK};font-size:11px;background:{DLG_SURFACE};"
-            "padding:2px 6px;font-family:Consolas,monospace;"
-        )
-        desc_lbl = QLabel(desc)
-        desc_lbl.setStyleSheet(f"color:{DLG_MUTED};font-size:11px;")
-        desc_lbl.setWordWrap(True)
-        lo.addWidget(keys_lbl)
-        lo.addWidget(desc_lbl, 1)
-        return w
-
-    def _tip_row(self, heading: str, body: str) -> QWidget:
-        w  = QWidget()
-        lo = QVBoxLayout(w)
-        lo.setContentsMargins(4, 5, 4, 5)
+        lo.setContentsMargins(4, 6, 4, 6)
         lo.setSpacing(2)
-        h = QLabel(heading)
-        h.setStyleSheet(f"color:{DLG_INK};font-size:11px;font-weight:600;")
+        h = QLabel(title_text)
+        h.setStyleSheet(f"color:{DLG_INK};font-size:12px;font-weight:600;")
         b = QLabel(body)
-        b.setStyleSheet(f"color:{DLG_MUTED};font-size:10px;")
         b.setWordWrap(True)
+        b.setStyleSheet(f"color:{DLG_MUTED};font-size:11px;")
         lo.addWidget(h)
         lo.addWidget(b)
         return w
@@ -5720,7 +5958,17 @@ class SettingsDialog(QDialog):
         tf.setBold(True)
         title.setFont(tf)
         title.setStyleSheet(f"color:{DLG_INK};background:transparent;")
-        lo.addWidget(title)
+        head = QHBoxLayout()
+        head.addWidget(title)
+        head.addStretch()
+        guide = QPushButton("ⓘ  Guide — how everything works")
+        guide.setFixedHeight(30)
+        guide.setCursor(Cursor.PointingHandCursor)
+        guide.setToolTip("Every feature, step by step, with a search box (F1)")
+        guide.setStyleSheet(_dlg_button_style(primary=True))
+        guide.clicked.connect(self.open_guide)
+        head.addWidget(guide)
+        lo.addLayout(head)
         lo.addWidget(_dlg_sep())
 
         # ── Tabs ───────────────────────────────────────────────────────────────
@@ -5789,11 +6037,11 @@ class SettingsDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
-        help_btn = QPushButton("Help")
+        help_btn = QPushButton("ⓘ  Guide")
         help_btn.setFixedHeight(34)
         help_btn.setCursor(Cursor.PointingHandCursor)
         help_btn.setStyleSheet(_dlg_button_style(primary=False))
-        help_btn.clicked.connect(lambda: HelpDialog(self._settings, self).exec())
+        help_btn.clicked.connect(self.open_guide)
         btn_row.addWidget(help_btn)
         btn_row.addStretch()
 
@@ -5806,6 +6054,9 @@ class SettingsDialog(QDialog):
             btn.clicked.connect(slot)
             btn_row.addWidget(btn)
         lo.addLayout(btn_row)
+
+    def open_guide(self):
+        HelpDialog(self._settings, self).exec()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -7232,6 +7483,85 @@ class AnnotationOverlay(QWidget):
         self.recording.toggle()
 
     @Slot()
+    def open_guide(self):
+        """F1: the Guide, on top — kept, since nothing else holds it."""
+        self._guide = HelpDialog(self.settings, self)
+        self._guide.show()
+        self._guide.raise_()
+
+    # ── find and hide private info ────────────────────────────────────────────
+    @Slot()
+    def auto_redact(self):
+        """Read the screen under the cursor and cover every email address,
+        phone number, card number, IBAN, key and password on it — with the
+        redaction in hand (blur unless pixelate or black box is chosen), as
+        ordinary marks: movable, and one Ctrl+Z takes them all away."""
+        if getattr(self, "_scan", None) is not None:
+            return                                  # already reading
+        if not ocr_win.available():
+            self.toast.show_message("Finding private info needs Windows' built-in "
+                                    "text recognition.", anchor=self.toolbar)
+            return
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.geometry()
+        raw = self._grab_screen(g)
+        if raw.isNull():
+            self.toast.show_message("The screen couldn't be read.", anchor=self.toolbar)
+            return
+        self._scan = _WordScan(self)
+        self._scan.done.connect(lambda lines: self._redact_found(lines, raw, g))
+        self.toast.show_message("Looking for private info…", anchor=self.toolbar)
+        self._scan.run(raw.toImage())
+
+    def _grab_screen(self, g: QRect) -> QPixmap:
+        """The desktop under `g` (global), marks and dock out of the way."""
+        with _ChromeHidden(self):
+            return QApplication.primaryScreen().grabWindow(0, g.x(), g.y(),
+                                                           g.width(), g.height())
+
+    def _redact_found(self, lines, raw: QPixmap, g: QRect):
+        self._scan = None
+        if isinstance(lines, str):
+            self.toast.show_message(lines, anchor=self.toolbar)
+            return
+        found = redact_finder.find_private(lines)
+        if not found:
+            self.toast.show_message("Nothing private found on this screen.",
+                                    anchor=self.toolbar)
+            return
+        cv = self.canvas
+        style = cv.tool if cv.tool in ("blur", "pixel", "redact") else "blur"
+        sx = raw.width() / max(1, g.width())
+        radius = int(getattr(cv, "blur_radius", 18))
+        shapes = []
+        for _kind, (x, y, w, h) in found:
+            target = QRect(round(g.x() + x / sx) - 3, round(g.y() + y / sx) - 3,
+                           round(w / sx) + 6, round(h / sx) + 6).intersected(g)
+            p1 = QPointF(cv.mapFromGlobal(target.topLeft()))
+            p2 = QPointF(cv.mapFromGlobal(target.bottomRight() + QPoint(1, 1)))
+            if style == "redact":
+                shapes.append(RedactShape(p1, p2))
+                continue
+            pad = radius * 2 + 4 if style == "blur" else 0
+            padded = target.adjusted(-pad, -pad, pad, pad).intersected(g)
+            crop = raw.copy(QRect(round((padded.x() - g.x()) * sx),
+                                  round((padded.y() - g.y()) * sx),
+                                  max(1, round(padded.width() * sx)),
+                                  max(1, round(padded.height() * sx))))
+            if style == "blur":
+                shapes.append(BlurShape(p1, p2, _blur_region(crop, padded, target, radius)))
+            else:
+                cell = max(PixelShape.MIN_CELL, cv.pixel_size) * sx
+                ps = PixelShape(p1, p2, _mosaic(crop, round(cell)))
+                ps.size = cv.pixel_size
+                shapes.append(ps)
+        self._wanted = True
+        cv.add_marks(shapes)
+        self.sync_window()
+        self.toast.show_message(f"Hid {redact_finder.summary(found)} — Ctrl+Z brings "
+                                "them back", anchor=self.toolbar)
+
+    @Slot()
     def toggle_webcam(self):
         if self._webcam is not None:
             self._webcam.close_bubble()
@@ -7494,6 +7824,10 @@ class AnnotationOverlay(QWidget):
             self.set_passthrough(True)
         elif k == Key.Key_W and not chord:
             self.cycle_board()
+        elif k == Key.Key_B and not chord:
+            self.auto_redact()
+        elif k == Key.Key_F1:
+            self.open_guide()
         elif k == Key.Key_F and not chord:
             self.set_effect("spotlight", not self.canvas.spotlight)
         elif k in (Key.Key_PageDown, Key.Key_PageUp) and self.canvas.board:

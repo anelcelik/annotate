@@ -155,8 +155,8 @@ def test_ocr_tool_hidden_without_engine(A, settings, monkeypatch):
         assert "ocr" not in ov.toolbar._tool_btns
         ov.toolbar._activate("ocr")
         assert ov.canvas.tool != "ocr"
-        help_text = [r[0] for r in A.HelpDialog(settings)._tools()]
-        assert "Snip & Read" not in [t for t in (x for x in help_text)]
+        titles = A.HelpDialog(settings).visible_titles()
+        assert not any("Snip & Read" in t for t in titles)
     finally:
         ov.toolbar.set_chrome_visible(False)
 

@@ -79,6 +79,13 @@ Works across **all connected monitors** and is fully optimised for **4K, 8K, and
 
 ## What's New in This Version
 
+**Version 6.2 — Hide private info in one key**
+
+- Press B: every email, phone number, card number, IBAN, key and password on screen is blurred at once
+- Copy a finished recording or GIF and paste it straight into Teams, Slack or Discord
+- A searchable guide to every feature (Settings → Guide, or F1)
+
+
 **Version 6.1 — About 90 MB smaller**
 
 - A much smaller download and install: the video engine now contains only what the app uses

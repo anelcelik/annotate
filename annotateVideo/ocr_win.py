@@ -96,8 +96,8 @@ def join_lines(lines: list[list[str]], language_tag: str) -> str:
     return "\n".join(sep.join(words) for words in lines).strip()
 
 
-def recognize(image, language_tag: str = "") -> str:
-    """Text in a QImage. Blocking — call from a worker thread."""
+def _recognize(image, language_tag: str = ""):
+    """(OcrResult, engine, scale back to the image's own pixels). Blocking."""
     if not IS_WIN:
         raise OcrUnavailable("Windows text recognition is only available on Windows.")
     try:
@@ -120,6 +120,7 @@ def recognize(image, language_tag: str = "") -> str:
         raise OcrUnavailable(ADD_LANGUAGE_HELP)
 
     img = prepare(image)
+    full_width = max(1, img.width())
     limit = int(OcrEngine.max_image_dimension)
     if img.width() > limit or img.height() > limit:
         from PySide6.QtCore import Qt
@@ -138,5 +139,25 @@ def recognize(image, language_tag: str = "") -> str:
         bitmap = SoftwareBitmap.create_copy_from_buffer(
             buf, BitmapPixelFormat.BGRA8, img.width(), img.height())
     result = engine.recognize_async(bitmap).get()
+    return result, engine, full_width / max(1, img.width())
+
+
+def recognize(image, language_tag: str = "") -> str:
+    """Text in a QImage. Blocking — call from a worker thread."""
+    result, engine, _scale = _recognize(image, language_tag)
     lines = [[w.text for w in line.words] for line in result.lines]
     return join_lines(lines, engine.recognizer_language.language_tag)
+
+
+def recognize_words(image, language_tag: str = "") -> list:
+    """Every line as [(word, (x, y, w, h)), …], boxes in the image's pixels.
+    Blocking — call from a worker thread."""
+    result, _engine, s = _recognize(image, language_tag)
+    lines = []
+    for line in result.lines:
+        words = []
+        for w in line.words:
+            r = w.bounding_rect
+            words.append((w.text, (r.x * s, r.y * s, r.width * s, r.height * s)))
+        lines.append(words)
+    return lines
